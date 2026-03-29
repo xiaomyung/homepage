@@ -1,0 +1,4 @@
+CLAUDE.md
+.env
+*.key
+*.crt

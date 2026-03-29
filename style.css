@@ -64,12 +64,29 @@ header {
   .header-wordmark { font-size: 1.4rem; }
 }
 
+/* 2 section columns on medium screens */
+@media (max-width: 720px) {
+  .section { flex: 0 0 calc(50% - 0.625rem); }
+}
+
+/* 1 section column on small screens */
+@media (max-width: 480px) {
+  .section { flex: 0 0 100%; }
+}
+
 .sections {
   width: 100%;
   max-width: 900px;
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 1.25rem;
+}
+
+.section {
+  flex: 0 0 calc(33.333% - 0.84rem);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .section-label {
@@ -84,9 +101,8 @@ header {
 
 .grid {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
   width: 100%;
 }
 
@@ -100,21 +116,11 @@ header {
   text-decoration: none;
   display: flex;
   flex-direction: column;
-  /* 3 per row: (100% - 2 gaps) / 3 */
-  flex: 0 0 calc(33.333% - 8px);
+  flex: none;
+  width: 100%;
   min-width: 0;
   transition: background 0.2s;
   outline: none;
-}
-
-/* 2 per row on medium screens */
-@media (max-width: 720px) {
-  .card { flex: 0 0 calc(50% - 6px); }
-}
-
-/* 1 per row on small screens */
-@media (max-width: 480px) {
-  .card { flex: 0 0 100%; }
 }
 
 .card:hover,

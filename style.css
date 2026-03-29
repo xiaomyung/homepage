@@ -28,11 +28,11 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 5rem 1.5rem 4rem;
+  padding: 2.5rem 1.5rem 2.5rem;
 }
 
 header {
-  margin-bottom: 3rem;
+  margin-bottom: 1.5rem;
   text-align: center;
 }
 
@@ -64,12 +64,29 @@ header {
   .header-wordmark { font-size: 1.4rem; }
 }
 
+/* 2 section columns on medium screens */
+@media (max-width: 720px) {
+  .section { flex: 0 0 calc(50% - 0.625rem); }
+}
+
+/* 1 section column on small screens */
+@media (max-width: 480px) {
+  .section { flex: 0 0 100%; }
+}
+
 .sections {
   width: 100%;
   max-width: 900px;
   display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+}
+
+.section {
+  flex: 0 0 calc(33.333% - 0.84rem);
+  display: flex;
   flex-direction: column;
-  gap: 2.5rem;
+  min-width: 0;
 }
 
 .section-label {
@@ -79,14 +96,13 @@ header {
   letter-spacing: 0.2em;
   text-transform: uppercase;
   text-align: center;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.5rem;
 }
 
 .grid {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
   width: 100%;
 }
 
@@ -95,26 +111,16 @@ header {
   overflow: hidden;
   background: var(--surface);
   border-radius: 12px;
-  padding: 1.5rem;
+  padding: 1rem;
   color: inherit;
   text-decoration: none;
   display: flex;
   flex-direction: column;
-  /* 3 per row: (100% - 2 gaps) / 3 */
-  flex: 0 0 calc(33.333% - 8px);
+  flex: none;
+  width: 100%;
   min-width: 0;
   transition: background 0.2s;
   outline: none;
-}
-
-/* 2 per row on medium screens */
-@media (max-width: 720px) {
-  .card { flex: 0 0 calc(50% - 6px); }
-}
-
-/* 1 per row on small screens */
-@media (max-width: 480px) {
-  .card { flex: 0 0 100%; }
 }
 
 .card:hover,
@@ -123,8 +129,8 @@ header {
 
 .card-icon {
   position: absolute;
-  top: 1.25rem;
-  right: 1.25rem;
+  top: 0.875rem;
+  right: 0.875rem;
   width: 32px;
   height: 32px;
   border-radius: 8px;
@@ -140,7 +146,7 @@ header {
 .card-name {
   font-size: 0.95rem;
   font-weight: 600;
-  padding-right: 2.75rem;
+  padding-right: 2.5rem;
 }
 
 .card-url {
@@ -158,7 +164,7 @@ header {
   align-items: center;
   gap: 0.5rem;
   margin-top: auto;
-  padding-top: 1.25rem;
+  padding-top: 0.75rem;
 }
 
 @keyframes pulse {
@@ -212,7 +218,7 @@ header {
 }
 
 footer {
-  margin-top: 2.5rem;
+  margin-top: 1.25rem;
   font-family: var(--mono);
   font-size: 0.62rem;
   color: var(--muted);

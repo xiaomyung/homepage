@@ -28,11 +28,11 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 5rem 1.5rem 4rem;
+  padding: 2.5rem 1.5rem 2.5rem;
 }
 
 header {
-  margin-bottom: 3rem;
+  margin-bottom: 1.5rem;
   text-align: center;
 }
 
@@ -69,7 +69,7 @@ header {
   max-width: 900px;
   display: flex;
   flex-direction: column;
-  gap: 2.5rem;
+  gap: 1.25rem;
 }
 
 .section-label {
@@ -79,7 +79,7 @@ header {
   letter-spacing: 0.2em;
   text-transform: uppercase;
   text-align: center;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.5rem;
 }
 
 .grid {
@@ -95,7 +95,7 @@ header {
   overflow: hidden;
   background: var(--surface);
   border-radius: 12px;
-  padding: 1.5rem;
+  padding: 1rem;
   color: inherit;
   text-decoration: none;
   display: flex;
@@ -123,8 +123,8 @@ header {
 
 .card-icon {
   position: absolute;
-  top: 1.25rem;
-  right: 1.25rem;
+  top: 0.875rem;
+  right: 0.875rem;
   width: 32px;
   height: 32px;
   border-radius: 8px;
@@ -140,7 +140,7 @@ header {
 .card-name {
   font-size: 0.95rem;
   font-weight: 600;
-  padding-right: 2.75rem;
+  padding-right: 2.5rem;
 }
 
 .card-url {
@@ -158,7 +158,7 @@ header {
   align-items: center;
   gap: 0.5rem;
   margin-top: auto;
-  padding-top: 1.25rem;
+  padding-top: 0.75rem;
 }
 
 @keyframes pulse {
@@ -212,7 +212,7 @@ header {
 }
 
 footer {
-  margin-top: 2.5rem;
+  margin-top: 1.25rem;
   font-family: var(--mono);
   font-size: 0.62rem;
   color: var(--muted);

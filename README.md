@@ -1,0 +1,52 @@
+# homepage
+
+Personal homelab dashboard served at `https://xiaomyung.com` — a static page with live health checks for all self-hosted services.
+
+## Stack
+
+- **Caddy** — serves the static files and proxies to each service
+- **AdGuard Home** — DNS rewrite routes `xiaomyung.com` → `100.68.202.55` (Tailscale IP of the home server) for local and Tailscale-connected devices
+- No build step — edit files and reload Caddy
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `index.html` | Markup, service cards, section layout |
+| `style.css` | Monochrome dark theme, responsive grid, animations |
+| `app.js` | Health checks via `fetch`; stickman footer animation |
+
+## Layout
+
+Cards are grouped into `<section class="section">` elements inside a `.sections` flexbox row. Three sections per row on desktop (≥720px), single column on mobile (<720px). Each card has a status dot that turns green/red after probing its `data-check` URL.
+
+## Services
+
+| Category | Service | URL |
+|----------|---------|-----|
+| Monitoring | Grafana | `xiaomyung.com/grafana` |
+| Monitoring | AdGuard Home | `xiaomyung.com/dns` |
+| Downloads | qBittorrent | `xiaomyung.com/qbittorrent` |
+| Media | Immich | `xiaomyung.com/immich` |
+| Media | Plex | `xiaomyung.com/plex` |
+| Productivity | Open WebUI | `xiaomyung.com/llm` |
+| Productivity | Nextcloud | `xiaomyung.com/nextcloud` |
+| Security | VaultWarden | `xiaomyung.com/vaultwarden` |
+| Gaming | Minecraft Panel | `xiaomyung.com/mc` |
+| Gaming | BlueMap | `xiaomyung.com/bluemap` |
+
+## Deployment
+
+```sh
+# After editing style.css, bump ?v=N in the <link> tag in index.html
+# then reload Caddy:
+sudo systemctl reload caddy
+```
+
+## Adding a service
+
+1. Add a Caddy site block with `header Access-Control-Allow-Origin "https://xiaomyung.com"`
+2. Add a redirect shortcut in the `xiaomyung.com` entry-point block
+3. Add a `.card` inside the right `<section>` in `index.html` — set `data-check` to the direct `*.home.arpa` URL, and `--i:N` to the next sequential integer
+4. Bump `?v=N` in the `<link>` tag if `style.css` was touched
+5. Reload Caddy

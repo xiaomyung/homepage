@@ -79,13 +79,8 @@ header {
   min-width: 0;
 }
 
-/* 2 section columns on medium screens */
-@media (max-width: 720px) {
-  .section { flex: 0 0 calc(50% - 0.625rem); }
-}
-
 /* 1 section column on small screens */
-@media (max-width: 480px) {
+@media (max-width: 720px) {
   .section { flex: 0 0 100%; }
 }
 

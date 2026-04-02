@@ -24,14 +24,19 @@ Cards are grouped into `<section class="section">` elements inside a `.sections`
 
 | Category | Service | URL |
 |----------|---------|-----|
-| Monitoring | Grafana | `xiaomyung.com/grafana` |
-| Monitoring | AdGuard Home | `xiaomyung.com/dns` |
+| Infrastructure | Grafana | `xiaomyung.com/grafana` |
+| Infrastructure | AdGuard Home | `xiaomyung.com/dns` |
+| Infrastructure | VaultWarden | `xiaomyung.com/vaultwarden` |
 | Downloads | qBittorrent | `xiaomyung.com/qbittorrent` |
+| Downloads | Prowlarr | `xiaomyung.com/prowlarr` |
+| Downloads | Readarr | `xiaomyung.com/readarr` |
 | Media | Immich | `xiaomyung.com/immich` |
 | Media | Plex | `xiaomyung.com/plex` |
+| Media | Kavita | `xiaomyung.com/kavita` |
 | Productivity | Open WebUI | `xiaomyung.com/llm` |
 | Productivity | Nextcloud | `xiaomyung.com/nextcloud` |
-| Security | VaultWarden | `xiaomyung.com/vaultwarden` |
+| Dev Tools | Code-server | `xiaomyung.com/code` |
+| Dev Tools | IT-Tools | `xiaomyung.com/it-tools` |
 | Gaming | Minecraft Panel | `xiaomyung.com/mc` |
 | Gaming | BlueMap | `xiaomyung.com/bluemap` |
 

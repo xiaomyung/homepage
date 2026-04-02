@@ -14,7 +14,7 @@ Personal homelab dashboard served at `https://xiaomyung.com` — a static page w
 |------|---------|
 | `index.html` | Markup, service cards, section layout |
 | `style.css` | Monochrome dark theme, responsive grid, animations |
-| `app.js` | Health checks via `fetch`; stickman footer animation |
+| `app.js` | Health checks via `fetch` (5s timeout, 30s re-check); stickman footer animation |
 
 ## Layout
 
@@ -37,6 +37,7 @@ Cards are grouped into `<section class="section">` elements inside a `.sections`
 | Productivity | Nextcloud | `xiaomyung.com/nextcloud` |
 | Dev Tools | Code-server | `xiaomyung.com/code` |
 | Dev Tools | IT-Tools | `xiaomyung.com/it-tools` |
+| Dev Tools | Stirling PDF | `xiaomyung.com/pdf` |
 | Gaming | Minecraft Panel | `xiaomyung.com/mc` |
 | Gaming | BlueMap | `xiaomyung.com/bluemap` |
 
@@ -52,6 +53,6 @@ sudo systemctl reload caddy
 
 1. Add a Caddy site block with `header Access-Control-Allow-Origin "https://xiaomyung.com"`
 2. Add a redirect shortcut in the `xiaomyung.com` entry-point block
-3. Add a `.card` inside the right `<section>` in `index.html` — set `data-check` to the direct `*.home.arpa` URL, and `--i:N` to the next sequential integer
+3. Add a `.card` inside the right `<section>` in `index.html` — set `data-check` to the direct `*.home.arpa` URL (`--i` for stagger animation is set automatically by `app.js`)
 4. Bump `?v=N` in the `<link>` tag if `style.css` was touched
 5. Reload Caddy

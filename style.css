@@ -236,7 +236,7 @@ footer {
   position: relative;
   width: 100%;
   max-width: 900px;
-  height: 95px;
+  height: 85px;
   overflow: hidden;
   margin-top: 0.75rem;
 }
@@ -252,4 +252,17 @@ footer {
   white-space: pre;
   user-select: none;
   transform-origin: 0 0;
+}
+
+#stickman-stage .stickman-goal {
+  color: rgba(255,255,255,0.3);
+}
+
+#stickman-stage .stickman-goal-l {
+  left: 30px;
+}
+
+#stickman-stage .stickman-goal-r {
+  left: auto !important;
+  right: 30px;
 }

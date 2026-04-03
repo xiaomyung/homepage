@@ -1,20 +1,19 @@
 // Stickman — cursor-chasing character with ball physics and idle behaviors
 (function () {
-  /* --- frames (7 chars wide × 4 lines) --- */
-  /* ◤█◥ = solid inverted triangle torso, █ = waist */
+  /* --- frames (original 3-line ASCII style) --- */
   const F = {
-    idle:  "   \u25CB   \n \u256D\u25E4\u2588\u25E5\u256E \n   \u2588   \n  \u2571 \u2572  ",
+    idle:  " o \n(|)\n/\\ ",
     walk: [
-      "   \u25CB   \n\u256D \u25E4\u2588\u25E5\u2500 \n   \u2588   \n  \u2571 \u2572  ",
-      "   \u25CB   \n \u2500\u25E4\u2588\u25E5 \u256E\n   \u2588   \n   \u2502   ",
-      "   \u25CB   \n \u256D\u25E4\u2588\u25E5 \u2500\n   \u2588   \n  \u2571 \u2572  ",
-      "   \u25CB   \n\u2500 \u25E4\u2588\u25E5\u256E \n   \u2588   \n   \u2502   ",
+      " o \n/| \n/ \\",
+      " o \n |)\n | ",
+      " o \n |\\\n/ \\",
+      " o \n(| \n | ",
     ],
-    alert:   "   \u25CB   \n \u2572\u25E4\u2588\u25E5\u2571 \n   \u2588   \n  \u2571 \u2572  ",
+    alert: "\\o/\n | \n/\\ ",
     kick: [
-      "   \u25CB   \n \u256D\u25E4\u2588\u25E5\u256E \n   \u2588   \n   \u2502\u2572  ",
-      "   \u25CB   \n \u256D\u25E4\u2588\u25E5\u256E \n   \u2588   \n   \u2502\u2571  ",
-      "   \u25CB   \n \u256D\u25E4\u2588\u25E5\u256E \n   \u2588   \n   \u2502\u2500  ",
+      " o \n(|)\n |\\ ",
+      " o \n(|)\n |/ ",
+      " o \n(|)\n |_ ",
     ],
   };
 
@@ -40,21 +39,32 @@
   ballEl.className = 'stickman-ball';
   stage.appendChild(ballEl);
 
+  /* goals: side-view, one at each end */
+  const goalL = document.createElement('pre');
+  goalL.setAttribute('aria-hidden', 'true');
+  goalL.textContent = '     _ _ \n    /  /|\n   /__/_|\n  /__/   \n /   |   \n/____|  ';
+  goalL.className = 'stickman-goal stickman-goal-l';
+  stage.appendChild(goalL);
+
+  const goalR = document.createElement('pre');
+  goalR.setAttribute('aria-hidden', 'true');
+  goalR.textContent = ' _ _    \n|\\  \\   \n|_\\__\\  \n   \\__\\ \n   |   \\\n   |____\\';
+  goalR.className = 'stickman-goal stickman-goal-r';
+  stage.appendChild(goalR);
+
   /* --- state --- */
   let x = 0, dir = 1;
   let state = 'idle', stateTime = 0;
   let fi = 0, ft = 0;
   let targetX = 0, lastInput = 0, noInputTime = 0;
-  let ball = { x: 80, y: 0, vx: 0, vy: 0 };
+  let ball = { x: stage.offsetWidth / 2, y: stage.offsetHeight, vx: 0, vy: 0 };
 
   /* --- input --- */
   function onInput(clientX) {
     targetX = clientX - stage.getBoundingClientRect().left;
     lastInput = Date.now();
     noInputTime = 0;
-    if (state === 'idle') {
-      setState('alert');
-    }
+    if (state === 'idle') setState('alert');
   }
   document.addEventListener('mousemove', e => onInput(e.clientX));
   document.addEventListener('touchmove', e => onInput(e.touches[0].clientX), { passive: true });
@@ -102,11 +112,13 @@
       case 'walk': {
         const tgt = isMouseActive() ? targetX : (ballAtRest() ? ball.x : targetX);
         const dx = tgt - (x + w / 2);
+        const atEdge = x <= 0 || x >= sw - w;
+        const closeEnough = Math.abs(dx) < 8 || (atEdge && Math.abs(dx) < w);
 
-        if (Math.abs(dx) < 8) {
+        if (closeEnough) {
           if (isMouseActive()) {
             setState('idle');
-          } else if (ballAtRest() && Math.abs(ball.x - (x + w / 2)) < 15) {
+          } else if (ballAtRest() && Math.abs(ball.x - (x + w / 2)) < w) {
             setState('kick');
           } else {
             setState('idle');
@@ -189,7 +201,7 @@
     ballEl.style.transform = `translate(${ball.x}px, ${-ball.y}px)`;
   }
 
-  /* --- loop (requestAnimationFrame, throttled to ~60 FPS) --- */
+  /* --- loop (requestAnimationFrame, ~60 FPS) --- */
   let last = 0;
   (function loop(now) {
     if (now - last >= TICK) {

@@ -15,7 +15,7 @@
   const PUSH_MIN      = 50;
   const PUSH_MAX      = 200;
   const PUSH_ANIM_MS  = 300;
-  const KICK_REACH    = 1.8;  // multiplier on player width
+  const KICK_REACH    = 0.9;  // multiplier on player width
   const RESPAWN_GRACE = 30;   // frames to skip goal detection after respawn
 
   // 15% chance ball bounces off goal post "|", otherwise passes through
@@ -30,7 +30,7 @@
     walk:  [" o \n/| \n/ \\", " o \n |)\n | ", " o \n |\\\n/ \\", " o \n(| \n | "],
     alert: "\\o/\n | \n/\\ ",
     kick:  [" o \n(|)\n |\\ ", " o \n(|)\n |/ ", " o \n(|)\n |_ "],
-    push:  " o \n/|--\n/\\ ",
+    push: " o \n/|\\_\n/\\ ",
   };
 
   /* ── Names ──────────────────────────────────────────────── */
@@ -109,7 +109,7 @@
   let targetX = 0, lastInput = 0;
   let scoreL = 0, scoreR = 0;
   let lastKicker = null;
-  let paused = false, pauseTimer = 0;
+  let paused = false, pauseTimer = 0, pausePhase = '', respawnDelay = 0;
   let goalScorer = null;
   let lastKickTime = Date.now();
   let graceFrames = 0; // skip goal-line detection after respawn
@@ -147,10 +147,8 @@
 
   function init() {
     calcBounds();
-    const mid = fieldCenter();
-    const w = p1.el.offsetWidth;
-    p1.x = mid - w - 20;
-    p2.x = mid + 20;
+    p1.x = startingX(p1);
+    p2.x = startingX(p2);
     ball.x = stage.offsetWidth / 2;
     ball.y = stage.offsetHeight;
     ball.vx = 0;
@@ -448,9 +446,12 @@
 
   /* ── Scoring ────────────────────────────────────────────── */
 
+  const WIN_SCORE = 3;
+
   function scoreGoal(side) {
     paused = true;
-    pauseTimer = PAUSE_MS;
+    pauseTimer = 1500;
+    pausePhase = 'celebrate';
 
     if (side === 'left') {
       scoreR++;
@@ -466,15 +467,55 @@
       celebrate(goalR.offsetLeft + goalR.offsetWidth / 2);
     }
     updateScoreboard();
+
+    if (scoreL >= WIN_SCORE || scoreR >= WIN_SCORE) {
+      pausePhase = 'matchend';
+      pauseTimer = 3000;
+      const winner = scoreL >= WIN_SCORE ? p1.name : p2.name;
+      scoreboardEl.textContent = 'Winner: ' + winner;
+    }
+  }
+
+  function resetMatch() {
+    const newL = pickName();
+    const newR = pickName(newL);
+    p1.name = newL; p1.nameEl.textContent = newL;
+    p2.name = newR; p2.nameEl.textContent = newR;
+    scoreL = 0; scoreR = 0;
+    p1.x = startingX(p1);
+    p2.x = startingX(p2);
+    p1.dir = 1; p2.dir = -1;
+    setState(p1, 'idle'); setState(p2, 'idle');
+    p1.jumpY = 0; p2.jumpY = 0;
+    ball.x = fieldCenter();
+    ball.y = stage.offsetHeight / 2;
+    ball.vx = 0; ball.vy = 0;
+    paused = false;
+    pausePhase = '';
+    goalScorer = null;
+    graceFrames = RESPAWN_GRACE;
+    lastKickTime = Date.now();
+    updateScoreboard();
+  }
+
+  function startingX(p) {
+    const mid = fieldCenter();
+    const w = p.el.offsetWidth;
+    const offset = 40;
+    return p === p1 ? mid - offset - w / 2 : mid + offset - w / 2;
+  }
+
+  function playersAtStart() {
+    return Math.abs(p1.x - startingX(p1)) < 5 && Math.abs(p2.x - startingX(p2)) < 5;
   }
 
   function respawn() {
-    // Ball respawns at center of the field, dropping from mid-height
     ball.x = fieldCenter();
     ball.y = stage.offsetHeight / 2;
     ball.vx = 0;
     ball.vy = 0;
     paused = false;
+    pausePhase = '';
     goalScorer = null;
     graceFrames = RESPAWN_GRACE;
     p1.jumpY = 0;
@@ -534,14 +575,59 @@
     calcBounds();
 
     if (paused) {
-      pauseTimer -= TICK;
-      [p1, p2].forEach(p => {
-        if (p.state === 'jump') {
-          p.stateTime += TICK;
-          p.jumpY = Math.sin((p.stateTime % 400) / 400 * Math.PI) * 18;
+      if (pausePhase === 'matchend') {
+        pauseTimer -= TICK;
+        // winner celebrates continuously
+        if (goalScorer) {
+          goalScorer.stateTime += TICK;
+          goalScorer.jumpY = Math.sin((goalScorer.stateTime % 400) / 400 * Math.PI) * 18;
+          goalScorer.state = 'jump';
         }
-      });
-      if (pauseTimer <= 0) respawn();
+        if (pauseTimer <= 0) resetMatch();
+        return;
+      }
+
+      if (pausePhase === 'celebrate') {
+        pauseTimer -= TICK;
+        [p1, p2].forEach(p => {
+          if (p.state === 'jump') {
+            p.stateTime += TICK;
+            p.jumpY = Math.sin((p.stateTime % 400) / 400 * Math.PI) * 18;
+          }
+        });
+        if (pauseTimer <= 0) {
+          pausePhase = 'reposition';
+          p1.jumpY = 0;
+          p2.jumpY = 0;
+          setState(p1, 'walk');
+          setState(p2, 'walk');
+        }
+      } else if (pausePhase === 'reposition') {
+        // walk both players to starting positions
+        [p1, p2].forEach(p => {
+          p.stateTime += TICK;
+          p.ft++;
+          const target = startingX(p);
+          const dx = target - p.x;
+          if (Math.abs(dx) > 5) {
+            p.x += Math.sign(dx) * Math.min(Math.abs(dx) * 0.1, 6);
+            p.dir = dx > 0 ? 1 : -1;
+            if (p.ft % 6 === 0) p.fi = (p.fi + 1) % FRAMES.walk.length;
+          } else {
+            p.x = target;
+            if (p.state !== 'idle') setState(p, 'idle');
+          }
+        });
+        if (playersAtStart()) {
+          if (respawnDelay <= 0) {
+            respawnDelay = 300;
+            pausePhase = 'waiting';
+          }
+        }
+      } else if (pausePhase === 'waiting') {
+        respawnDelay -= TICK;
+        if (respawnDelay <= 0) respawn();
+      }
       return;
     }
 

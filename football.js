@@ -353,9 +353,9 @@
 
     if (!paused) {
       checkFrameCollision();
-      if (graceFrames <= 0) checkGoalLine();
       const sw = stage.offsetWidth;
       if (ball.x < -50 || ball.x > sw + 50) ballOut();
+      else if (graceFrames <= 0) checkGoalLine();
     }
   }
 

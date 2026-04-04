@@ -9,7 +9,9 @@
   const BOUNCE        = 0.6;
   const AIR_FRICTION  = 0.99;
   const GROUND_FRICTION = 0.92;
-  const PAUSE_MS      = 2000;
+  const CELEBRATE_MS  = 1500;
+  const MATCHEND_MS   = 3000;
+  const RESPAWN_DELAY_MS = 300;
   const STALL_MS      = 10000; // respawn ball if no kick for this long
   const PUSH_COOLDOWN = 3000;
   const PUSH_MIN      = 50;
@@ -78,8 +80,8 @@
   const goalL = addPre(stage, '     _ _ \n    /  /|\n   /__/_|\n  /__/   \n /   |   \n/____|  ', 'fb-goal fb-goal-l');
   const goalR = addPre(stage, ' _ _    \n|\\  \\   \n|_\\__\\  \n   \\__\\ \n   |   \\\n   |____\\', 'fb-goal fb-goal-r');
 
-  addPre(stage, '         \n         \n         \n        /\n       / \n      /  ', 'fb-goalline fb-goalline-l');
-  addPre(stage, '         \n         \n         \n\\        \n \\       \n  \\      ', 'fb-goalline fb-goalline-r');
+  const goalLineL = addPre(stage, '         \n         \n         \n        /\n       / \n      /  ', 'fb-goalline fb-goalline-l');
+  const goalLineR = addPre(stage, '         \n         \n         \n\\        \n \\       \n  \\      ', 'fb-goalline fb-goalline-r');
 
   const scoreboardEl = addPre(stage, '', 'fb-scoreboard');
 
@@ -108,7 +110,6 @@
   const ball = { x: 0, y: 0, vx: 0, vy: 0 };
   let targetX = 0, lastInput = 0;
   let scoreL = 0, scoreR = 0;
-  let lastKicker = null;
   let paused = false, pauseTimer = 0, pausePhase = '', respawnDelay = 0;
   let goalScorer = null;
   let lastKickTime = Date.now();
@@ -195,7 +196,6 @@
     if (Math.random() < OWN_GOAL_CHANCE) dir = -dir;
     ball.vx = dir * force * (1 - angle);
     ball.vy = force * angle;
-    lastKicker = p;
     lastKickTime = Date.now();
   }
 
@@ -222,7 +222,7 @@
       case 'jump': {
         const phase = (p.stateTime % 400) / 400;
         p.jumpY = Math.sin(phase * Math.PI) * 18;
-        if (p.stateTime > PAUSE_MS) { p.jumpY = 0; setState(p, 'idle'); }
+        if (p.stateTime > CELEBRATE_MS) { p.jumpY = 0; setState(p, 'idle'); }
         return true;
       }
     }
@@ -304,8 +304,7 @@
     a.lastPush = now;
     a.dir = ca < cb ? 1 : -1;
     setState(a, 'push');
-    const dir = ca < cb ? 1 : -1;
-    b.pushVx = dir * (PUSH_MIN + Math.random() * (PUSH_MAX - PUSH_MIN));
+    b.pushVx = a.dir * (PUSH_MIN + Math.random() * (PUSH_MAX - PUSH_MIN));
   }
 
   function applyPush(p) {
@@ -423,7 +422,7 @@
     if (!charW) measure();
     const offset = 3;
 
-    const llx = goalL.offsetLeft; // goal line pre is positioned same as goalL
+    const llx = goalLineL.offsetLeft;
     for (const [row, col] of SCORELINE_L) {
       const cx = llx + col * charW;
       const cy = (5 - row) * lineH;
@@ -433,7 +432,7 @@
       }
     }
 
-    const rlx = goalR.offsetLeft;
+    const rlx = goalLineR.offsetLeft;
     for (const [row, col] of SCORELINE_R) {
       const cx = rlx + col * charW;
       const cy = (5 - row) * lineH;
@@ -450,7 +449,7 @@
 
   function scoreGoal(side) {
     paused = true;
-    pauseTimer = 1500;
+    pauseTimer = CELEBRATE_MS;
     pausePhase = 'celebrate';
 
     if (side === 'left') {
@@ -470,7 +469,7 @@
 
     if (scoreL >= WIN_SCORE || scoreR >= WIN_SCORE) {
       pausePhase = 'matchend';
-      pauseTimer = 3000;
+      pauseTimer = MATCHEND_MS;
       const winner = scoreL >= WIN_SCORE ? p1.name : p2.name;
       scoreboardEl.textContent = 'Winner: ' + winner;
     }
@@ -492,6 +491,7 @@
     ball.vx = 0; ball.vy = 0;
     paused = false;
     pausePhase = '';
+    respawnDelay = 0;
     goalScorer = null;
     graceFrames = RESPAWN_GRACE;
     lastKickTime = Date.now();
@@ -516,6 +516,7 @@
     ball.vy = 0;
     paused = false;
     pausePhase = '';
+    respawnDelay = 0;
     goalScorer = null;
     graceFrames = RESPAWN_GRACE;
     p1.jumpY = 0;
@@ -620,7 +621,7 @@
         });
         if (playersAtStart()) {
           if (respawnDelay <= 0) {
-            respawnDelay = 300;
+            respawnDelay = RESPAWN_DELAY_MS;
             pausePhase = 'waiting';
           }
         }
@@ -648,6 +649,7 @@
       ball.y = stage.offsetHeight / 2;
       ball.vx = 0;
       ball.vy = 0;
+      graceFrames = RESPAWN_GRACE;
     }
   }
 

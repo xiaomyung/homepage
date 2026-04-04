@@ -855,6 +855,7 @@
 
   function onResize() {
     calcBounds();
+    if (charW) goalLineR.style.left = goalR.offsetLeft + 'px';
     buildFieldBorder();
   }
 

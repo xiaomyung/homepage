@@ -232,7 +232,9 @@ footer {
 
 .footer-host svg { flex-shrink: 0; }
 
-#stickman-stage {
+/* ── Game stage (shared by all mini-games) ── */
+
+#game-stage {
   position: relative;
   width: 100%;
   max-width: 900px;
@@ -241,7 +243,7 @@ footer {
   margin-top: 0.75rem;
 }
 
-#stickman-stage pre {
+#game-stage pre {
   position: absolute;
   bottom: 0;
   left: 0;
@@ -254,39 +256,26 @@ footer {
   transform-origin: 0 0;
 }
 
-#stickman-stage .stickman-player,
-#stickman-stage .stickman-ball {
+/* ── Football game ── */
+
+#game-stage .fb-player,
+#game-stage .fb-ball {
   bottom: 10px;
 }
 
-#stickman-stage .stickman-goalline {
+#game-stage .fb-goalline {
   color: rgba(255,255,255,0.12);
   pointer-events: none;
 }
 
-#stickman-stage .stickman-goalline-l {
-  left: 30px;
-}
+#game-stage .fb-goalline-l { left: 30px; }
+#game-stage .fb-goalline-r { left: auto !important; right: 30px; }
 
-#stickman-stage .stickman-goalline-r {
-  left: auto !important;
-  right: 30px;
-}
+#game-stage .fb-goal { color: rgba(255,255,255,0.3); }
+#game-stage .fb-goal-l { left: 30px; }
+#game-stage .fb-goal-r { left: auto !important; right: 30px; }
 
-#stickman-stage .stickman-goal {
-  color: rgba(255,255,255,0.3);
-}
-
-#stickman-stage .stickman-goal-l {
-  left: 30px;
-}
-
-#stickman-stage .stickman-goal-r {
-  left: auto !important;
-  right: 30px;
-}
-
-#stickman-stage .stickman-scoreboard {
+#game-stage .fb-scoreboard {
   bottom: auto;
   top: 0;
   left: 50% !important;
@@ -297,7 +286,7 @@ footer {
   pointer-events: none;
 }
 
-#stickman-stage .stickman-name {
+#game-stage .fb-name {
   position: absolute;
   bottom: 0;
   left: 0;

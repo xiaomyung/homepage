@@ -276,7 +276,6 @@ footer {
   bottom: 10px;
 }
 
-
 #game-stage .fb-goal { color: rgba(255,255,255,0.3); pointer-events: none; bottom: 10px; }
 #game-stage .fb-goal-l { left: 30px; }
 #game-stage .fb-goal-r { left: auto !important; right: 30px; }

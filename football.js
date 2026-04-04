@@ -351,13 +351,11 @@
     if (Math.abs(ball.vx) < 0.1) ball.vx = 0;
     if (Math.abs(ball.vy) < 0.1) ball.vy = 0;
 
-    checkFrameCollision();
-    if (!paused && graceFrames <= 0) checkGoalLine();
-
-    // out of bounds
-    const sw = stage.offsetWidth;
-    if (!paused && (ball.x < -50 || ball.x > sw + 50)) {
-      ballOut();
+    if (!paused) {
+      checkFrameCollision();
+      if (graceFrames <= 0) checkGoalLine();
+      const sw = stage.offsetWidth;
+      if (ball.x < -50 || ball.x > sw + 50) ballOut();
     }
   }
 

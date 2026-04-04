@@ -23,8 +23,8 @@
   const WALK_FRAME_INT  = 6;      // ticks between walk frame advances
   const MAX_SPEED       = 10;     // max player movement speed per tick
   const FIELD_HEIGHT    = 42;     // vertical play area in px (~3 character rows)
-  const KICK_REACH_X    = 0.9;    // multiplier on player width for kick proximity
-  const KICK_REACH_Y    = 15;     // vertical px proximity to kick
+  const KICK_REACH_X    = 0.5;    // multiplier on player width for kick proximity
+  const KICK_REACH_Y    = 10;     // vertical px proximity to kick
   const WIN_SCORE       = 3;
 
   const CELEBRATE_MS    = 1500;
@@ -332,7 +332,11 @@
   }
 
   function updateBall() {
-    if (paused) return;
+    if (paused) {
+      // let ball travel one extra frame after goal before stopping
+      if (ball.goalFrame > 0) { ball.goalFrame--; }
+      else return;
+    }
     const moving = Math.abs(ball.vx) > 0.01 || Math.abs(ball.vy) > 0.01 ||
                    ball.z > 0 || ball.vz > 0;
     if (!moving) return;
@@ -612,6 +616,7 @@
   /* ── Scoring ────────────────────────────────────────────── */
 
   function scoreGoal(side) {
+    ball.goalFrame = 2;
     paused = true;
     pauseTimer = CELEBRATE_MS;
     pausePhase = 'celebrate';

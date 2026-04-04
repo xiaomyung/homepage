@@ -8,7 +8,7 @@
   const GRAVITY       = 0.3;
   const BOUNCE        = 0.6;
   const AIR_FRICTION  = 0.99;
-  const GROUND_FRICTION = 0.92;
+  const GROUND_FRICTION = 0.944;
   const CELEBRATE_MS  = 1500;
   const MATCHEND_MS   = 3000;
   const RESPAWN_DELAY_MS = 300;
@@ -83,9 +83,10 @@
 
   function buildFieldBorder() {
     if (!charW) measure();
+    if (!charW || !stage.offsetWidth) return;
     const total = Math.floor(stage.offsetWidth / charW) - 1;
-    const w = total - 2;
-    // Perspective edges step in 1 char per line (5 lines of sides)
+    if (total < 12) return; // too narrow
+    const w = Math.max(0, total - 2);
     const lines = [
       '     ' + '_'.repeat(Math.max(0, total - 10)) + '     ',
       '    /' + ' '.repeat(Math.max(0, total - 10)) + '\\    ',
@@ -133,7 +134,7 @@
 
   /* ── Game state ─────────────────────────────────────────── */
 
-  const ball = { x: 0, y: 0, vx: 0, vy: 0 };
+  const ball = { x: 0, y: 0, vx: 0, vy: 0, z: 0, vz: 0 }; // z = air height
   let targetX = 0, lastInput = 0;
   let scoreL = 0, scoreR = 0;
   let paused = false, pauseTimer = 0, pausePhase = '', respawnDelay = 0;
@@ -152,12 +153,14 @@
   /* ── Bounds & measurement ───────────────────────────────── */
 
   function calcBounds() {
+    if (!goalL.offsetWidth || !goalR.offsetWidth) return;
     leftBound = goalL.offsetLeft;
     rightBound = goalR.offsetLeft + goalR.offsetWidth;
     if (!charW) measure();
   }
 
   function measure() {
+    if (!goalL.offsetHeight || !goalL.offsetWidth) return;
     lineH = goalL.offsetHeight / 6;
     charW = goalL.offsetWidth / 9;
   }
@@ -185,9 +188,8 @@
     p1.x = startingX(p1);
     p2.x = startingX(p2);
     ball.x = stage.offsetWidth / 2;
-    ball.y = stage.offsetHeight;
-    ball.vx = 0;
-    ball.vy = 0;
+    ball.y = FIELD_HEIGHT / 2;
+    ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0;
 
     // Position goal lines relative to goal edges
     // Left goal line: top `/` aligns with the right edge of left goal
@@ -209,7 +211,7 @@
   document.addEventListener('touchmove', e => onInput(e.touches[0].clientX), { passive: true });
 
   function mouseActive() { return Date.now() - lastInput < 2000; }
-  function atRest() { return ball.y === 0 && ball.vy === 0 && Math.abs(ball.vx) < 0.5; }
+  function atRest() { return Math.abs(ball.vx) < 0.5 && Math.abs(ball.vy) < 0.5; }
 
   /* ── State helpers ──────────────────────────────────────── */
 
@@ -237,7 +239,9 @@
     let dir = px < mid ? 1 : -1;
     if (Math.random() < OWN_GOAL_CHANCE) dir = -dir;
     ball.vx = dir * force * (1 - angle);
-    ball.vy = force * angle;
+    ball.vy = (Math.random() - 0.5) * force * 0.4;
+    // steep angle = lob into the air, flat angle = ground kick
+    ball.vz = angle > 0.5 ? force * angle * 0.6 : 0;
     lastKickTime = Date.now();
   }
 
@@ -383,23 +387,33 @@
 
   function updateBall() {
     if (paused) return;
-    if (ball.vy === 0 && ball.y <= 0 && Math.abs(ball.vx) < 0.01) return;
+    if (Math.abs(ball.vx) < 0.01 && Math.abs(ball.vy) < 0.01) return;
 
-    ball.vy -= GRAVITY;
-    ball.y += ball.vy;
     ball.x += ball.vx;
-    ball.vx *= ball.y > 0 ? AIR_FRICTION : GROUND_FRICTION;
+    ball.y += ball.vy;
+    ball.vx *= GROUND_FRICTION;
+    ball.vy *= GROUND_FRICTION;
 
-    // floor
-    if (ball.y <= 0) {
-      ball.y = 0;
-      ball.vy = Math.abs(ball.vy) < 1.5 ? 0 : Math.abs(ball.vy) * BOUNCE;
+    // air physics: z = height above ground, gravity pulls it down
+    if (ball.z > 0 || ball.vz > 0) {
+      ball.vz -= GRAVITY;
+      ball.z += ball.vz;
+      if (ball.z <= 0) {
+        ball.z = 0;
+        ball.vz = Math.abs(ball.vz) > 1.5 ? Math.abs(ball.vz) * 0.5 : 0;
+      }
     }
-    // ceiling
-    const ceiling = stage.offsetHeight - 10;
-    if (ball.y > ceiling) { ball.y = ceiling; ball.vy = -Math.abs(ball.vy) * BOUNCE; }
+
+    // clamp to field bounds, reflect on edges
+    if (ball.y < 0) { ball.y = 0; ball.vy = Math.abs(ball.vy) * 0.5; }
+    if (ball.y > FIELD_HEIGHT) { ball.y = FIELD_HEIGHT; ball.vy = -Math.abs(ball.vy) * 0.5; }
+
+    // ceiling: ball can't go above the stage (below scoreboard)
+    const ceiling = stage.offsetHeight - 20;
+    if (ball.y + ball.z > ceiling) { ball.z = ceiling - ball.y; ball.vz = -Math.abs(ball.vz) * 0.5; }
 
     if (Math.abs(ball.vx) < 0.1) ball.vx = 0;
+    if (Math.abs(ball.vy) < 0.1) ball.vy = 0;
 
     checkFrameCollision();
     if (!paused && graceFrames <= 0) checkGoalLine();
@@ -450,6 +464,7 @@
 
   function checkFrameCollision() {
     if (!charW) measure();
+    if (!charW) return;
 
     for (const [row, col, ch] of HITBOX_L) {
       const r = cellRect(goalL, row, col);
@@ -486,6 +501,7 @@
 
   function checkGoalLine() {
     if (!charW) measure();
+    if (!charW) return;
     const offset = 3;
 
     const llx = goalLineL.offsetLeft;
@@ -556,8 +572,8 @@
     setState(p1, 'idle'); setState(p2, 'idle');
     p1.jumpY = 0; p2.jumpY = 0;
     ball.x = fieldCenter();
-    ball.y = stage.offsetHeight / 2;
-    ball.vx = 0; ball.vy = 0;
+    ball.y = FIELD_HEIGHT / 2;
+    ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0;
     paused = false;
     pausePhase = '';
     respawnDelay = 0;
@@ -580,9 +596,8 @@
 
   function respawn() {
     ball.x = fieldCenter();
-    ball.y = stage.offsetHeight / 2;
-    ball.vx = 0;
-    ball.vy = 0;
+    ball.y = FIELD_HEIGHT / 2;
+    ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0;
     paused = false;
     pausePhase = '';
     respawnDelay = 0;
@@ -636,7 +651,7 @@
       p.nameEl.style.opacity = hideNames ? '0' : '1';
     });
 
-    ballEl.style.transform = `translate(${ball.x}px,${-ball.y}px)`;
+    ballEl.style.transform = `translate(${ball.x}px,${-(ball.y + ball.z)}px)`;
   }
 
   /* ── Main loop ──────────────────────────────────────────── */
@@ -715,9 +730,8 @@
     if (now - lastKickTime > STALL_MS) {
       lastKickTime = now;
       ball.x = stage.offsetWidth / 2;
-      ball.y = stage.offsetHeight / 2;
-      ball.vx = 0;
-      ball.vy = 0;
+      ball.y = FIELD_HEIGHT / 2;
+      ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0;
       graceFrames = RESPAWN_GRACE;
     }
   }

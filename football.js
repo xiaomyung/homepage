@@ -1,32 +1,54 @@
-// ASCII Football — two stickmen compete on a miniature pitch
-// Each game file is a self-contained IIFE that creates a #game-stage
+/**
+ * ASCII Football — two stickmen compete on a miniature pitch.
+ *
+ * Self-contained IIFE that creates a #game-stage element.
+ * When the mouse is idle both players are AI-controlled.
+ * Moving the mouse gives control of player 1's horizontal position.
+ * Kicking is always automatic on proximity for both players.
+ *
+ * Ball physics: 2D ground sliding (x/y) with optional lob (z axis, gravity).
+ * Goals: per-character hitbox collision on ASCII art, diagonal goal-line scoring.
+ * Match: first to WIN_SCORE wins, then new random players are assigned.
+ */
 (function () {
 
   /* ── Config ─────────────────────────────────────────────── */
 
-  const TICK          = 16;   // ~60 FPS
-  const GRAVITY       = 0.3;
-  const BOUNCE        = 0.6;
-  const AIR_FRICTION  = 0.99;
-  const GROUND_FRICTION = 0.944;
-  const CELEBRATE_MS  = 1500;
-  const MATCHEND_MS   = 3000;
-  const RESPAWN_DELAY_MS = 300;
-  const STALL_MS      = 10000; // respawn ball if no kick for this long
-  const PUSH_COOLDOWN = 3000;
-  const PUSH_MIN      = 50;
-  const PUSH_MAX      = 200;
-  const PUSH_ANIM_MS  = 300;
-  const KICK_REACH    = 0.9;  // multiplier on player width
-  const KICK_REACH_Y  = 15;   // vertical px proximity to kick
-  const RESPAWN_GRACE = 30;   // frames to skip goal detection after respawn
-  const MAX_SPEED     = 10;   // max movement speed cap per tick
-  const FIELD_HEIGHT  = 42;   // 3 rows of vertical play area (~3 * lineH)
+  const TICK            = 16;     // ms per frame (~60 FPS)
+  const GRAVITY         = 0.3;    // air-height gravity per tick
+  const AIR_BOUNCE      = 0.6;    // energy kept on air bounce (ball.z)
+  const AIR_FRICTION    = 0.99;   // velocity damping while airborne
+  const GROUND_FRICTION = 0.944;  // velocity damping on the ground
+  const EASING          = 0.08;   // movement interpolation factor
+  const WALK_FRAME_INT  = 6;      // ticks between walk frame advances
+  const MAX_SPEED       = 10;     // max player movement speed per tick
+  const FIELD_HEIGHT    = 42;     // vertical play area in px (~3 character rows)
+  const KICK_REACH_X    = 0.9;    // multiplier on player width for kick proximity
+  const KICK_REACH_Y    = 15;     // vertical px proximity to kick
+  const WIN_SCORE       = 3;
 
-  // 15% chance ball bounces off goal post "|", otherwise passes through
-  const POST_BOUNCE_CHANCE = 0.15;
-  // 20% chance a kick goes toward own goal
-  const OWN_GOAL_CHANCE = 0.2;
+  const CELEBRATE_MS    = 1500;
+  const MATCHEND_MS     = 3000;
+  const RESPAWN_DELAY   = 300;    // ms after players reach positions before ball drops
+  const STALL_MS        = 10000;  // respawn ball if no kick for this long
+  const RESPAWN_GRACE   = 30;     // frames to skip goal detection after respawn
+
+  const PUSH_COOLDOWN   = 3000;
+  const PUSH_MIN        = 50;
+  const PUSH_MAX        = 200;
+  const PUSH_ANIM_MS    = 300;
+  const PUSH_PROXIMITY  = 30;     // max px apart horizontally to trigger push
+  const PUSH_PROXIMITY_Y = 20;    // max px apart vertically to trigger push
+  const PUSH_CHANCE     = 0.03;   // chance per tick when close enough
+  const PUSH_DAMP       = 0.88;   // push velocity decay per tick
+  const PUSH_APPLY      = 0.12;   // fraction of push velocity applied per tick
+
+  const POST_BOUNCE     = 0.15;   // chance ball bounces off goal post "|"
+  const OWN_GOAL_CHANCE = 0.2;    // chance a kick goes toward own goal
+
+  const JUMP_HEIGHT     = 18;     // px amplitude of celebration jump
+  const JUMP_PERIOD     = 400;    // ms for one full jump cycle
+  const NAME_HIDE_DIST  = 35;     // px between players to hide name labels
 
   /* ── Frames ─────────────────────────────────────────────── */
 
@@ -35,23 +57,17 @@
     walk:  [" o \n/| \n/ \\", " o \n |)\n | ", " o \n |\\\n/ \\", " o \n(| \n | "],
     alert: "\\o/\n | \n/\\ ",
     kick:  [" o \n(|)\n |\\ ", " o \n(|)\n |/ ", " o \n(|)\n |_ "],
-    push: " o \n/|\\_\n/\\ ",
+    push:  " o \n/|\\_\n/\\ ",
   };
 
-  /* ── Names ──────────────────────────────────────────────── */
+  /* ── Player surnames ────────────────────────────────────── */
 
   const SURNAMES = [
-    'Messi','Ronaldo','Neymar','Mbappé','Haaland','Salah','De Bruyne',
-    'Modric','Benzema','Lewandowski','Vinícius','Bellingham','Pedri',
-    'Gavi','Saka','Foden','Kane','Son','Mané','Díaz','Griezmann',
-    'Müller','Kimmich','Hakimi','Palmer','Yamal','Rodri','Doku',
+    'Messi', 'Ronaldo', 'Neymar', 'Mbappé', 'Haaland', 'Salah', 'De Bruyne',
+    'Modric', 'Benzema', 'Lewandowski', 'Vinícius', 'Bellingham', 'Pedri',
+    'Gavi', 'Saka', 'Foden', 'Kane', 'Son', 'Mané', 'Díaz', 'Griezmann',
+    'Müller', 'Kimmich', 'Hakimi', 'Palmer', 'Yamal', 'Rodri', 'Doku',
   ];
-
-  function pickName(exclude) {
-    let name;
-    do { name = SURNAMES[Math.floor(Math.random() * SURNAMES.length)]; } while (name === exclude);
-    return name;
-  }
 
   /* ── DOM helpers ────────────────────────────────────────── */
 
@@ -72,44 +88,24 @@
     return el;
   }
 
-  /* ── Stage ──────────────────────────────────────────────── */
+  /* ── DOM setup ──────────────────────────────────────────── */
 
   const stage = document.createElement('div');
   stage.id = 'game-stage';
   document.body.appendChild(stage);
 
-  /* Layer 1: Field border (background, pale grey, scales with screen) */
+  // Layer 1: field border (background, scales with screen width)
   const fieldBorderEl = addPre(stage, '', 'fb-field-border');
 
-  function buildFieldBorder() {
-    if (!charW) measure();
-    if (!charW || !stage.offsetWidth) return;
-    const total = Math.floor(stage.offsetWidth / charW) - 1;
-    if (total < 12) return; // too narrow
-    const w = Math.max(0, total - 2);
-    const lines = [
-      '     ' + '_'.repeat(Math.max(0, total - 10)) + '     ',
-      '    /' + ' '.repeat(Math.max(0, total - 10)) + '\\    ',
-      '   /' + ' '.repeat(Math.max(0, total - 8)) + '\\   ',
-      '  /' + ' '.repeat(Math.max(0, total - 6)) + '\\  ',
-      ' /' + ' '.repeat(Math.max(0, total - 4)) + '\\ ',
-      '/' + '_'.repeat(w) + '\\',
-    ];
-    fieldBorderEl.textContent = lines.join('\n');
-  }
-  requestAnimationFrame(buildFieldBorder);
-  window.addEventListener('resize', buildFieldBorder);
-
-  /* Layer 2: Goal lines (pale grey, scoring hitbox) */
+  // Layer 2: goal lines (scoring boundary hitboxes)
   const goalLineL = addPre(stage, '  /\n / \n/  ', 'fb-goalline fb-goalline-l');
   const goalLineR = addPre(stage, '\\  \n \\ \n  \\', 'fb-goalline fb-goalline-r');
 
-  /* Layer 3: Goals (foreground, bright, collision hitbox) */
+  // Layer 3: goals (collision hitboxes, foreground)
   const goalL = addPre(stage, '     _ _ \n    /  /|\n   /__/_|\n  /__/   \n /   |   \n/____|  ', 'fb-goal fb-goal-l');
   const goalR = addPre(stage, ' _ _    \n|\\  \\   \n|_\\__\\  \n   \\__\\ \n   |   \\\n   |____\\', 'fb-goal fb-goal-r');
 
   const ballEl = addPre(stage, 'o', 'fb-ball');
-
   const scoreboardEl = addPre(stage, '', 'fb-scoreboard');
 
   /* ── Player factory ─────────────────────────────────────── */
@@ -122,35 +118,41 @@
       x: 0, y: 0,
       dir: side === 'right' ? -1 : 1,
       state: 'idle', stateTime: 0, fi: 0, ft: 0,
-      jumpY: 0, moveSpeed: 6,
+      jumpY: 0,
+      moveSpeed: 6,
       lastPush: 0, pushVx: 0, pushVy: 0,
     };
   }
 
-  const nameL = pickName();
-  const nameR = pickName(nameL);
-  const p1 = createPlayer('left', nameL);
-  const p2 = createPlayer('right', nameR);
+  const p1 = createPlayer('left', pickName());
+  const p2 = createPlayer('right', pickName(p1.name));
 
   /* ── Game state ─────────────────────────────────────────── */
 
-  const ball = { x: 0, y: 0, vx: 0, vy: 0, z: 0, vz: 0 }; // z = air height
-  let targetX = 0, lastInput = 0;
-  let scoreL = 0, scoreR = 0;
-  let paused = false, pauseTimer = 0, pausePhase = '', respawnDelay = 0;
+  const ball = { x: 0, y: 0, vx: 0, vy: 0, z: 0, vz: 0 };
+  let targetX = 0;
+  let lastInput = 0;
+  let scoreL = 0;
+  let scoreR = 0;
+  let paused = false;
+  let pauseTimer = 0;
+  let pausePhase = '';
+  let respawnTimer = 0;
   let goalScorer = null;
   let lastKickTime = Date.now();
-  let graceFrames = 0; // skip goal-line detection after respawn
+  let graceFrames = 0;
+  let leftBound = 0;
+  let rightBound = 0;
+  let charW = 0;
+  let lineH = 0;
 
-  let leftBound = 0, rightBound = 0;
-  let charW = 0, lineH = 0;
+  /* ── Measurement & bounds ───────────────────────────────── */
 
-  function updateScoreboard() {
-    scoreboardEl.textContent = p1.name + ' ' + scoreL + ' \u2502 ' + scoreR + ' ' + p2.name;
+  function measure() {
+    if (!goalL.offsetHeight || !goalL.offsetWidth) return;
+    lineH = goalL.offsetHeight / 6;
+    charW = goalL.offsetWidth / 9;
   }
-  updateScoreboard();
-
-  /* ── Bounds & measurement ───────────────────────────────── */
 
   function calcBounds() {
     if (!goalL.offsetWidth || !goalR.offsetWidth) return;
@@ -159,63 +161,42 @@
     if (!charW) measure();
   }
 
-  function measure() {
-    if (!goalL.offsetHeight || !goalL.offsetWidth) return;
-    lineH = goalL.offsetHeight / 6;
-    charW = goalL.offsetWidth / 9;
-  }
-
-  function clampPlayer(p) {
-    const w = p.el.offsetWidth;
-    p.x = Math.max(leftBound, Math.min(rightBound - w, p.x));
-    p.y = Math.max(0, Math.min(FIELD_HEIGHT, p.y));
-  }
-
-  function pickSpeed(distance) {
-    const base = Math.min(distance * 0.1, MAX_SPEED);
-    const offset = (Math.random() - 0.5) * MAX_SPEED;
-    return Math.max(1, Math.min(MAX_SPEED, base + offset));
-  }
-
   function fieldCenter() {
     return (goalL.offsetLeft + goalL.offsetWidth + goalR.offsetLeft) / 2;
   }
 
-  /* ── Init ────────────────────────────────────────────────── */
-
-  function init() {
-    calcBounds();
-    p1.x = startingX(p1);
-    p2.x = startingX(p2);
-    ball.x = stage.offsetWidth / 2;
-    ball.y = FIELD_HEIGHT / 2;
-    ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0;
-
-    // Position goal lines relative to goal edges
-    // Left goal line: top `/` aligns with the right edge of left goal
-    const glLx = goalL.offsetLeft + goalL.offsetWidth - charW * 3;
-    goalLineL.style.left = glLx + 'px';
-    // Right goal line: top `\` aligns with the left edge of right goal
-    const glRx = goalR.offsetLeft;
-    goalLineR.style.left = glRx + 'px';
+  function startingX(p) {
+    const mid = fieldCenter();
+    const w = p.el.offsetWidth;
+    const gap = 40;
+    return p === p1 ? mid - gap - w / 2 : mid + gap - w / 2;
   }
-  requestAnimationFrame(init);
 
-  /* ── Input ──────────────────────────────────────────────── */
-
-  function onInput(clientX) {
-    targetX = clientX - stage.getBoundingClientRect().left;
-    lastInput = Date.now();
+  function playersAtStart() {
+    return Math.abs(p1.x - startingX(p1)) < 5 &&
+           Math.abs(p2.x - startingX(p2)) < 5;
   }
-  document.addEventListener('mousemove', e => onInput(e.clientX));
-  document.addEventListener('touchmove', e => onInput(e.touches[0].clientX), { passive: true });
 
-  function mouseActive() { return Date.now() - lastInput < 2000; }
-  function atRest() { return Math.abs(ball.vx) < 0.5 && Math.abs(ball.vy) < 0.5; }
+  /* ── Utility functions ──────────────────────────────────── */
 
-  /* ── State helpers ──────────────────────────────────────── */
+  function pickName(exclude) {
+    let name;
+    do { name = SURNAMES[Math.floor(Math.random() * SURNAMES.length)]; } while (name === exclude);
+    return name;
+  }
 
-  function setState(p, s) { p.state = s; p.stateTime = 0; p.fi = 0; p.ft = 0; }
+  function pickSpeed(distance) {
+    const base = Math.min(distance * 0.1, MAX_SPEED);
+    const jitter = (Math.random() - 0.5) * MAX_SPEED;
+    return Math.max(1, Math.min(MAX_SPEED, base + jitter));
+  }
+
+  function setState(p, s) {
+    p.state = s;
+    p.stateTime = 0;
+    p.fi = 0;
+    p.ft = 0;
+  }
 
   function getFrame(p) {
     switch (p.state) {
@@ -228,7 +209,56 @@
     }
   }
 
-  /* ── Kick ────────────────────────────────────────────────── */
+  function mouseActive() { return Date.now() - lastInput < 2000; }
+
+  function atRest() {
+    return Math.abs(ball.vx) < 0.5 && Math.abs(ball.vy) < 0.5 && ball.z < 1;
+  }
+
+  function clampPlayer(p) {
+    const w = p.el.offsetWidth;
+    p.x = Math.max(leftBound, Math.min(rightBound - w, p.x));
+    p.y = Math.max(0, Math.min(FIELD_HEIGHT, p.y));
+  }
+
+  function updateScoreboard() {
+    scoreboardEl.textContent = p1.name + ' ' + scoreL + ' \u2502 ' + scoreR + ' ' + p2.name;
+  }
+
+  /* ── Field border (scales with screen width) ────────────── */
+
+  function buildFieldBorder() {
+    if (!charW) measure();
+    if (!charW || !stage.offsetWidth) return;
+    const total = Math.floor(stage.offsetWidth / charW) - 1;
+    if (total < 12) return;
+    const w = Math.max(0, total - 2);
+    const lines = [
+      '     ' + '_'.repeat(Math.max(0, total - 10)) + '     ',
+      '    /' + ' '.repeat(Math.max(0, total - 10)) + '\\    ',
+      '   /' + ' '.repeat(Math.max(0, total - 8)) + '\\   ',
+      '  /' + ' '.repeat(Math.max(0, total - 6)) + '\\  ',
+      ' /' + ' '.repeat(Math.max(0, total - 4)) + '\\ ',
+      '/' + '_'.repeat(w) + '\\',
+    ];
+    fieldBorderEl.textContent = lines.join('\n');
+  }
+
+  requestAnimationFrame(buildFieldBorder);
+  window.addEventListener('resize', buildFieldBorder);
+
+  /* ── Ball ────────────────────────────────────────────────── */
+
+  function resetBall() {
+    ball.x = fieldCenter();
+    ball.y = FIELD_HEIGHT / 2;
+    ball.vx = 0;
+    ball.vy = 0;
+    ball.z = 0;
+    ball.vz = 0;
+    graceFrames = RESPAWN_GRACE;
+    lastKickTime = Date.now();
+  }
 
   function kick(p) {
     const power = 0.3 + Math.random() * 0.7;
@@ -236,198 +266,80 @@
     const force = 8 + power * 14;
     const mid = stage.offsetWidth / 2;
     const px = p.x + p.el.offsetWidth / 2;
+
+    // kick toward opponent's goal, 20% chance own-goal
     let dir = px < mid ? 1 : -1;
     if (Math.random() < OWN_GOAL_CHANCE) dir = -dir;
+
     ball.vx = dir * force * (1 - angle);
     ball.vy = (Math.random() - 0.5) * force * 0.4;
-    // steep angle = lob into the air, flat angle = ground kick
+
+    // steep angle → lob into the air
     ball.vz = angle > 0.5 ? force * angle * 0.6 : 0;
+
     lastKickTime = Date.now();
   }
 
   function canKick(p) {
     if (p.state === 'kick') return false;
     const center = p.x + p.el.offsetWidth / 2;
-    const closeX = Math.abs(ball.x - center) < p.el.offsetWidth * KICK_REACH;
+    const closeX = Math.abs(ball.x - center) < p.el.offsetWidth * KICK_REACH_X;
     const closeY = Math.abs(ball.y - p.y) < KICK_REACH_Y;
     return atRest() && closeX && closeY;
   }
 
-  /* ── Shared state tick (kick, push, jump — identical for AI & player) ── */
-
-  function tickShared(p) {
-    switch (p.state) {
-      case 'kick':
-        if (p.ft % 6 === 0 && p.ft > 0) {
-          p.fi++;
-          if (p.fi === 1) kick(p);
-          if (p.fi >= FRAMES.kick.length) setState(p, 'idle');
-        }
-        return true;
-      case 'push':
-        if (p.stateTime >= PUSH_ANIM_MS) setState(p, 'idle');
-        return true;
-      case 'jump': {
-        const phase = (p.stateTime % 400) / 400;
-        p.jumpY = Math.sin(phase * Math.PI) * 18;
-        if (p.stateTime > CELEBRATE_MS) { p.jumpY = 0; setState(p, 'idle'); }
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /* ── Walk helper ────────────────────────────────────────── */
-
-  function walkToward(p, targetPx, targetPy) {
-    const w = p.el.offsetWidth;
-    const dx = targetPx - (p.x + w / 2);
-    p.x += Math.sign(dx) * Math.min(Math.abs(dx) * 0.08, p.moveSpeed);
-    p.dir = dx > 0 ? 1 : -1;
-    if (targetPy !== undefined) {
-      const dy = targetPy - p.y;
-      p.y += Math.sign(dy) * Math.min(Math.abs(dy) * 0.08, p.moveSpeed);
-    }
-    if (p.ft % 6 === 0) p.fi = (p.fi + 1) % FRAMES.walk.length;
-    clampPlayer(p);
-  }
-
-  /* ── AI update ──────────────────────────────────────────── */
-
-  function updateAI(p) {
-    p.stateTime += TICK;
-    p.ft++;
-    if (tickShared(p)) return;
-
-    if (p.state === 'alert') {
-      if (p.stateTime >= 300) setState(p, 'walk');
-      return;
-    }
-
-    // idle or walk: chase the ball
-    if (canKick(p)) { setState(p, 'kick'); return; }
-
-    if (p.state === 'idle' && p.stateTime > 400) {
-      const dist = Math.abs(ball.x - (p.x + p.el.offsetWidth / 2));
-      p.moveSpeed = pickSpeed(dist);
-      setState(p, 'walk');
-    }
-
-    if (p.state === 'walk') {
-      const targetPx = atRest() ? ball.x : ball.x + ball.vx * 10;
-      const targetPy = ball.y;
-      const center = p.x + p.el.offsetWidth / 2;
-      const dx = targetPx - center;
-      const w = p.el.offsetWidth;
-      const atEdge = p.x <= leftBound || p.x >= rightBound - w;
-
-      if (Math.abs(dx) < 8 || (atEdge && Math.abs(dx) < w)) {
-        setState(p, 'idle');
-      } else {
-        walkToward(p, targetPx, targetPy);
-      }
-    }
-  }
-
-  /* ── Player (mouse) update ──────────────────────────────── */
-
-  function updateHuman(p) {
-    p.stateTime += TICK;
-    p.ft++;
-    if (tickShared(p)) return;
-    if (canKick(p)) { setState(p, 'kick'); return; }
-
-    const center = p.x + p.el.offsetWidth / 2;
-    const dx = targetX - center;
-
-    if (Math.abs(dx) > 5) {
-      if (p.state !== 'walk') {
-        p.moveSpeed = pickSpeed(Math.abs(dx));
-        setState(p, 'walk');
-      }
-      walkToward(p, targetX, ball.y);
-    } else {
-      if (p.state !== 'idle') setState(p, 'idle');
-    }
-  }
-
-  /* ── Push mechanic ──────────────────────────────────────── */
-
-  function tryPush(a, b, now) {
-    if (now - a.lastPush < PUSH_COOLDOWN) return;
-    if (a.state === 'push' || a.state === 'kick' || a.state === 'jump') return;
-    const ca = a.x + a.el.offsetWidth / 2;
-    const cb = b.x + b.el.offsetWidth / 2;
-    const distX = Math.abs(ca - cb);
-    const distY = Math.abs(a.y - b.y);
-    if (distX > 30 || distY > 20) return;
-    if (Math.random() > 0.03) return;
-
-    a.lastPush = now;
-    a.dir = ca < cb ? 1 : -1;
-    setState(a, 'push');
-    const force = PUSH_MIN + Math.random() * (PUSH_MAX - PUSH_MIN);
-    b.pushVx = a.dir * force;
-    b.pushVy = (Math.random() - 0.5) * force * 0.5; // diagonal/vertical push
-  }
-
-  function applyPush(p) {
-    if (Math.abs(p.pushVx) > 0.5) {
-      p.x += p.pushVx * 0.12;
-      p.pushVx *= 0.88;
-    } else { p.pushVx = 0; }
-    if (Math.abs(p.pushVy) > 0.5) {
-      p.y += p.pushVy * 0.12;
-      p.pushVy *= 0.88;
-    } else { p.pushVy = 0; }
-    clampPlayer(p);
-  }
-
-  /* ── Ball physics ───────────────────────────────────────── */
-
   function updateBall() {
     if (paused) return;
-    if (Math.abs(ball.vx) < 0.01 && Math.abs(ball.vy) < 0.01) return;
 
+    const moving = Math.abs(ball.vx) > 0.01 || Math.abs(ball.vy) > 0.01 ||
+                   ball.z > 0 || ball.vz > 0;
+    if (!moving) return;
+
+    // ground movement
     ball.x += ball.vx;
     ball.y += ball.vy;
-    ball.vx *= GROUND_FRICTION;
-    ball.vy *= GROUND_FRICTION;
+    const friction = ball.z > 0 ? AIR_FRICTION : GROUND_FRICTION;
+    ball.vx *= friction;
+    ball.vy *= friction;
 
-    // air physics: z = height above ground, gravity pulls it down
+    // air physics
     if (ball.z > 0 || ball.vz > 0) {
       ball.vz -= GRAVITY;
       ball.z += ball.vz;
       if (ball.z <= 0) {
         ball.z = 0;
-        ball.vz = Math.abs(ball.vz) > 1.5 ? Math.abs(ball.vz) * 0.5 : 0;
+        ball.vz = Math.abs(ball.vz) > 1.5 ? Math.abs(ball.vz) * AIR_BOUNCE : 0;
       }
     }
 
-    // clamp to field bounds, reflect on edges
+    // field-Y bounds
     if (ball.y < 0) { ball.y = 0; ball.vy = Math.abs(ball.vy) * 0.5; }
     if (ball.y > FIELD_HEIGHT) { ball.y = FIELD_HEIGHT; ball.vy = -Math.abs(ball.vy) * 0.5; }
 
-    // ceiling: ball can't go above the stage (below scoreboard)
+    // ceiling (keep ball below scoreboard)
     const ceiling = stage.offsetHeight - 20;
-    if (ball.y + ball.z > ceiling) { ball.z = ceiling - ball.y; ball.vz = -Math.abs(ball.vz) * 0.5; }
+    if (ball.y + ball.z > ceiling) {
+      ball.z = ceiling - ball.y;
+      ball.vz = -Math.abs(ball.vz) * AIR_BOUNCE;
+    }
 
+    // velocity cutoff
     if (Math.abs(ball.vx) < 0.1) ball.vx = 0;
     if (Math.abs(ball.vy) < 0.1) ball.vy = 0;
 
     checkFrameCollision();
     if (!paused && graceFrames <= 0) checkGoalLine();
 
-    // safety: ball far off screen
+    // safety: ball escaped far off screen
     const sw = stage.offsetWidth;
     if (!paused && (ball.x < -50 || ball.x > sw + 50)) {
       scoreGoal(ball.x < 0 ? 'left' : 'right');
     }
   }
 
-  /* ── Goal frame collision (per-character hitboxes) ──────── */
+  /* ── Goal frame collision ───────────────────────────────── */
 
-  // [row, col, char] — row 0 = top of ASCII art, row 5 = bottom
+  // Per-character hitboxes: [row, col, char] — row 0 = top of 6-line ASCII art
   const HITBOX_L = [
     [0,5,'_'],[0,7,'_'],
     [1,4,'/'],[1,7,'/'],[1,8,'|'],
@@ -445,58 +357,49 @@
     [5,3,'|'],[5,4,'_'],[5,5,'_'],[5,6,'_'],[5,7,'_'],[5,8,'\\'],
   ];
 
-  // Goal-line cells (scoring boundary — diagonal along the front opening)
-  // Goal line cells: 3 lines tall, `/` at cols 2,1,0 (left) and `\` at cols 0,1,2 (right)
+  // Goal-line scoring boundary: 3-line diagonal at goal opening
   const SCORELINE_L = [[0, 2], [1, 1], [2, 0]];
   const SCORELINE_R = [[0, 0], [1, 1], [2, 2]];
 
   function cellRect(goalEl, row, col) {
-    const x = goalEl.offsetLeft + col * charW;
-    const y = (5 - row) * lineH; // 7 lines total, row 6 = bottom
-    return { x, y, w: charW, h: lineH };
+    return {
+      x: goalEl.offsetLeft + col * charW,
+      y: (5 - row) * lineH,
+      w: charW,
+      h: lineH,
+    };
   }
 
-  function ballHits(r) {
+  function ballOverlaps(r) {
     const br = 4;
     return ball.x + br > r.x && ball.x - br < r.x + r.w &&
            ball.y + br > r.y && ball.y - br < r.y + r.h;
   }
 
+  function bounceGoal(hitbox, goalEl, bounceDir) {
+    for (const [row, col, ch] of hitbox) {
+      const r = cellRect(goalEl, row, col);
+      if (!ballOverlaps(r)) continue;
+      if (ch === '|') {
+        // post: 15% bounce, 85% pass through
+        if (Math.random() < POST_BOUNCE) {
+          ball.x = bounceDir > 0 ? r.x + r.w + 2 : r.x - 2;
+          ball.vx = bounceDir * Math.abs(ball.vx) * 0.7;
+        }
+      } else {
+        ball.x = bounceDir > 0 ? r.x + r.w + 2 : r.x - 2;
+        ball.vx = bounceDir * Math.abs(ball.vx) * 0.8;
+        if (ch === '/' || ch === '\\') ball.vy += (Math.random() - 0.5) * 3;
+      }
+      return;
+    }
+  }
+
   function checkFrameCollision() {
     if (!charW) measure();
     if (!charW) return;
-
-    for (const [row, col, ch] of HITBOX_L) {
-      const r = cellRect(goalL, row, col);
-      if (!ballHits(r)) continue;
-      if (ch === '|') {
-        if (Math.random() < POST_BOUNCE_CHANCE) {
-          ball.x = r.x + r.w + 2;
-          ball.vx = Math.abs(ball.vx) * 0.7;
-        }
-      } else {
-        ball.x = r.x + r.w + 2;
-        ball.vx = Math.abs(ball.vx) * 0.8;
-        if (ch === '/' || ch === '\\') ball.vy += (Math.random() - 0.5) * 3;
-      }
-      return;
-    }
-
-    for (const [row, col, ch] of HITBOX_R) {
-      const r = cellRect(goalR, row, col);
-      if (!ballHits(r)) continue;
-      if (ch === '|') {
-        if (Math.random() < POST_BOUNCE_CHANCE) {
-          ball.x = r.x - 2;
-          ball.vx = -Math.abs(ball.vx) * 0.7;
-        }
-      } else {
-        ball.x = r.x - 2;
-        ball.vx = -Math.abs(ball.vx) * 0.8;
-        if (ch === '/' || ch === '\\') ball.vy += (Math.random() - 0.5) * 3;
-      }
-      return;
-    }
+    bounceGoal(HITBOX_L, goalL, 1);
+    bounceGoal(HITBOX_R, goalR, -1);
   }
 
   function checkGoalLine() {
@@ -505,7 +408,7 @@
     const offset = 3;
 
     const llx = goalLineL.offsetLeft;
-    const glh = goalLineL.offsetHeight / 3; // 3-line element
+    const glh = goalLineL.offsetHeight / 3;
     for (const [row, col] of SCORELINE_L) {
       const cx = llx + col * charW;
       const cy = (2 - row) * glh;
@@ -527,9 +430,136 @@
     }
   }
 
-  /* ── Scoring ────────────────────────────────────────────── */
+  /* ── Player logic ───────────────────────────────────────── */
 
-  const WIN_SCORE = 3;
+  function walkToward(p, tx, ty) {
+    const w = p.el.offsetWidth;
+    const dx = tx - (p.x + w / 2);
+    p.x += Math.sign(dx) * Math.min(Math.abs(dx) * EASING, p.moveSpeed);
+    p.dir = dx > 0 ? 1 : -1;
+    if (ty !== undefined) {
+      const dy = ty - p.y;
+      p.y += Math.sign(dy) * Math.min(Math.abs(dy) * EASING, p.moveSpeed);
+    }
+    if (p.ft % WALK_FRAME_INT === 0) p.fi = (p.fi + 1) % FRAMES.walk.length;
+    clampPlayer(p);
+  }
+
+  // Handles kick, push, jump states — shared between AI and human
+  function tickShared(p) {
+    switch (p.state) {
+      case 'kick':
+        if (p.ft % WALK_FRAME_INT === 0 && p.ft > 0) {
+          p.fi++;
+          if (p.fi === 1) kick(p);
+          if (p.fi >= FRAMES.kick.length) setState(p, 'idle');
+        }
+        return true;
+      case 'push':
+        if (p.stateTime >= PUSH_ANIM_MS) setState(p, 'idle');
+        return true;
+      case 'jump': {
+        const phase = (p.stateTime % JUMP_PERIOD) / JUMP_PERIOD;
+        p.jumpY = Math.sin(phase * Math.PI) * JUMP_HEIGHT;
+        if (p.stateTime > CELEBRATE_MS) {
+          p.jumpY = 0;
+          setState(p, 'idle');
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function updateAI(p) {
+    p.stateTime += TICK;
+    p.ft++;
+    if (tickShared(p)) return;
+
+    if (p.state === 'alert') {
+      if (p.stateTime >= 300) setState(p, 'walk');
+      return;
+    }
+
+    if (canKick(p)) { setState(p, 'kick'); return; }
+
+    if (p.state === 'idle' && p.stateTime > 400) {
+      p.moveSpeed = pickSpeed(Math.abs(ball.x - (p.x + p.el.offsetWidth / 2)));
+      setState(p, 'walk');
+    }
+
+    if (p.state === 'walk') {
+      const tx = atRest() ? ball.x : ball.x + ball.vx * 10;
+      const ty = ball.y;
+      const center = p.x + p.el.offsetWidth / 2;
+      const dx = tx - center;
+      const w = p.el.offsetWidth;
+      const atEdge = p.x <= leftBound || p.x >= rightBound - w;
+
+      if (Math.abs(dx) < 8 || (atEdge && Math.abs(dx) < w)) {
+        setState(p, 'idle');
+      } else {
+        walkToward(p, tx, ty);
+      }
+    }
+  }
+
+  function updateHuman(p) {
+    p.stateTime += TICK;
+    p.ft++;
+    if (tickShared(p)) return;
+    if (canKick(p)) { setState(p, 'kick'); return; }
+
+    const dx = targetX - (p.x + p.el.offsetWidth / 2);
+    if (Math.abs(dx) > 5) {
+      if (p.state !== 'walk') {
+        p.moveSpeed = pickSpeed(Math.abs(dx));
+        setState(p, 'walk');
+      }
+      walkToward(p, targetX, ball.y);
+    } else {
+      if (p.state !== 'idle') setState(p, 'idle');
+    }
+  }
+
+  /* ── Push mechanic ──────────────────────────────────────── */
+
+  function tryPush(a, b, now) {
+    if (now - a.lastPush < PUSH_COOLDOWN) return;
+    if (a.state === 'push' || a.state === 'kick' || a.state === 'jump') return;
+
+    const ca = a.x + a.el.offsetWidth / 2;
+    const cb = b.x + b.el.offsetWidth / 2;
+    if (Math.abs(ca - cb) > PUSH_PROXIMITY) return;
+    if (Math.abs(a.y - b.y) > PUSH_PROXIMITY_Y) return;
+    if (Math.random() > PUSH_CHANCE) return;
+
+    a.lastPush = now;
+    a.dir = ca < cb ? 1 : -1;
+    setState(a, 'push');
+
+    const force = PUSH_MIN + Math.random() * (PUSH_MAX - PUSH_MIN);
+    b.pushVx = a.dir * force;
+    b.pushVy = (Math.random() - 0.5) * force * 0.5;
+  }
+
+  function applyPush(p) {
+    if (Math.abs(p.pushVx) > 0.5) {
+      p.x += p.pushVx * PUSH_APPLY;
+      p.pushVx *= PUSH_DAMP;
+    } else {
+      p.pushVx = 0;
+    }
+    if (Math.abs(p.pushVy) > 0.5) {
+      p.y += p.pushVy * PUSH_APPLY;
+      p.pushVy *= PUSH_DAMP;
+    } else {
+      p.pushVy = 0;
+    }
+    clampPlayer(p);
+  }
+
+  /* ── Scoring ────────────────────────────────────────────── */
 
   function scoreGoal(side) {
     paused = true;
@@ -554,79 +584,70 @@
     if (scoreL >= WIN_SCORE || scoreR >= WIN_SCORE) {
       pausePhase = 'matchend';
       pauseTimer = MATCHEND_MS;
-      const winner = scoreL >= WIN_SCORE ? p1.name : p2.name;
-      scoreboardEl.textContent = 'Winner: ' + winner;
+      scoreboardEl.textContent = 'Winner: ' + (scoreL >= WIN_SCORE ? p1.name : p2.name);
     }
   }
 
-  function resetMatch() {
-    const newL = pickName();
-    const newR = pickName(newL);
-    p1.name = newL; p1.nameEl.textContent = newL;
-    p2.name = newR; p2.nameEl.textContent = newR;
-    scoreL = 0; scoreR = 0;
-    p1.x = startingX(p1);
-    p2.x = startingX(p2);
-    p1.dir = 1; p2.dir = -1;
-    p1.y = 0; p2.y = 0;
-    setState(p1, 'idle'); setState(p2, 'idle');
-    p1.jumpY = 0; p2.jumpY = 0;
-    ball.x = fieldCenter();
-    ball.y = FIELD_HEIGHT / 2;
-    ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0;
-    paused = false;
-    pausePhase = '';
-    respawnDelay = 0;
-    goalScorer = null;
-    graceFrames = RESPAWN_GRACE;
-    lastKickTime = Date.now();
-    updateScoreboard();
-  }
-
-  function startingX(p) {
-    const mid = fieldCenter();
-    const w = p.el.offsetWidth;
-    const offset = 40;
-    return p === p1 ? mid - offset - w / 2 : mid + offset - w / 2;
-  }
-
-  function playersAtStart() {
-    return Math.abs(p1.x - startingX(p1)) < 5 && Math.abs(p2.x - startingX(p2)) < 5;
-  }
-
   function respawn() {
-    ball.x = fieldCenter();
-    ball.y = FIELD_HEIGHT / 2;
-    ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0;
+    resetBall();
     paused = false;
     pausePhase = '';
-    respawnDelay = 0;
+    respawnTimer = 0;
     goalScorer = null;
-    graceFrames = RESPAWN_GRACE;
     p1.jumpY = 0;
     p2.jumpY = 0;
-    lastKickTime = Date.now();
+  }
+
+  function resetMatch() {
+    p1.name = pickName();
+    p2.name = pickName(p1.name);
+    p1.nameEl.textContent = p1.name;
+    p2.nameEl.textContent = p2.name;
+    scoreL = 0;
+    scoreR = 0;
+    p1.x = startingX(p1);
+    p2.x = startingX(p2);
+    p1.y = 0;
+    p2.y = 0;
+    p1.dir = 1;
+    p2.dir = -1;
+    setState(p1, 'idle');
+    setState(p2, 'idle');
+    p1.jumpY = 0;
+    p2.jumpY = 0;
+    resetBall();
+    paused = false;
+    pausePhase = '';
+    respawnTimer = 0;
+    goalScorer = null;
+    updateScoreboard();
   }
 
   /* ── Celebration particles ──────────────────────────────── */
 
   function celebrate(cx) {
-    for (let i = 0, n = 6 + (Math.random() * 4 | 0); i < n; i++) {
-      const el = document.createElement('span');
-      el.textContent = Math.random() < 0.5 ? '*' : '\u2726';
-      el.style.cssText = 'position:absolute;pointer-events:none;font-size:0.8rem;color:rgba(255,255,255,0.5)';
-      el.style.left = cx + 'px';
-      el.style.bottom = '30px';
-      stage.appendChild(el);
+    const count = 6 + (Math.random() * 4 | 0);
+    for (let i = 0; i < count; i++) {
+      const spark = document.createElement('span');
+      spark.textContent = Math.random() < 0.5 ? '*' : '\u2726';
+      spark.style.cssText = 'position:absolute;pointer-events:none;font-size:0.8rem;color:rgba(255,255,255,0.5)';
+      spark.style.left = cx + 'px';
+      spark.style.bottom = '30px';
+      stage.appendChild(spark);
 
       const pvx = (Math.random() - 0.5) * 6;
       const pvy = -(2 + Math.random() * 4);
       let sx = 0, sy = 0, op = 1, f = 0;
-      (function tick() {
-        f++; sx += pvx; sy += pvy + f * 0.15; op -= 0.02;
-        el.style.transform = `translate(${sx}px,${sy}px)`;
-        el.style.opacity = Math.max(0, op);
-        if (op > 0 && f < 50) requestAnimationFrame(tick); else el.remove();
+
+      (function animate() {
+        f++;
+        sx += pvx;
+        sy += pvy + f * 0.15;
+        op -= 0.02;
+        spark.style.transform = `translate(${sx}px,${sy}px)`;
+        spark.style.opacity = Math.max(0, op);
+        if (op > 0 && f < 50) requestAnimationFrame(animate);
+        else spark.remove();
       })();
     }
   }
@@ -636,7 +657,7 @@
   function render() {
     const c1 = p1.x + p1.el.offsetWidth / 2;
     const c2 = p2.x + p2.el.offsetWidth / 2;
-    const hideNames = Math.abs(c1 - c2) < 35;
+    const hideNames = Math.abs(c1 - c2) < NAME_HIDE_DIST;
 
     [p1, p2].forEach(p => {
       p.el.textContent = getFrame(p);
@@ -656,28 +677,42 @@
 
   /* ── Main loop ──────────────────────────────────────────── */
 
+  function init() {
+    calcBounds();
+    p1.x = startingX(p1);
+    p2.x = startingX(p2);
+    resetBall();
+    // position goal lines relative to goal edges
+    if (charW) {
+      goalLineL.style.left = (goalL.offsetLeft + goalL.offsetWidth - charW * 3) + 'px';
+      goalLineR.style.left = goalR.offsetLeft + 'px';
+    }
+    updateScoreboard();
+  }
+
   function update() {
     calcBounds();
 
     if (paused) {
+      // match end: winner celebrates until timer expires
       if (pausePhase === 'matchend') {
         pauseTimer -= TICK;
-        // winner celebrates continuously
         if (goalScorer) {
           goalScorer.stateTime += TICK;
-          goalScorer.jumpY = Math.sin((goalScorer.stateTime % 400) / 400 * Math.PI) * 18;
+          goalScorer.jumpY = Math.sin((goalScorer.stateTime % JUMP_PERIOD) / JUMP_PERIOD * Math.PI) * JUMP_HEIGHT;
           goalScorer.state = 'jump';
         }
         if (pauseTimer <= 0) resetMatch();
         return;
       }
 
+      // post-goal celebration
       if (pausePhase === 'celebrate') {
         pauseTimer -= TICK;
         [p1, p2].forEach(p => {
           if (p.state === 'jump') {
             p.stateTime += TICK;
-            p.jumpY = Math.sin((p.stateTime % 400) / 400 * Math.PI) * 18;
+            p.jumpY = Math.sin((p.stateTime % JUMP_PERIOD) / JUMP_PERIOD * Math.PI) * JUMP_HEIGHT;
           }
         });
         if (pauseTimer <= 0) {
@@ -687,38 +722,51 @@
           setState(p1, 'walk');
           setState(p2, 'walk');
         }
-      } else if (pausePhase === 'reposition') {
-        // walk both players to starting positions
+        return;
+      }
+
+      // walk to starting positions
+      if (pausePhase === 'reposition') {
         [p1, p2].forEach(p => {
           p.stateTime += TICK;
           p.ft++;
-          const target = startingX(p);
-          const dx = target - p.x;
-          if (Math.abs(dx) > 5) {
+          const tx = startingX(p);
+          const dx = tx - p.x;
+          const dy = 0 - p.y; // return to y=0
+          if (Math.abs(dx) > 5 || Math.abs(dy) > 3) {
             p.x += Math.sign(dx) * Math.min(Math.abs(dx) * 0.1, 6);
+            p.y += Math.sign(dy) * Math.min(Math.abs(dy) * 0.1, 4);
             p.dir = dx > 0 ? 1 : -1;
-            if (p.ft % 6 === 0) p.fi = (p.fi + 1) % FRAMES.walk.length;
+            if (p.ft % WALK_FRAME_INT === 0) p.fi = (p.fi + 1) % FRAMES.walk.length;
           } else {
-            p.x = target;
+            p.x = tx;
+            p.y = 0;
             if (p.state !== 'idle') setState(p, 'idle');
           }
         });
         if (playersAtStart()) {
-          if (respawnDelay <= 0) {
-            respawnDelay = RESPAWN_DELAY_MS;
+          if (respawnTimer <= 0) {
+            respawnTimer = RESPAWN_DELAY;
             pausePhase = 'waiting';
           }
         }
-      } else if (pausePhase === 'waiting') {
-        respawnDelay -= TICK;
-        if (respawnDelay <= 0) respawn();
+        return;
+      }
+
+      // wait before ball drop
+      if (pausePhase === 'waiting') {
+        respawnTimer -= TICK;
+        if (respawnTimer <= 0) respawn();
+        return;
       }
       return;
     }
 
+    // active play
     if (graceFrames > 0) graceFrames--;
 
-    if (mouseActive()) updateHuman(p1); else updateAI(p1);
+    if (mouseActive()) updateHuman(p1);
+    else updateAI(p1);
     updateAI(p2);
 
     const now = Date.now();
@@ -727,18 +775,35 @@
     applyPush(p1);
     applyPush(p2);
 
+    // stall detection
     if (now - lastKickTime > STALL_MS) {
       lastKickTime = now;
-      ball.x = stage.offsetWidth / 2;
-      ball.y = FIELD_HEIGHT / 2;
-      ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0;
-      graceFrames = RESPAWN_GRACE;
+      resetBall();
     }
   }
 
+  /* ── Input ──────────────────────────────────────────────── */
+
+  function onInput(clientX) {
+    targetX = clientX - stage.getBoundingClientRect().left;
+    lastInput = Date.now();
+  }
+
+  document.addEventListener('mousemove', e => onInput(e.clientX));
+  document.addEventListener('touchmove', e => onInput(e.touches[0].clientX), { passive: true });
+
+  /* ── Start ──────────────────────────────────────────────── */
+
+  requestAnimationFrame(init);
+
   let last = 0;
   (function loop(now) {
-    if (now - last >= TICK) { last = now; update(); updateBall(); render(); }
+    if (now - last >= TICK) {
+      last = now;
+      update();
+      updateBall();
+      render();
+    }
     requestAnimationFrame(loop);
   })(0);
 

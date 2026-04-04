@@ -238,7 +238,7 @@ footer {
   position: relative;
   width: 100%;
   max-width: 900px;
-  height: 85px;
+  height: 120px;
   overflow: hidden;
   margin-top: 0.75rem;
 }
@@ -258,6 +258,13 @@ footer {
 
 /* ── Football game ── */
 
+#game-stage .fb-field-border {
+  color: rgba(255,255,255,0.12);
+  pointer-events: none;
+  left: 0 !important;
+  width: 100%;
+}
+
 #game-stage .fb-player,
 #game-stage .fb-ball {
   bottom: 10px;
@@ -266,12 +273,12 @@ footer {
 #game-stage .fb-goalline {
   color: rgba(255,255,255,0.12);
   pointer-events: none;
+  bottom: 10px;
 }
 
-#game-stage .fb-goalline-l { left: 30px; }
-#game-stage .fb-goalline-r { left: auto !important; right: 30px; }
 
-#game-stage .fb-goal { color: rgba(255,255,255,0.3); }
+
+#game-stage .fb-goal { color: rgba(255,255,255,0.3); pointer-events: none; bottom: 10px; }
 #game-stage .fb-goal-l { left: 30px; }
 #game-stage .fb-goal-r { left: auto !important; right: 30px; }
 

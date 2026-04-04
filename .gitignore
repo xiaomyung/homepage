@@ -2,4 +2,5 @@ CLAUDE.md
 .env
 *.key
 *.crt
-drafts.txt
+misc
+misc/*

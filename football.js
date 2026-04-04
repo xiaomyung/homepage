@@ -63,7 +63,7 @@
 
   // Player hitbox (for goal collision)
   const PLAYER_HB_W       = 3;       // width in chars
-  const PLAYER_HB_H       = 1.9;     // height in rows (< 2-row goal opening)
+  const PLAYER_HB_H       = 1.9;     // height in rows (max ball.z player can kick)
 
   // Display
   const JUMP_HEIGHT       = 18;      // px amplitude of celebration jump

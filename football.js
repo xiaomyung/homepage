@@ -56,9 +56,9 @@
 
   const FRAMES = {
     idle:  " o \n(|)\n/\\ ",
-    walk:  [" o \n/| \n/ \\", " o \n |)\n | ", " o \n |\\\n/ \\", " o \n(| \n | "],
+    walk:  ["  o\n//\\_\n/ \\", "  o\n(/)\n | ", "  o\n//\\_\n/ \\", "  o\n(/)\n | "],
     alert: "\\o/\n | \n/\\ ",
-    kick:  [" o \n(|)\n |\\ ", " o \n(|)\n |/ ", " o \n(|)\n |_ "],
+    kick:  [" o \n(|)\n |( ", " o \n(|)\n |\\_", " o \n(|)\n |) "],
     push:  " o \n(|\\_@\n/\\ ",
   };
 
@@ -204,7 +204,8 @@
   function getFrame(p) {
     switch (p.state) {
       case 'walk':  return FRAMES.walk[p.fi % FRAMES.walk.length];
-      case 'kick':  return FRAMES.kick[Math.min(p.fi, FRAMES.kick.length - 1)];
+      case 'kick':
+      case 'airkick': return FRAMES.kick[Math.min(p.fi, FRAMES.kick.length - 1)];
       case 'jump':  return FRAMES.alert;
       case 'push':  return FRAMES.push;
       case 'alert': return FRAMES.alert;
@@ -312,7 +313,7 @@
   }
 
   function canKick(p) {
-    if (p.state === 'kick') return false;
+    if (p.state === 'kick' || p.state === 'airkick') return false;
     if (ball.z > PLAYER_HB_H * lineH) return false; // ball too high to reach
     const center = p.x + p.el.offsetWidth / 2;
     const closeX = Math.abs(ball.x - center) < p.el.offsetWidth * KICK_REACH_X;
@@ -320,7 +321,18 @@
     return closeX && closeY;
   }
 
+  function startKick(p) {
+    if (ball.z > 1) {
+      p.airKickZ = ball.z;
+      p.airKickFired = false;
+      setState(p, 'airkick');
+    } else {
+      setState(p, 'kick');
+    }
+  }
+
   function updateBall() {
+    if (paused) return;
     const moving = Math.abs(ball.vx) > 0.01 || Math.abs(ball.vy) > 0.01 ||
                    ball.z > 0 || ball.vz > 0;
     if (!moving) return;
@@ -360,10 +372,10 @@
     checkFrameCollision();
     if (!paused && graceFrames <= 0) checkGoalLine();
 
-    // safety: ball escaped far off screen
+    // out of bounds — no goal, just reposition and respawn
     const sw = stage.offsetWidth;
     if (!paused && (ball.x < -50 || ball.x > sw + 50)) {
-      scoreGoal(ball.x < 0 ? 'left' : 'right');
+      ballOut();
     }
   }
 
@@ -420,31 +432,14 @@
   function checkGoalLine() {
     if (!charW) measure();
     if (!charW) return;
-    // ball must be below crossbar height to score (no goals from lobs over the top)
+    // ball must be below crossbar height to score
     if (ball.z > 2 * lineH) return;
-    const offset = 3;
-
-    const llx = goalLineL.offsetLeft;
-    const glh = goalLineL.offsetHeight / 3;
-    for (const [row, col] of SCORELINE_L) {
-      const cx = llx + col * charW;
-      const cy = (2 - row) * glh;
-      if (ball.x < cx - offset && ball.y >= cy && ball.y <= cy + glh) {
-        scoreGoal('left');
-        return;
-      }
-    }
-
-    const rlx = goalLineR.offsetLeft;
-    const grh = goalLineR.offsetHeight / 3;
-    for (const [row, col] of SCORELINE_R) {
-      const cx = rlx + col * charW;
-      const cy = (2 - row) * grh;
-      if (ball.x > cx + offset && ball.y >= cy && ball.y <= cy + grh) {
-        scoreGoal('right');
-        return;
-      }
-    }
+    // score when ball fully passes the visible stroke of the outermost diagonal char
+    // left `/`: ball must pass its left edge; right `\`: ball must pass its right edge
+    const scoreL = goalLineL.offsetLeft + 2 * charW - charW / 2;
+    const scoreR = goalLineR.offsetLeft + charW + charW / 2;
+    if (ball.x < scoreL) { scoreGoal('left'); return; }
+    if (ball.x > scoreR) { scoreGoal('right'); return; }
   }
 
   /* ── Player logic ───────────────────────────────────────── */
@@ -458,7 +453,9 @@
       const dy = ty - p.y;
       p.y += Math.sign(dy) * Math.min(Math.abs(dy) * EASING, p.moveSpeed);
     }
-    if (p.ft % WALK_FRAME_INT === 0) p.fi = (p.fi + 1) % FRAMES.walk.length;
+    // animation speed scales with movement speed
+    const walkInt = Math.max(2, Math.round(WALK_FRAME_INT * (MAX_SPEED / 2) / p.moveSpeed));
+    if (p.ft % walkInt === 0) p.fi = (p.fi + 1) % FRAMES.walk.length;
     clampPlayer(p);
   }
 
@@ -472,6 +469,29 @@
           if (p.fi >= FRAMES.kick.length) setState(p, 'idle');
         }
         return true;
+      case 'airkick': {
+        // jump up to ball height, kick at peak, fall back
+        const jumpTarget = p.airKickZ || 0;
+        const totalMs = 350;
+        const phase = Math.min(p.stateTime / totalMs, 1);
+        p.jumpY = Math.sin(phase * Math.PI) * jumpTarget;
+        // kick at the peak (~halfway)
+        if (!p.airKickFired && phase >= 0.4) {
+          p.airKickFired = true;
+          kick(p);
+        }
+        // advance kick frame visuals
+        if (p.ft % WALK_FRAME_INT === 0 && p.ft > 0) {
+          p.fi = Math.min(p.fi + 1, FRAMES.kick.length - 1);
+        }
+        if (phase >= 1) {
+          p.jumpY = 0;
+          p.airKickZ = 0;
+          p.airKickFired = false;
+          setState(p, 'idle');
+        }
+        return true;
+      }
       case 'push':
         if (p.stateTime >= PUSH_ANIM_MS) setState(p, 'idle');
         return true;
@@ -498,22 +518,26 @@
       return;
     }
 
-    if (canKick(p)) { setState(p, 'kick'); return; }
+    if (canKick(p)) { startKick(p); return; }
 
-    if (p.state === 'idle' && p.stateTime > 400) {
+    // shorter idle when ball is airborne — stay ready to move
+    const idleWait = ball.z > 1 ? 30 : 200;
+    if (p.state === 'idle' && p.stateTime > idleWait) {
       p.moveSpeed = pickSpeed(Math.abs(ball.x - (p.x + p.el.offsetWidth / 2)));
       setState(p, 'walk');
     }
 
     if (p.state === 'walk') {
-      const tx = atRest() ? ball.x : ball.x + ball.vx * 10;
+      // chase the ball's ground shadow (x,y ignoring z height)
+      const tx = ball.x + ball.vx * 10;
       const ty = ball.y;
       const center = p.x + p.el.offsetWidth / 2;
       const dx = tx - center;
       const w = p.el.offsetWidth;
       const atEdge = p.x <= leftBound || p.x >= rightBound - w;
+      const closeEnough = ball.z > 1 ? 3 : 8;
 
-      if (Math.abs(dx) < 8 || (atEdge && Math.abs(dx) < w)) {
+      if (Math.abs(dx) < closeEnough || (atEdge && Math.abs(dx) < w)) {
         setState(p, 'idle');
       } else {
         walkToward(p, tx, ty);
@@ -531,7 +555,7 @@
 
     if (kickRequested && canKick(p)) {
       kickRequested = false;
-      setState(p, 'kick');
+      startKick(p);
       return;
     }
 
@@ -551,7 +575,7 @@
 
   function tryPush(a, b, now) {
     if (now - a.lastPush < PUSH_COOLDOWN) return;
-    if (a.state === 'push' || a.state === 'kick' || a.state === 'jump') return;
+    if (a.state === 'push' || a.state === 'kick' || a.state === 'airkick' || a.state === 'jump') return;
 
     const ca = a.x + a.el.offsetWidth / 2;
     const cb = b.x + b.el.offsetWidth / 2;
@@ -622,6 +646,19 @@
     goalScorer = null;
     p1.jumpY = 0;
     p2.jumpY = 0;
+  }
+
+  function ballOut() {
+    paused = true;
+    pausePhase = 'reposition';
+    goalScorer = null;
+    p1.jumpY = 0;
+    p2.jumpY = 0;
+    setState(p1, 'walk');
+    setState(p2, 'walk');
+    ball.vx = 0;
+    ball.vy = 0;
+    ball.vz = 0;
   }
 
   function resetMatch() {

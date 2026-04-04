@@ -254,6 +254,25 @@ footer {
   transform-origin: 0 0;
 }
 
+#stickman-stage .stickman-player,
+#stickman-stage .stickman-ball {
+  bottom: 10px;
+}
+
+#stickman-stage .stickman-goalline {
+  color: rgba(255,255,255,0.12);
+  pointer-events: none;
+}
+
+#stickman-stage .stickman-goalline-l {
+  left: 30px;
+}
+
+#stickman-stage .stickman-goalline-r {
+  left: auto !important;
+  right: 30px;
+}
+
 #stickman-stage .stickman-goal {
   color: rgba(255,255,255,0.3);
 }
@@ -265,4 +284,29 @@ footer {
 #stickman-stage .stickman-goal-r {
   left: auto !important;
   right: 30px;
+}
+
+#stickman-stage .stickman-scoreboard {
+  bottom: auto;
+  top: 0;
+  left: 50% !important;
+  transform: translateX(-50%);
+  color: rgba(255,255,255,0.2);
+  font-size: 0.6rem;
+  text-align: center;
+  pointer-events: none;
+}
+
+#stickman-stage .stickman-name {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  font-family: var(--mono);
+  font-size: 0.5rem;
+  color: rgba(255,255,255,0.2);
+  white-space: nowrap;
+  pointer-events: none;
+  transition: opacity 0.2s;
+  transform-origin: 0 0;
+  margin-bottom: 52px;
 }

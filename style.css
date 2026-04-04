@@ -2,7 +2,6 @@
   --bg:           #0a0a0a;
   --surface:      #111111;
   --surface-hover:#1a1a1a;
-  --border:       #222222;
   --text:         #d0d0d0;
   --text-dim:     #707070;
   --muted:        #505050;
@@ -232,16 +231,18 @@ footer {
 
 .footer-host svg { flex-shrink: 0; }
 
-#stickman-stage {
+/* ── Game stage (shared by all mini-games) ── */
+
+#game-stage {
   position: relative;
   width: 100%;
   max-width: 900px;
-  height: 48px;
+  height: 120px;
   overflow: hidden;
   margin-top: 0.75rem;
 }
 
-#stickman-stage pre {
+#game-stage pre {
   position: absolute;
   bottom: 0;
   left: 0;
@@ -252,4 +253,53 @@ footer {
   white-space: pre;
   user-select: none;
   transform-origin: 0 0;
+}
+
+/* ── Football game ── */
+
+#game-stage .fb-field-border {
+  color: rgba(255,255,255,0.12);
+  pointer-events: none;
+  left: 0 !important;
+  width: 100%;
+}
+
+#game-stage .fb-player,
+#game-stage .fb-ball {
+  bottom: 10px;
+}
+
+#game-stage .fb-goalline {
+  color: rgba(255,255,255,0.12);
+  pointer-events: none;
+  bottom: 10px;
+}
+
+#game-stage .fb-goal { color: rgba(255,255,255,0.3); pointer-events: none; bottom: 10px; }
+#game-stage .fb-goal-l { left: 30px; }
+#game-stage .fb-goal-r { left: auto !important; right: 30px; }
+
+#game-stage .fb-scoreboard {
+  bottom: auto;
+  top: 0;
+  left: 50% !important;
+  transform: translateX(-50%);
+  color: rgba(255,255,255,0.2);
+  font-size: 0.6rem;
+  text-align: center;
+  pointer-events: none;
+}
+
+#game-stage .fb-name {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  font-family: var(--mono);
+  font-size: 0.5rem;
+  color: rgba(255,255,255,0.2);
+  white-space: nowrap;
+  pointer-events: none;
+  transition: opacity 0.2s;
+  transform-origin: 0 0;
+  margin-bottom: 52px;
 }

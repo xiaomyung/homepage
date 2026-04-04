@@ -2,3 +2,5 @@ CLAUDE.md
 .env
 *.key
 *.crt
+misc
+misc/*

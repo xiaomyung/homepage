@@ -14,7 +14,9 @@ Personal homelab dashboard served at `https://xiaomyung.com` — a static page w
 |------|---------|
 | `index.html` | Markup, service cards, section layout |
 | `style.css` | Monochrome dark theme, responsive grid, animations |
-| `app.js` | Health checks via `fetch` (5s timeout, 30s re-check); stickman footer animation |
+| `app.js` | Health checks via `fetch` (5s timeout, 30s re-check); stagger animation setup |
+| `football.js` | ASCII football mini-game — two AI stickmen on a pitch below the dashboard; mouse controls player 1, click/tap to kick |
+| `misc/` | Dev assets (screenshots, drafts) — not served |
 
 ## Layout
 

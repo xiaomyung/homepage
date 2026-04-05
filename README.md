@@ -40,6 +40,7 @@ Cards are grouped into `<section class="section">` elements inside a `.sections`
 | Dev Tools | Code-server | `xiaomyung.com/code` |
 | Dev Tools | IT-Tools | `xiaomyung.com/it-tools` |
 | Dev Tools | Stirling PDF | `xiaomyung.com/pdf` |
+| Dev Tools | Forgejo | `xiaomyung.com/forgejo` |
 | Gaming | Minecraft Panel | `xiaomyung.com/mc` |
 | Gaming | BlueMap | `xiaomyung.com/bluemap` |
 

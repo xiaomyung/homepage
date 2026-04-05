@@ -15,9 +15,12 @@
   --amber-glow:   rgba(224, 175, 104, 0.20);
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, "Cascadia Code", "Fira Mono", monospace;
+  --grid-gap: 8px;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ── Base ── */
 
 body {
   background: var(--bg);
@@ -27,8 +30,10 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 2.5rem 1.5rem 2.5rem;
+  padding: 2.5rem 1.5rem;
 }
+
+/* ── Header ── */
 
 header {
   margin-bottom: 1.5rem;
@@ -63,12 +68,15 @@ header {
   .header-wordmark { font-size: 1.4rem; }
 }
 
+/* ── Section layout ── */
+
 .sections {
   width: 100%;
   max-width: 900px;
   display: flex;
   flex-wrap: wrap;
-  gap: 1.25rem;
+  column-gap: 1.25rem;
+  row-gap: 3rem;
 }
 
 .section {
@@ -80,6 +88,7 @@ header {
 
 /* 1 section column on small screens */
 @media (max-width: 720px) {
+  .sections { row-gap: 3.5rem; }
   .section { flex: 0 0 100%; }
 }
 
@@ -96,9 +105,20 @@ header {
 .grid {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--grid-gap);
   width: 100%;
 }
+
+.grid:has(:nth-child(3)) {
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: none;
+  border-radius: 12px;
+}
+
+.grid:has(:nth-child(3))::-webkit-scrollbar { display: none; }
+
+/* ── Cards ── */
 
 .card {
   position: relative;
@@ -153,6 +173,8 @@ header {
   white-space: nowrap;
 }
 
+/* ── Status indicators ── */
+
 .status {
   display: flex;
   align-items: center;
@@ -199,6 +221,8 @@ header {
 .dot.up   + .status-label { color: var(--green); }
 .dot.down + .status-label { color: var(--red); }
 
+/* ── Card entrance animation ── */
+
 @media (prefers-reduced-motion: no-preference) {
   .card {
     animation: card-in 350ms both;
@@ -210,6 +234,8 @@ header {
     to   { opacity: 1; transform: translateY(0); }
   }
 }
+
+/* ── Footer ── */
 
 footer {
   margin-top: 1.25rem;

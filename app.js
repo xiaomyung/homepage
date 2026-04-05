@@ -28,3 +28,18 @@ async function run() {
 
 run();
 setInterval(run, 30000);
+
+/* ── Cap grids at 2.2 visible cards ── */
+
+function capGrids() {
+  const gap = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--grid-gap')) || 8;
+  document.querySelectorAll('.grid').forEach(grid => {
+    const cards = grid.querySelectorAll('.card');
+    if (cards.length < 3) { grid.style.maxHeight = ''; return; }
+    const cardH = cards[0].offsetHeight;
+    grid.style.maxHeight = `${cardH * 2.2 + gap * 2}px`;
+  });
+}
+
+capGrids();
+window.addEventListener('resize', capGrids);

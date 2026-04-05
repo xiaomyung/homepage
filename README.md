@@ -14,13 +14,15 @@ Personal homelab dashboard served at `https://xiaomyung.com` — a static page w
 |------|---------|
 | `index.html` | Markup, service cards, section layout |
 | `style.css` | Monochrome dark theme, responsive grid, animations |
-| `app.js` | Health checks via `fetch` (5s timeout, 30s re-check); stagger animation setup |
+| `app.js` | Health checks via `fetch` (5s timeout, 30s re-check); stagger animation setup; grid overflow capping |
 | `football.js` | ASCII football mini-game — two AI stickmen on a pitch below the dashboard; mouse controls player 1, click/tap to kick |
 | `misc/` | Dev assets (screenshots, drafts) — not served |
 
 ## Layout
 
 Cards are grouped into `<section class="section">` elements inside a `.sections` flexbox row. Three sections per row on desktop (≥720px), single column on mobile (<720px). Each card has a status dot that turns green/red after probing its `data-check` URL.
+
+Sections with 3+ cards are capped at ~2.2 visible cards with a hidden-scrollbar overflow, so a peek of the next card signals scrollability. `app.js` measures actual card height at runtime and sets `max-height` dynamically on each `.grid`.
 
 ## Services
 

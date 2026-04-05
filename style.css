@@ -107,6 +107,7 @@ header {
   overflow-y: auto;
   overscroll-behavior-y: contain;
   scrollbar-width: none;
+  border-radius: 12px;
 }
 
 .grid:has(:nth-child(3))::-webkit-scrollbar { display: none; }

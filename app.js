@@ -28,3 +28,35 @@ async function run() {
 
 run();
 setInterval(run, 30000);
+
+/* ── Section expand buttons (small screens) ── */
+
+function syncExpandButtons() {
+  const small = window.matchMedia('(max-width: 720px)').matches;
+  document.querySelectorAll('.grid').forEach(grid => {
+    const cards = grid.querySelectorAll('.card');
+    let btn = grid.parentElement.querySelector('.grid-expand');
+    if (cards.length < 3) {
+      if (btn) btn.classList.remove('visible');
+      return;
+    }
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.className = 'grid-expand';
+      btn.addEventListener('click', () => {
+        const expanding = !grid.classList.contains('expanded');
+        grid.classList.toggle('expanded');
+        const extra = cards.length - 2;
+        btn.textContent = expanding ? '\u25b4 show less' : `\u25be ${extra} more`;
+      });
+      grid.after(btn);
+    }
+    const extra = cards.length - 2;
+    if (!grid.classList.contains('expanded')) btn.textContent = `\u25be ${extra} more`;
+    btn.classList.toggle('visible', small);
+    if (!small) grid.classList.remove('expanded');
+  });
+}
+
+syncExpandButtons();
+window.addEventListener('resize', syncExpandButtons);

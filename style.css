@@ -106,16 +106,10 @@ header {
 .grid:has(:nth-child(3)) {
   overflow-y: auto;
   overscroll-behavior-y: contain;
-  scrollbar-width: thin;
-  scrollbar-color: var(--muted) transparent;
+  scrollbar-width: none;
 }
 
-.grid:has(:nth-child(3))::-webkit-scrollbar { width: 4px; }
-.grid:has(:nth-child(3))::-webkit-scrollbar-track { background: transparent; }
-.grid:has(:nth-child(3))::-webkit-scrollbar-thumb {
-  background: var(--muted);
-  border-radius: 2px;
-}
+.grid:has(:nth-child(3))::-webkit-scrollbar { display: none; }
 
 
 .card {

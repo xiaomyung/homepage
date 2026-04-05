@@ -20,6 +20,8 @@
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ── Base ── */
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -28,8 +30,10 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 2.5rem 1.5rem 2.5rem;
+  padding: 2.5rem 1.5rem;
 }
+
+/* ── Header ── */
 
 header {
   margin-bottom: 1.5rem;
@@ -63,6 +67,8 @@ header {
 @media (max-width: 400px) {
   .header-wordmark { font-size: 1.4rem; }
 }
+
+/* ── Section layout ── */
 
 .sections {
   width: 100%;
@@ -112,6 +118,7 @@ header {
 
 .grid:has(:nth-child(3))::-webkit-scrollbar { display: none; }
 
+/* ── Cards ── */
 
 .card {
   position: relative;
@@ -166,6 +173,8 @@ header {
   white-space: nowrap;
 }
 
+/* ── Status indicators ── */
+
 .status {
   display: flex;
   align-items: center;
@@ -212,6 +221,8 @@ header {
 .dot.up   + .status-label { color: var(--green); }
 .dot.down + .status-label { color: var(--red); }
 
+/* ── Card entrance animation ── */
+
 @media (prefers-reduced-motion: no-preference) {
   .card {
     animation: card-in 350ms both;
@@ -223,6 +234,8 @@ header {
     to   { opacity: 1; transform: translateY(0); }
   }
 }
+
+/* ── Footer ── */
 
 footer {
   margin-top: 1.25rem;

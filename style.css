@@ -70,7 +70,7 @@ header {
   display: flex;
   flex-wrap: wrap;
   column-gap: 1.25rem;
-  row-gap: 2rem;
+  row-gap: 3rem;
 }
 
 .section {
@@ -82,7 +82,7 @@ header {
 
 /* 1 section column on small screens */
 @media (max-width: 720px) {
-  .sections { row-gap: 2.5rem; }
+  .sections { row-gap: 3.5rem; }
   .section { flex: 0 0 100%; }
 }
 

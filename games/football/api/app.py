@@ -359,7 +359,7 @@ def weights_to_b64(blob):
 # All components normalized to [0, 1] before weighting.
 # Adjust these to rebalance what brains optimise for.
 
-W_GOALS       = 0.40   # net goals: (scored - conceded + 3) / 6
+W_GOALS       = 0.40   # goals scored / 3 (only reward scoring)
 W_PROXIMITY   = 0.08   # avg closeness to ball (quadratic falloff)
 W_POSSESSION  = 0.08   # fraction of ticks closer to ball than opponent
 W_ATTACK_ZONE = 0.09   # avg ball closeness to opponent goal
@@ -380,8 +380,8 @@ CAP_PUSHED     = 5
 
 def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
     """Calculate per-match fitness in [0, 1]. All components normalized first."""
-    # Goals component: net goals in [-3, 3] → [0, 1]
-    goals = (goals_scored - goals_conceded + 3) / 6
+    # Goals component: only reward scoring, not surviving
+    goals = min(goals_scored / 3, 1)
 
     if not fitness_data or fitness_data.get("ticks", 0) == 0:
         return goals * W_GOALS

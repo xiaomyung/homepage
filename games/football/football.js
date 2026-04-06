@@ -21,11 +21,11 @@ const AI_PREDICT_FRAMES     = 20;
 /* ── Frames ─────────────────────────────────────────────── */
 
 const FRAMES = {
-  idle:  " o \n(|)\n/\\ ",
-  walk:  ["  o\n//\\_\n/ \\", "  o\n(/)\n | "],
-  alert: "\\o/\n | \n/\\ ",
-  kick:  [" o \n(|)\n |( ", " o \n(|)\n |\\_", " o \n(|)\n |) "],
-  push:  " o \n(|\\_@\n/\\ ",
+  idle:  " O \n(|)\n/\\ ",
+  walk:  ["  O\n(/\\\n/ \\", "  O\n//)\n | "],
+  alert: "\\O/\n | \n/\\ ",
+  kick:  [" O \n(|)\n |( ", " O \n(|)\n |\\_", " O \n(|)\n |) "],
+  push:  " O \n(|\\_@\n/\\ ",
 };
 
 const SURNAMES = [

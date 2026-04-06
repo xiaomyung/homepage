@@ -1,0 +1,14 @@
+[Unit]
+Description=Football Evolution API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/services/web/homepage/games/football/api
+ExecStart=/srv/services/web/homepage/games/football/api/venv/bin/python app.py
+Restart=always
+RestartSec=3
+User=apollo
+
+[Install]
+WantedBy=multi-user.target

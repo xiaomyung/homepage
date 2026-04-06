@@ -286,7 +286,7 @@ def matchup():
     })
 
 
-SHAPING_WEIGHT = 0.1  # scale factor for shaping vs goals
+SHAPING_WEIGHT = 0.01  # scale factor for shaping vs goals (goals dominate)
 
 # Fitness shaping reward/penalty weights
 S_PROXIMITY      = 8     # ball closeness (0–1 per tick, scaled)
@@ -566,7 +566,7 @@ def config():
 @app.route("/api/football/history")
 def history():
     """Fitness history for graphing. ?limit=N (default 100)."""
-    limit = min(int(request.args.get("limit", 100)), 500)
+    limit = min(int(request.args.get("limit", 100)), 100000)
     db = get_db()
     rows = db.execute(
         "SELECT generation_id, top_fitness, avg_fitness FROM fitness_history "

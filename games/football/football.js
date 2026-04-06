@@ -747,13 +747,13 @@ configPanel.querySelectorAll('input[data-key]').forEach(input => {
 // Fitness graph
 async function loadFitnessGraph() {
   try {
-    const res = await fetch(`${API_BASE}/history?limit=200`);
+    const res = await fetch(`${API_BASE}/history?limit=10000`);
     if (!res.ok) return;
-    const data = await res.json();
+    let data = await res.json();
     if (!data.length) return;
-    const canvas = configPanel.querySelector('.fb-fitness-canvas');
 
-    // Fix pixelation: match canvas resolution to display size
+    // Downsample to fit canvas width — average buckets when too many points
+    const canvas = configPanel.querySelector('.fb-fitness-canvas');
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
     canvas.width = rect.width * dpr;
@@ -765,6 +765,24 @@ async function loadFitnessGraph() {
     const pad = { top: 10, bottom: 2, left: 0, right: 30 };
     const gw = w - pad.left - pad.right;
     const gh = h - pad.top - pad.bottom;
+    const maxPoints = Math.floor(gw); // 1 point per pixel max
+
+    if (data.length > maxPoints) {
+      const bucketSize = data.length / maxPoints;
+      const downsampled = [];
+      for (let i = 0; i < maxPoints; i++) {
+        const start = Math.floor(i * bucketSize);
+        const end = Math.floor((i + 1) * bucketSize);
+        let topMax = -Infinity, avgSum = 0, count = 0;
+        for (let j = start; j < end && j < data.length; j++) {
+          if (data[j].top > topMax) topMax = data[j].top;
+          avgSum += data[j].avg;
+          count++;
+        }
+        downsampled.push({ top: topMax, avg: count ? avgSum / count : 0, gen: data[end - 1]?.gen || 0 });
+      }
+      data = downsampled;
+    }
 
     ctx.clearRect(0, 0, w, h);
 

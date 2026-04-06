@@ -47,7 +47,7 @@ const STAMINA_REGEN       = 0.005; // per tick (always recovers)
 const STAMINA_MOVE_BASE   = 0.006; // base drain for any movement
 const STAMINA_MOVE_SCALE  = 0.3;   // speed-proportional drain multiplier
 const STAMINA_MOVE_DRAIN  = 0.012; // additional drain at max speed
-const STAMINA_KICK_DRAIN  = 0.15;  // max cost at full power kick
+const STAMINA_KICK_DRAIN  = 0.3;   // max cost at full power kick
 const STAMINA_AIRKICK_DRAIN = 0.1; // flat cost for air kick
 const STAMINA_EXHAUSTION_THRESHOLD = 0.5; // must recover to this before acting
 
@@ -58,7 +58,7 @@ const JUMP_PHASE_MS  = 400;
 const JUMP_CELEBRATE_MS = 1500; // total celebration jump duration
 const WALK_ANIM_BASE = 6;
 const MOVE_THRESHOLD = 0.1;
-const MIN_SPEED_STAMINA = 0.05;  // floor for quadratic stamina→speed scaling
+const MIN_SPEED_STAMINA = 0.3;   // floor for linear stamina→speed scaling
 const MIN_KICK_POWER = 0.15;    // minimum kick power fraction
 const MIN_KICK_STAMINA = 0.2;   // floor for stamina→kick power
 const MIN_PUSH_STAMINA = 0.2;   // floor for stamina→push force
@@ -371,7 +371,7 @@ export class FootballEngine {
     const [moveX, moveY, kick, kickDx, kickDy, kickDz, kickPower, push, pushPower] = out;
 
     // Movement
-    const effSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina * p.stamina);
+    const effSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina);
     const mx = Math.max(-1, Math.min(1, moveX)) * effSpeed;
     const my = Math.max(-1, Math.min(1, moveY)) * effSpeed;
     const speedSq = mx * mx + my * my;
@@ -417,7 +417,7 @@ export class FootballEngine {
     const [moveX, moveY, kick, kickDx, kickDy, kickDz, kickPower, push, pushPower] = out;
 
     // Stamina-adjusted caps
-    const effectiveMaxSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina * p.stamina);
+    const effectiveMaxSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina);
 
     // Movement
     const mx = Math.max(-1, Math.min(1, moveX)) * effectiveMaxSpeed;
@@ -536,12 +536,15 @@ export class FootballEngine {
     let dy = p._kickDy || 0;
     let dz = p._kickDz || 0;
 
-    // Ensure valid direction — if all near zero, kick forward
+    // Ensure valid direction — if near zero, use random direction
+    // (not facing direction — NN must learn to output meaningful directions)
     const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
     if (len < KICK_DIR_MIN_LEN) {
-      dx = p.dir; // kick in facing direction
-      dy = 0;
-      dz = KICK_DEFAULT_DZ;
+      dx = Math.random() * 2 - 1;
+      dy = Math.random() * 2 - 1;
+      dz = Math.random() * 0.5;
+      const rlen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+      dx /= rlen; dy /= rlen; dz /= rlen;
     } else {
       dx /= len;
       dy /= len;
@@ -869,6 +872,10 @@ export class FootballEngine {
     s.goalScorer = null;
     s.p1.jumpY = 0;
     s.p2.jumpY = 0;
+    s.p1.stamina = 1;
+    s.p1.exhausted = false;
+    s.p2.stamina = 1;
+    s.p2.exhausted = false;
   }
 
   _resetMatch(s) {
@@ -893,6 +900,8 @@ export class FootballEngine {
     p.jumpY = 0;
     p.pushVx = 0;
     p.pushVy = 0;
+    p.stamina = 1;
+    p.exhausted = false;
     p.prevX = x;
     p.prevY = FIELD_HEIGHT / 2;
   }

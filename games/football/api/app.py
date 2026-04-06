@@ -307,6 +307,7 @@ def try_breed(db, gen_id):
             "INSERT INTO hall_of_fame (generation_id, weights, fitness) VALUES (?, ?, ?)",
             (gen_id, best["weights"], best["fitness"]),
         )
+        db.commit()
 
     _shrink_goal_size(db, gen_id)
     _cleanup_old_data(db, new_gen_id)

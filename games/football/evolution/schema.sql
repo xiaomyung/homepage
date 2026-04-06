@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS fitness_history (
 
 CREATE TABLE IF NOT EXISTS hall_of_fame (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    generation_id INTEGER NOT NULL,
+    generation_id INTEGER NOT NULL UNIQUE,
     weights BLOB NOT NULL,
     fitness REAL NOT NULL
 );

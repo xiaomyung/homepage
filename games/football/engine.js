@@ -45,8 +45,9 @@ const PUSH_VICTIM_MULT = 2;     // pushed player loses 2x
 // Stamina
 const STAMINA_REGEN       = 0.005; // per tick (always recovers)
 const STAMINA_MOVE_BASE   = 0.006; // base drain for any movement
+const STAMINA_MOVE_SCALE  = 0.3;   // speed-proportional drain multiplier
 const STAMINA_MOVE_DRAIN  = 0.012; // additional drain at max speed
-const STAMINA_KICK_DRAIN  = 0.1;   // flat cost per kick
+const STAMINA_KICK_DRAIN  = 0.5;   // max cost at full power kick
 const STAMINA_AIRKICK_DRAIN = 0.1; // flat cost for air kick
 const STAMINA_EXHAUSTION_THRESHOLD = 0.5; // must recover to this before acting
 
@@ -115,7 +116,7 @@ export class FieldConfig {
     // Then: goalLineL.offsetLeft + 2*charW - charW/2 = goalLLeft + goalLWidth - 1.5*charW
     // goalLineR element is positioned at goalRLeft
     // Then: goalLineR.offsetLeft + charW + charW/2 = goalRLeft + 1.5*charW
-    this.goalLineL = this.goalLLeft + this.goalLWidth - 1.5 * this.charW;
+    this.goalLineL = this.goalLLeft + this.goalLWidth - 1.5 * this.charW - 2;
     this.goalLineR = this.goalRLeft + 1.5 * this.charW;
     // AI movement limits
     this.aiLimitL = this.goalLLeft + 6 * this.charW;
@@ -141,7 +142,7 @@ export class FieldConfig {
     fc.goalLWidth = goalL.offsetWidth;
     fc.goalRLeft = goalR.offsetLeft;
     fc.goalRWidth = goalR.offsetWidth;
-    fc.goalLineL = goalLineL.offsetLeft + 2 * charW - charW / 2;
+    fc.goalLineL = goalLineL.offsetLeft + 2 * charW - charW / 2 - 2;
     fc.goalLineR = goalLineR.offsetLeft + charW + charW / 2;
     fc.aiLimitL = goalL.offsetLeft + 6 * charW;
     fc.aiLimitR = goalR.offsetLeft + 3 * charW;
@@ -169,6 +170,7 @@ function createPlayerState(side, midX, playerWidth) {
     jumpY: 0,
     pushVx: 0, pushVy: 0,
     airKickZ: 0, airKickFired: false,
+    _kickDx: 0, _kickDy: 0, _kickDz: 0, _kickPower: 0,
     side,
   };
 }
@@ -179,6 +181,7 @@ function emptyFitness() {
     ballProximity: 0,     // reward: staying close to ball
     kicks: 0,             // reward: each kick
     ballAdvance: 0,       // reward: moving ball toward opponent goal
+    ballInAttackZone: 0,  // reward: ball near opponent's goal
     possession: 0,        // reward: ticks closer to ball than opponent
     exhaustedTicks: 0,    // penalty: ticks spent frozen from exhaustion
     staminaSum: 0,        // for computing average stamina (reward managing it)
@@ -339,11 +342,11 @@ export class FootballEngine {
     const mx = Math.max(-1, Math.min(1, moveX)) * effSpeed;
     const my = Math.max(-1, Math.min(1, moveY)) * effSpeed;
     const speed = Math.sqrt(mx * mx + my * my);
-    if (speed > 0.1) {
+    if (speed > MOVE_THRESHOLD) {
       p.x += mx;
       p.y += my;
       p.dir = mx > 0 ? 1 : -1;
-      p.stamina -= STAMINA_MOVE_BASE + STAMINA_MOVE_DRAIN * 0.3 * (speed / MAX_PLAYER_SPEED);
+      p.stamina -= STAMINA_MOVE_BASE + STAMINA_MOVE_DRAIN * STAMINA_MOVE_SCALE * (speed / MAX_PLAYER_SPEED);
     }
     p.stamina = Math.max(0, p.stamina);
 
@@ -355,6 +358,7 @@ export class FootballEngine {
 
     // Kick — instant execution, no animation frames
     if (kick > 0 && this._canKick(s, p)) {
+      if (s.ball.z > 1) p.stamina = Math.max(0, p.stamina - STAMINA_AIRKICK_DRAIN);
       p._kickDx = Math.max(-1, Math.min(1, kickDx));
       p._kickDy = Math.max(-1, Math.min(1, kickDy));
       p._kickDz = Math.max(-1, Math.min(1, kickDz));
@@ -391,7 +395,7 @@ export class FootballEngine {
       p.x += mx;
       p.y += my;
       p.dir = mx > 0 ? 1 : -1;
-      p.stamina -= STAMINA_MOVE_BASE + STAMINA_MOVE_DRAIN * 0.3 * (speed / MAX_PLAYER_SPEED);
+      p.stamina -= STAMINA_MOVE_BASE + STAMINA_MOVE_DRAIN * STAMINA_MOVE_SCALE * (speed / MAX_PLAYER_SPEED);
       if (p.state !== 'walk') this._setState(p, 'walk');
       const walkInt = Math.max(2, Math.round(WALK_ANIM_BASE * (MAX_PLAYER_SPEED / 2) / speed));
       if (p.ft % walkInt === 0) p.fi = (p.fi + 1) % 2;
@@ -424,7 +428,7 @@ export class FootballEngine {
   _tickShared(s, p) {
     switch (p.state) {
       case 'kick':
-        if (p.ft % 6 === 0 && p.ft > 0) {
+        if (p.ft % WALK_ANIM_BASE === 0 && p.ft > 0) {
           p.fi++;
           if (p.fi === 1) this._executeKick(s, p);
           if (p.fi >= 3) this._setState(p, 'idle');
@@ -526,7 +530,7 @@ export class FootballEngine {
     s.ball.vz = Math.max(0, dz * force); // can't kick downward into ground
 
     // Stamina drain
-    p.stamina = Math.max(0, p.stamina - STAMINA_KICK_DRAIN);
+    p.stamina = Math.max(0, p.stamina - STAMINA_KICK_DRAIN * rawPower);
 
     s.lastKickTick = s.tickCount;
     s.events.push('kick');
@@ -570,10 +574,16 @@ export class FootballEngine {
     const oppDist = Math.sqrt(oppDx * oppDx + oppDy * oppDy);
     if (dist < oppDist) f.possession++;
 
-    // 4. Exhaustion penalty
+    // 4. Ball in attacking zone: reward when ball is near opponent's goal
+    const targetGoalX = p.side === 'left' ? this.field.goalLineR : this.field.goalLineL;
+    const ballGoalDist = Math.abs(ball.x - targetGoalX);
+    const maxGoalDist = this.field.fieldWidth;
+    f.ballInAttackZone += 1 - Math.min(ballGoalDist / maxGoalDist, 1);
+
+    // 5. Exhaustion penalty
     if (p.exhausted) f.exhaustedTicks++;
 
-    // 5. Stamina tracking (for average)
+    // 6. Stamina tracking (for average)
     f.staminaSum += p.stamina;
   }
 
@@ -698,16 +708,19 @@ export class FootballEngine {
   _checkGoalLine(s) {
     const ball = s.ball;
     const { lineH, goalLineL, goalLineR } = this.field;
-    if (ball.z > 2 * lineH) return; // over crossbar
     const crossedL = ball.x < goalLineL;
     const crossedR = ball.x > goalLineR;
     if (!crossedL && !crossedR) return;
-    // Ball must be within the goal frame's height (6 rows) to score;
-    // balls above the frame went "wide" — treat as out
-    if (ball.y <= 6 * lineH) {
+
+    // Ball must be: under crossbar (z), within goal frame depth (y)
+    const underCrossbar = ball.z <= 2 * lineH;
+    const withinFrame = ball.y <= 6 * lineH;
+
+    if (underCrossbar && withinFrame) {
       if (crossedL) this._scoreGoal(s, 'left');
       else this._scoreGoal(s, 'right');
     } else {
+      // Over crossbar, wide of frame, or lobbed — all treated as out
       this._ballOut(s);
     }
   }
@@ -897,7 +910,7 @@ export class FootballEngine {
           p.x += Math.sign(dx) * Math.min(Math.abs(dx) * 0.1, REPOSITION_SPEED);
           p.y += Math.sign(dy) * Math.min(Math.abs(dy) * 0.1, 4);
           p.dir = dx > 0 ? 1 : -1;
-          if (p.ft % 6 === 0) p.fi = (p.fi + 1) % 2;
+          if (p.ft % WALK_ANIM_BASE === 0) p.fi = (p.fi + 1) % 2;
         } else {
           p.x = tx;
           p.y = ty;

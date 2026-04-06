@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS brains (
     matches_played INTEGER DEFAULT 0,
     goals_scored INTEGER DEFAULT 0,
     goals_conceded INTEGER DEFAULT 0,
+    draws INTEGER DEFAULT 0,
     shaping_total REAL DEFAULT 0
 );
 
@@ -34,3 +35,19 @@ CREATE TABLE IF NOT EXISTS stats (
 
 INSERT OR IGNORE INTO stats (key, value) VALUES ('total_matches', 0);
 INSERT OR IGNORE INTO stats (key, value) VALUES ('total_goals', 0);
+
+CREATE TABLE IF NOT EXISTS config (
+    key TEXT PRIMARY KEY,
+    value REAL NOT NULL
+);
+
+INSERT OR IGNORE INTO config (key, value) VALUES ('mutation_rate', 0.05);
+INSERT OR IGNORE INTO config (key, value) VALUES ('mutation_std', 0.3);
+INSERT OR IGNORE INTO config (key, value) VALUES ('population_size', 50);
+INSERT OR IGNORE INTO config (key, value) VALUES ('match_duration', 45);
+
+CREATE TABLE IF NOT EXISTS fitness_history (
+    generation_id INTEGER PRIMARY KEY,
+    top_fitness REAL,
+    avg_fitness REAL
+);

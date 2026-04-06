@@ -12,7 +12,7 @@ import { NeuralNet } from './nn.js';
 
 const API_BASE = '/api/football';
 const BATCH_SIZE = 125;
-const MAX_HEADLESS_TICKS = Math.ceil(45000 / 16); // 45s of game time
+let maxHeadlessTicks = Math.ceil(45000 / 16); // default 45s, updated from API
 const MIN_FIELD_WIDTH = 600;
 const FIELD_WIDTH_RANGE = 300;
 
@@ -57,13 +57,16 @@ function runMatch(nnA, nnB) {
 
   let ticks = 0;
   let outA = null, outB = null;
-  while (!state.matchOver && ticks < MAX_HEADLESS_TICKS) {
+  while (!state.matchOver && ticks < maxHeadlessTicks) {
     // NN evaluates every 3rd tick — ~20 decisions/sec
     if (ticks % 3 === 0) {
       engine.buildInputsInto(state, 'p1', inputBufA);
-      engine.buildInputsInto(state, 'p2', inputBufB);
       outA = nnA.forward(inputBufA);
-      outB = nnB.forward(inputBufB);
+      if (nnB) {
+        engine.buildInputsInto(state, 'p2', inputBufB);
+        outB = nnB.forward(inputBufB);
+      }
+      // nnB null → outB stays null → idle opponent
     }
     engine.tick(state, outA, outB);
     ticks++;
@@ -104,6 +107,9 @@ async function trainingLoop() {
 
       const pairs = data.pairs;
       const genId = data.generation_id;
+      if (data.match_duration) {
+        maxHeadlessTicks = Math.ceil(data.match_duration * 1000 / 16);
+      }
 
       // Clear cache on generation change
       if (genId !== cachedGen) {
@@ -114,25 +120,39 @@ async function trainingLoop() {
       // Run all matches in batch, then report all at once
       const batchResults = [];
       for (const pair of pairs) {
-        // Cache NNs — server omits weights for brains we already have
+        // Brain A — always a real brain from the population
         if (!cachedBrains.has(pair.brain_a.id) && pair.brain_a.weights) {
           cachedBrains.set(pair.brain_a.id, new NeuralNet(b64ToFloat32(pair.brain_a.weights)));
         }
-        if (!cachedBrains.has(pair.brain_b.id) && pair.brain_b.weights) {
-          cachedBrains.set(pair.brain_b.id, new NeuralNet(b64ToFloat32(pair.brain_b.weights)));
-        }
         const nnA = cachedBrains.get(pair.brain_a.id);
-        const nnB = cachedBrains.get(pair.brain_b.id);
+
+        // Brain B — could be normal, random, or idle
+        let nnB = null;
+        const bType = pair.brain_b.type;
+        if (bType === 'idle') {
+          nnB = null; // engine receives null → opponent doesn't act
+        } else if (bType === 'random') {
+          nnB = new NeuralNet(b64ToFloat32(pair.brain_b.weights));
+        } else {
+          // Normal brain from population
+          if (!cachedBrains.has(pair.brain_b.id) && pair.brain_b.weights) {
+            cachedBrains.set(pair.brain_b.id, new NeuralNet(b64ToFloat32(pair.brain_b.weights)));
+          }
+          nnB = cachedBrains.get(pair.brain_b.id);
+        }
 
         const result = runMatch(nnA, nnB);
+
+        // Only report for real brains (brain_a always real; brain_b only if it has an id)
         batchResults.push({
           brain_a_id: pair.brain_a.id,
           brain_b_id: pair.brain_b.id,
           score_a: result.scoreA,
           score_b: result.scoreB,
           fitness_a: result.fitnessA,
-          fitness_b: result.fitnessB,
+          fitness_b: bType ? null : result.fitnessB, // no fitness for idle/random opponents
           generation_id: genId,
+          opponent_type: bType || 'normal',
         });
         matchesThisSecond++;
         updateStats();

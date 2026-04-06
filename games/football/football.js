@@ -144,15 +144,50 @@ resetBtn.className = 'fb-reset-btn';
 resetBtn.title = 'Reset evolution';
 resetBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>';
 
-// Wrapper for stats + reset
+// More button — opens config panel
+const moreBtn = document.createElement('button');
+moreBtn.className = 'fb-more-btn';
+moreBtn.title = 'Evolution settings';
+moreBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
+
+// Config panel (hidden by default)
+const configPanel = document.createElement('div');
+configPanel.className = 'fb-config-panel';
+configPanel.style.display = 'none';
+configPanel.innerHTML = `
+  <div class="fb-config-graph">
+    <canvas class="fb-fitness-canvas"></canvas>
+  </div>
+  <div class="fb-config-sliders">
+    <label title="Chance each weight mutates during breeding. Higher = more exploration.">
+      Mutation rate <span class="fb-slider-val" data-key="mutation_rate">0.05</span>
+      <input type="range" min="0.01" max="0.2" step="0.01" value="0.05" data-key="mutation_rate">
+    </label>
+    <label title="How much a mutated weight changes. Higher = bigger jumps, lower = fine-tuning.">
+      Mutation strength <span class="fb-slider-val" data-key="mutation_std">0.3</span>
+      <input type="range" min="0.1" max="1.0" step="0.05" value="0.3" data-key="mutation_std">
+    </label>
+    <label title="Headless match length in seconds. Shorter = faster training but less time to score.">
+      Match <span class="fb-slider-val" data-key="match_duration">45s</span>
+      <input type="range" min="15" max="120" step="5" value="45" data-key="match_duration">
+    </label>
+  </div>
+`;
+
+// Wrapper for stats + buttons
 const statsRow = document.createElement('div');
 statsRow.className = 'fb-stats-row';
+const btnGroup = document.createElement('div');
+btnGroup.className = 'fb-btn-group';
+btnGroup.appendChild(moreBtn);
+btnGroup.appendChild(resetBtn);
 statsRow.appendChild(statsEl);
-statsRow.appendChild(resetBtn);
+statsRow.appendChild(btnGroup);
 
 // Insert elements after stage
 stage.after(statsRow);
-statsRow.after(touchControls);
+statsRow.after(configPanel);
+configPanel.after(touchControls);
 
 /* ── State ──────────────────────────────────────────────── */
 
@@ -658,6 +693,127 @@ resetBtn.addEventListener('click', async () => {
   } catch { /* reload anyway */ }
   location.reload();
 });
+
+// More button — toggle config panel
+let graphInterval = null;
+moreBtn.addEventListener('click', () => {
+  const open = configPanel.style.display === 'none';
+  configPanel.style.display = open ? '' : 'none';
+  if (open) {
+    loadConfig();
+    graphInterval = setInterval(loadFitnessGraph, STATS_POLL_INTERVAL);
+  } else if (graphInterval) {
+    clearInterval(graphInterval);
+    graphInterval = null;
+  }
+});
+
+// Config panel sliders
+async function loadConfig() {
+  try {
+    const res = await fetch(`${API_BASE}/config`);
+    if (!res.ok) return;
+    const cfg = await res.json();
+    configPanel.querySelectorAll('input[data-key]').forEach(input => {
+      const key = input.dataset.key;
+      if (cfg[key] !== undefined) {
+        input.value = cfg[key];
+        const span = configPanel.querySelector(`.fb-slider-val[data-key="${key}"]`);
+        const suffix = key === 'match_duration' ? 's' : '';
+        if (span) span.textContent = cfg[key] + suffix;
+      }
+    });
+    loadFitnessGraph();
+  } catch { /* panel stays with defaults */ }
+}
+
+configPanel.querySelectorAll('input[data-key]').forEach(input => {
+  input.addEventListener('input', () => {
+    const span = configPanel.querySelector(`.fb-slider-val[data-key="${input.dataset.key}"]`);
+    const suffix = input.dataset.key === 'match_duration' ? 's' : '';
+    if (span) span.textContent = input.value + suffix;
+  });
+  input.addEventListener('change', async () => {
+    try {
+      await fetch(`${API_BASE}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [input.dataset.key]: parseFloat(input.value) }),
+      });
+    } catch { /* silent */ }
+  });
+});
+
+// Fitness graph
+async function loadFitnessGraph() {
+  try {
+    const res = await fetch(`${API_BASE}/history?limit=200`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.length) return;
+    const canvas = configPanel.querySelector('.fb-fitness-canvas');
+
+    // Fix pixelation: match canvas resolution to display size
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    const w = rect.width, h = rect.height;
+    const pad = { top: 10, bottom: 2, left: 0, right: 30 };
+    const gw = w - pad.left - pad.right;
+    const gh = h - pad.top - pad.bottom;
+
+    ctx.clearRect(0, 0, w, h);
+
+    const maxF = Math.max(...data.map(d => d.top), 0.1);
+    const minF = Math.min(...data.map(d => d.avg));
+    const step = gw / Math.max(data.length - 1, 1);
+
+    // Avg fitness line
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.lineWidth = 1;
+    data.forEach((d, i) => {
+      const x = pad.left + i * step;
+      const y = pad.top + gh - ((d.avg - minF) / (maxF - minF || 1)) * gh;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Top fitness line
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 1.5;
+    data.forEach((d, i) => {
+      const x = pad.left + i * step;
+      const y = pad.top + gh - ((d.top - minF) / (maxF - minF || 1)) * gh;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Min/max labels
+    ctx.font = '9px monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.textAlign = 'right';
+    ctx.fillText(maxF.toFixed(1), w - 2, pad.top + 8);
+    ctx.fillText(minF.toFixed(1), w - 2, h - pad.bottom);
+
+    // Legend — top left
+    ctx.textAlign = 'left';
+    const ly = pad.top + 6;
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(4, ly - 3); ctx.lineTo(16, ly - 3); ctx.stroke();
+    ctx.fillText('best', 19, ly);
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(48, ly - 3); ctx.lineTo(60, ly - 3); ctx.stroke();
+    ctx.fillText('avg', 63, ly);
+  } catch { /* silent */ }
+}
 
 // Resize
 window.addEventListener('resize', () => {

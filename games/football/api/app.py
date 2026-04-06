@@ -21,6 +21,7 @@ from ga import (
     POPULATION_SIZE,
     TOTAL_WEIGHTS,
     breed_next_generation,
+    get_config,
     random_weights,
     should_breed,
 )
@@ -126,7 +127,17 @@ def try_breed(db, gen_id):
             db.execute("ROLLBACK")
             return
 
-        new_weights = breed_next_generation(brain_dicts)
+        # Record fitness history for the completed generation
+        top_f = max(b["fitness"] for b in brain_dicts) if brain_dicts else 0
+        avg_f = sum(b["fitness"] for b in brain_dicts) / len(brain_dicts) if brain_dicts else 0
+        db.execute(
+            "INSERT OR REPLACE INTO fitness_history (generation_id, top_fitness, avg_fitness) "
+            "VALUES (?, ?, ?)",
+            (gen_id, top_f, avg_f),
+        )
+
+        cfg = get_config(db)
+        new_weights = breed_next_generation(brain_dicts, cfg)
         db.execute("INSERT INTO generations DEFAULT VALUES")
         new_gen_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
         for w in new_weights:
@@ -158,6 +169,7 @@ def _cleanup_old_data(db, current_gen_id):
     db.execute("DELETE FROM matches WHERE generation_id < ?", (cutoff,))
     db.execute("DELETE FROM brains WHERE generation_id < ?", (cutoff,))
     db.execute("DELETE FROM generations WHERE id < ?", (cutoff,))
+    # Keep fitness_history — it's small and useful for graphing trends
     db.commit()
 
 
@@ -201,18 +213,44 @@ def matchup():
     # Pre-encode weights only for brains the worker doesn't have
     weight_cache = {}
     for _ in range(count):
-        a, b = random.sample(brain_list, 2)
-        for brain in (a, b):
-            bid = brain["id"]
-            if bid not in weight_cache:
-                weight_cache[bid] = None if bid in known_ids else weights_to_b64(brain["weights"])
-        pairs.append({
-            "brain_a": {"id": a["id"], "weights": weight_cache[a["id"]]},
-            "brain_b": {"id": b["id"], "weights": weight_cache[b["id"]]},
-            "generation_id": gen_id,
-        })
+        a = random.choice(brain_list)
+        if a["id"] not in weight_cache:
+            weight_cache[a["id"]] = None if a["id"] in known_ids else weights_to_b64(a["weights"])
 
-    return jsonify({"pairs": pairs, "generation_id": gen_id})
+        # Opponent diversity: 70% normal, 15% random, 15% idle
+        roll = random.random()
+        if roll < 0.15:
+            # Idle opponent — stands still
+            pairs.append({
+                "brain_a": {"id": a["id"], "weights": weight_cache[a["id"]]},
+                "brain_b": {"id": None, "weights": None, "type": "idle"},
+                "generation_id": gen_id,
+            })
+        elif roll < 0.30:
+            # Random opponent — fresh random weights
+            pairs.append({
+                "brain_a": {"id": a["id"], "weights": weight_cache[a["id"]]},
+                "brain_b": {"id": None, "weights": weights_to_b64(random_weights()), "type": "random"},
+                "generation_id": gen_id,
+            })
+        else:
+            # Normal — two brains from current generation
+            b = random.choice(brain_list)
+            while b["id"] == a["id"] and len(brain_list) > 1:
+                b = random.choice(brain_list)
+            if b["id"] not in weight_cache:
+                weight_cache[b["id"]] = None if b["id"] in known_ids else weights_to_b64(b["weights"])
+            pairs.append({
+                "brain_a": {"id": a["id"], "weights": weight_cache[a["id"]]},
+                "brain_b": {"id": b["id"], "weights": weight_cache[b["id"]]},
+                "generation_id": gen_id,
+            })
+
+    # Include match_duration so trainer can adjust
+    md_row = db.execute("SELECT value FROM config WHERE key = 'match_duration'").fetchone()
+    match_duration = md_row["value"] if md_row else 45
+
+    return jsonify({"pairs": pairs, "generation_id": gen_id, "match_duration": match_duration})
 
 
 SHAPING_WEIGHT = 0.1  # scale factor for shaping vs goals
@@ -250,14 +288,20 @@ def calc_shaping_score(fitness_data):
     kicks = fitness_data.get("kicks", 0) * 0.3
     goal_kicks = fitness_data.get("goalKicks", 0) * 0.7  # extra for right direction
 
-    # Ball advance: moving ball toward opponent goal (normalized by field)
-    advance = fitness_data.get("ballAdvance", 0) / 100
+    # Ball advance: average per-tick ball movement toward goal, capped
+    advance = min(fitness_data.get("ballAdvance", 0) / ticks * 0.5, 5)
+
+    # Ball in attacking zone: reward ball being near opponent's goal (0–1 per tick)
+    attack_zone = fitness_data.get("ballInAttackZone", 0) / ticks * 6
 
     # Possession: fraction of time closer to ball than opponent
     possession = fitness_data.get("possession", 0) / ticks * 5
 
     # Stamina management: average stamina level (reward staying healthy)
     avg_stamina = fitness_data.get("staminaSum", 0) / ticks * 3
+
+    # Successful pushes: small reward for tactical pushing
+    pushes = fitness_data.get("pushesLanded", 0) * 0.2
 
     # === PENALTIES ===
 
@@ -273,7 +317,9 @@ def calc_shaping_score(fitness_data):
         + kicks
         + goal_kicks
         + advance
+        + attack_zone
         + possession
+        + pushes
         + avg_stamina
         - exhaustion_penalty
         - pushed_penalty
@@ -307,6 +353,7 @@ def result():
     )
 
     # Single UPDATE per brain: update stats + recompute fitness inline
+    is_draw = 1 if score_a == score_b else 0
     for bid, gs, gc, shaping in [
         (brain_a_id, score_a, score_b, shaping_a),
         (brain_b_id, score_b, score_a, shaping_b),
@@ -350,20 +397,22 @@ def results_batch():
 
     for item in items:
         brain_a_id = item["brain_a_id"]
-        brain_b_id = item["brain_b_id"]
+        brain_b_id = item.get("brain_b_id")  # None for idle/random opponents
         score_a = item["score_a"]
         score_b = item["score_b"]
         gen_id = item.get("generation_id")
         shaping_a = calc_shaping_score(item.get("fitness_a"))
-        shaping_b = calc_shaping_score(item.get("fitness_b"))
 
-        match_rows.append((gen_id or cur_gen, brain_a_id, brain_b_id, score_a, score_b))
+        # For idle/random opponents, use brain_a_id as both to satisfy FK constraint
+        match_rows.append((gen_id or cur_gen, brain_a_id, brain_b_id or brain_a_id, score_a, score_b))
 
-        for bid, gs, gc, shaping in [
-            (brain_a_id, score_a, score_b, shaping_a),
-            (brain_b_id, score_b, score_a, shaping_b),
-        ]:
-            brain_updates.append((gs, gc, shaping, gs, gc, shaping, SHAPING_WEIGHT, bid))
+        # Always update brain A (the real brain being evaluated)
+        brain_updates.append((score_a, score_b, shaping_a, score_a, score_b, shaping_a, SHAPING_WEIGHT, brain_a_id))
+
+        # Only update brain B if it's a real brain (not idle/random)
+        if brain_b_id is not None and item.get("opponent_type", "normal") == "normal":
+            shaping_b = calc_shaping_score(item.get("fitness_b"))
+            brain_updates.append((score_b, score_a, shaping_b, score_b, score_a, shaping_b, SHAPING_WEIGHT, brain_b_id))
 
     # Update running totals
     total_goals = sum(r[3] + r[4] for r in match_rows)  # score_a + score_b
@@ -467,6 +516,39 @@ def stats():
     })
 
 
+@app.route("/api/football/config", methods=["GET", "POST"])
+def config():
+    """Get or update evolution config."""
+    db = get_db()
+    if request.method == "POST":
+        data = request.get_json()
+        for key, value in data.items():
+            db.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                (key, float(value)),
+            )
+        db.commit()
+        return jsonify({"ok": True})
+    rows = db.execute("SELECT key, value FROM config").fetchall()
+    return jsonify({r["key"]: r["value"] for r in rows})
+
+
+@app.route("/api/football/history")
+def history():
+    """Fitness history for graphing. ?limit=N (default 100)."""
+    limit = min(int(request.args.get("limit", 100)), 500)
+    db = get_db()
+    rows = db.execute(
+        "SELECT generation_id, top_fitness, avg_fitness FROM fitness_history "
+        "ORDER BY generation_id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return jsonify([
+        {"gen": r["generation_id"], "top": round(r["top_fitness"], 2), "avg": round(r["avg_fitness"], 2)}
+        for r in reversed(rows)
+    ])
+
+
 @app.route("/api/football/reset", methods=["POST"])
 def reset():
     """Wipe all evolution data and start fresh with generation 0."""
@@ -474,6 +556,7 @@ def reset():
     db.execute("DELETE FROM matches")
     db.execute("DELETE FROM brains")
     db.execute("DELETE FROM generations")
+    db.execute("DELETE FROM fitness_history")
     db.execute("UPDATE stats SET value = 0")
     db.execute("DELETE FROM sqlite_sequence")
     db.commit()

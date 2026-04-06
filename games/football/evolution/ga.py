@@ -10,12 +10,29 @@ TOTAL_WEIGHTS = sum(
     LAYERS[i - 1] * LAYERS[i] + LAYERS[i] for i in range(1, len(LAYERS))
 )  # 1037
 
+# Defaults — can be overridden by config from DB
 POPULATION_SIZE = 50
 TOURNAMENT_SIZE = 5
 ELITISM_COUNT = 2
 MUTATION_RATE = 0.05
 MUTATION_STD = 0.3
 MIN_MATCHES_PER_BRAIN = 5
+
+
+def get_config(db):
+    """Read GA config from DB, falling back to module defaults."""
+    cfg = {
+        "mutation_rate": MUTATION_RATE,
+        "mutation_std": MUTATION_STD,
+        "population_size": POPULATION_SIZE,
+    }
+    try:
+        rows = db.execute("SELECT key, value FROM config").fetchall()
+        for r in rows:
+            cfg[r[0]] = r[1]
+    except Exception:
+        pass
+    return cfg
 
 
 def random_weights() -> bytes:
@@ -55,23 +72,27 @@ def crossover(parent_a: bytes, parent_b: bytes) -> bytes:
     return list_to_weights(child)
 
 
-def mutate(weights_blob: bytes) -> bytes:
+def mutate(weights_blob: bytes, rate=MUTATION_RATE, std=MUTATION_STD) -> bytes:
     """Apply Gaussian mutation to weights."""
     values = weights_to_list(weights_blob)
     for i in range(len(values)):
-        if random.random() < MUTATION_RATE:
-            values[i] += random.gauss(0, MUTATION_STD)
+        if random.random() < rate:
+            values[i] += random.gauss(0, std)
     return list_to_weights(values)
 
 
-def breed_next_generation(brains: list[dict]) -> list[bytes]:
+def breed_next_generation(brains: list[dict], cfg: dict | None = None) -> list[bytes]:
     """
     Produce a new generation of weight blobs from the current population.
 
     brains: list of dicts with 'weights' (bytes) and 'fitness' (float).
+    cfg: optional config dict with mutation_rate, mutation_std, population_size.
     Returns: list of weight blobs for the new generation.
     """
-    # Sort by fitness descending
+    pop_size = int(cfg.get("population_size", POPULATION_SIZE)) if cfg else POPULATION_SIZE
+    mut_rate = cfg.get("mutation_rate", MUTATION_RATE) if cfg else MUTATION_RATE
+    mut_std = cfg.get("mutation_std", MUTATION_STD) if cfg else MUTATION_STD
+
     ranked = sorted(brains, key=lambda b: b["fitness"], reverse=True)
 
     new_weights = []
@@ -81,11 +102,11 @@ def breed_next_generation(brains: list[dict]) -> list[bytes]:
         new_weights.append(ranked[i]["weights"])
 
     # Fill the rest with crossover + mutation
-    while len(new_weights) < POPULATION_SIZE:
+    while len(new_weights) < pop_size:
         parent_a = tournament_select(brains)
         parent_b = tournament_select(brains)
         child = crossover(parent_a["weights"], parent_b["weights"])
-        child = mutate(child)
+        child = mutate(child, rate=mut_rate, std=mut_std)
         new_weights.append(child)
 
     return new_weights

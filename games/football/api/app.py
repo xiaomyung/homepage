@@ -299,53 +299,63 @@ def weights_to_b64(blob):
     return base64.b64encode(blob).decode("ascii")
 
 
-# ── Fitness shaping ──────────────────────────────────────────
+# ── Fitness weights ──────────────────────────────────────────
+# All components normalized to [0, 1] before weighting.
+# Adjust these to rebalance what brains optimise for.
 
-SHAPING_WEIGHT = 0.01  # scale factor for shaping vs goals (goals dominate)
+W_GOALS       = 0.40   # net goals: (scored - conceded + 3) / 6
+W_PROXIMITY   = 0.08   # avg closeness to ball (quadratic falloff)
+W_POSSESSION  = 0.08   # fraction of ticks closer to ball than opponent
+W_ATTACK_ZONE = 0.09   # avg ball closeness to opponent goal
+W_ADVANCE     = 0.05   # ball movement toward opponent goal (clamped)
+W_GOAL_KICKS  = 0.08   # kicks directed at goal (capped at 15/match)
+W_NEAR_MISS   = 0.07   # shots that barely miss (capped at 5/match)
+W_FRAME_HIT   = 0.05   # ball hitting goal frame (capped at 3/match)
+W_STAMINA     = 0.05   # average stamina level
+W_EXHAUSTION  = 0.03   # penalty: fraction of time exhausted
+W_PUSHED      = 0.02   # penalty: times pushed (capped at 5/match)
 
-# S_ = shaping reward/penalty coefficients
-S_PROXIMITY      = 8
-S_KICK           = 0.3
-S_GOAL_KICK      = 0.7
-S_ADVANCE        = 0.5
-S_ADVANCE_CAP    = 5
-S_ATTACK_ZONE    = 6
-S_POSSESSION     = 5
-S_NEAR_MISS      = 3.0
-S_FRAME_HIT      = 1.0
-S_STAMINA        = 3
-S_PUSH_LANDED    = 0.2
-S_EXHAUSTION     = 5
-S_EXHAUSTION_CAP = 4
-S_PUSHED         = 0.15
-S_PUSHED_CAP     = 2
+# Caps for count-based metrics (normalize raw counts to [0, 1])
+CAP_GOAL_KICKS = 15
+CAP_NEAR_MISS  = 5
+CAP_FRAME_HIT  = 3
+CAP_PUSHED     = 5
 
 
-def calc_shaping_score(fitness_data):
-    """Calculate a single shaping score from per-match fitness metrics."""
+def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
+    """Calculate per-match fitness in [0, 1]. All components normalized first."""
+    # Goals component: net goals in [-3, 3] → [0, 1]
+    goals = (goals_scored - goals_conceded + 3) / 6
+
     if not fitness_data or fitness_data.get("ticks", 0) == 0:
-        return 0
+        return goals * W_GOALS
+
     ticks = fitness_data["ticks"]
 
-    proximity = fitness_data.get("ballProximity", 0) / ticks * S_PROXIMITY
-    kicks = fitness_data.get("kicks", 0) * S_KICK
-    goal_kicks = fitness_data.get("goalKicks", 0) * S_GOAL_KICK
-    advance = min(fitness_data.get("ballAdvance", 0) / ticks * S_ADVANCE, S_ADVANCE_CAP)
-    attack_zone = fitness_data.get("ballInAttackZone", 0) / ticks * S_ATTACK_ZONE
-    possession = fitness_data.get("possession", 0) / ticks * S_POSSESSION
-    avg_stamina = fitness_data.get("staminaSum", 0) / ticks * S_STAMINA
-    pushes = fitness_data.get("pushesLanded", 0) * S_PUSH_LANDED
-    near_misses = fitness_data.get("nearMisses", 0) * S_NEAR_MISS
-    frame_hits = fitness_data.get("frameHits", 0) * S_FRAME_HIT
+    proximity   = fitness_data.get("ballProximity", 0) / ticks      # [0, 1]
+    possession  = fitness_data.get("possession", 0) / ticks         # [0, 1]
+    attack_zone = fitness_data.get("ballInAttackZone", 0) / ticks   # [0, 1]
+    advance     = max(0, min(fitness_data.get("ballAdvance", 0) / ticks, 1))  # [0, 1]
+    stamina     = fitness_data.get("staminaSum", 0) / ticks         # [0, 1]
+    exhaustion  = fitness_data.get("exhaustedTicks", 0) / ticks     # [0, 1]
 
-    exhausted_frac = fitness_data.get("exhaustedTicks", 0) / ticks
-    exhaustion_penalty = min(exhausted_frac * S_EXHAUSTION, S_EXHAUSTION_CAP)
-    pushed_penalty = min(fitness_data.get("pushedReceived", 0) * S_PUSHED, S_PUSHED_CAP)
+    goal_kicks  = min(fitness_data.get("goalKicks", 0) / CAP_GOAL_KICKS, 1)
+    near_misses = min(fitness_data.get("nearMisses", 0) / CAP_NEAR_MISS, 1)
+    frame_hits  = min(fitness_data.get("frameHits", 0) / CAP_FRAME_HIT, 1)
+    pushed      = min(fitness_data.get("pushedReceived", 0) / CAP_PUSHED, 1)
 
     return (
-        proximity + kicks + goal_kicks + advance + attack_zone
-        + possession + pushes + near_misses + frame_hits + avg_stamina
-        - exhaustion_penalty - pushed_penalty
+        W_GOALS       * goals
+        + W_PROXIMITY   * proximity
+        + W_POSSESSION  * possession
+        + W_ATTACK_ZONE * attack_zone
+        + W_ADVANCE     * advance
+        + W_GOAL_KICKS  * goal_kicks
+        + W_NEAR_MISS   * near_misses
+        + W_FRAME_HIT   * frame_hits
+        + W_STAMINA     * stamina
+        - W_EXHAUSTION  * exhaustion
+        - W_PUSHED      * pushed
     )
 
 
@@ -429,8 +439,8 @@ def result():
     score_a = data["score_a"]
     score_b = data["score_b"]
     gen_id = data.get("generation_id")
-    shaping_a = calc_shaping_score(data.get("fitness_a"))
-    shaping_b = calc_shaping_score(data.get("fitness_b"))
+    fit_a = calc_match_fitness(data.get("fitness_a"), score_a, score_b)
+    fit_b = calc_match_fitness(data.get("fitness_b"), score_b, score_a)
 
     with _db_lock:
         db = get_db()
@@ -440,9 +450,9 @@ def result():
             "VALUES (?, ?, ?, ?, ?)",
             (gen_id or cur_gen, brain_a_id, brain_b_id, score_a, score_b),
         )
-        for bid, gs, gc, shaping in [
-            (brain_a_id, score_a, score_b, shaping_a),
-            (brain_b_id, score_b, score_a, shaping_b),
+        for bid, gs, gc, fit in [
+            (brain_a_id, score_a, score_b, fit_a),
+            (brain_b_id, score_b, score_a, fit_b),
         ]:
             db.execute(
                 "UPDATE brains SET "
@@ -450,11 +460,9 @@ def result():
                 "goals_scored = goals_scored + ?, "
                 "goals_conceded = goals_conceded + ?, "
                 "shaping_total = shaping_total + ?, "
-                "fitness = CAST((goals_scored + ?) - (goals_conceded + ?) AS REAL) "
-                "  / (matches_played + 1) "
-                "  + (shaping_total + ?) / (matches_played + 1) * ? "
+                "fitness = (shaping_total + ?) / (matches_played + 1) "
                 "WHERE id = ?",
-                (gs, gc, shaping, gs, gc, shaping, SHAPING_WEIGHT, bid),
+                (gs, gc, fit, fit, bid),
             )
         db.commit()
         if gen_id is None or gen_id == cur_gen:
@@ -484,14 +492,14 @@ def results_batch():
             score_a = item["score_a"]
             score_b = item["score_b"]
             gen_id = item.get("generation_id")
-            shaping_a = calc_shaping_score(item.get("fitness_a"))
+            fit_a = calc_match_fitness(item.get("fitness_a"), score_a, score_b)
 
             match_rows.append((gen_id or cur_gen, brain_a_id, brain_b_id or brain_a_id, score_a, score_b))
-            brain_updates.append((score_a, score_b, shaping_a, score_a, score_b, shaping_a, SHAPING_WEIGHT, brain_a_id))
+            brain_updates.append((score_a, score_b, fit_a, fit_a, brain_a_id))
 
             if brain_b_id is not None and item.get("opponent_type", "normal") == "normal":
-                shaping_b = calc_shaping_score(item.get("fitness_b"))
-                brain_updates.append((score_b, score_a, shaping_b, score_b, score_a, shaping_b, SHAPING_WEIGHT, brain_b_id))
+                fit_b = calc_match_fitness(item.get("fitness_b"), score_b, score_a)
+                brain_updates.append((score_b, score_a, fit_b, fit_b, brain_b_id))
 
         total_goals = sum(r[3] + r[4] for r in match_rows)
         db.execute("UPDATE stats SET value = value + ? WHERE key = 'total_matches'", (len(match_rows),))
@@ -508,9 +516,7 @@ def results_batch():
             "goals_scored = goals_scored + ?, "
             "goals_conceded = goals_conceded + ?, "
             "shaping_total = shaping_total + ?, "
-            "fitness = CAST((goals_scored + ?) - (goals_conceded + ?) AS REAL) "
-            "  / (matches_played + 1) "
-            "  + (shaping_total + ?) / (matches_played + 1) * ? "
+            "fitness = (shaping_total + ?) / (matches_played + 1) "
             "WHERE id = ?",
             brain_updates,
         )

@@ -12,7 +12,7 @@ TOTAL_WEIGHTS = sum(
 
 # Defaults — can be overridden by config from DB
 POPULATION_SIZE = 50
-TOURNAMENT_SIZE = 5
+TOURNAMENT_SIZE = 3
 ELITISM_COUNT = 2
 MUTATION_RATE = 0.05
 MUTATION_STD = 0.3
@@ -102,7 +102,7 @@ def breed_next_generation(brains: list[dict], cfg: dict | None = None) -> list[b
         new_weights.append(ranked[i]["weights"])
 
     # Fill with crossover + mutation, reserving ~2% for random injection
-    inject_count = max(1, pop_size // 50)  # ~2% random injection
+    inject_count = max(1, pop_size // 16)  # ~6% random injection
     breed_target = pop_size - inject_count
     while len(new_weights) < breed_target:
         parent_a = tournament_select(brains)

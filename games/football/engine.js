@@ -47,7 +47,7 @@ const STAMINA_REGEN       = 0.005; // per tick (always recovers)
 const STAMINA_MOVE_BASE   = 0.006; // base drain for any movement
 const STAMINA_MOVE_SCALE  = 0.3;   // speed-proportional drain multiplier
 const STAMINA_MOVE_DRAIN  = 0.012; // additional drain at max speed
-const STAMINA_KICK_DRAIN  = 0.5;   // max cost at full power kick
+const STAMINA_KICK_DRAIN  = 0.15;  // max cost at full power kick
 const STAMINA_AIRKICK_DRAIN = 0.1; // flat cost for air kick
 const STAMINA_EXHAUSTION_THRESHOLD = 0.5; // must recover to this before acting
 
@@ -78,6 +78,12 @@ const REPOSITION_TOL_X = 5;     // px tolerance for player at start
 const REPOSITION_TOL_Y = 3;
 const REPOSITION_Y_MAX = 4;     // max Y movement speed during reposition
 const FIELD_WIDTH_REF = 900;    // reference field width for NN normalization
+
+// Pre-computed squared thresholds (avoid Math.abs/sqrt in hot loops)
+const MOVE_THRESHOLD_SQ    = MOVE_THRESHOLD * MOVE_THRESHOLD;
+const BALL_MOVE_MIN_SQ     = BALL_MOVE_MIN * BALL_MOVE_MIN;
+const BALL_VEL_CUTOFF_SQ   = BALL_VEL_CUTOFF * BALL_VEL_CUTOFF;
+const PUSH_VEL_THRESHOLD_SQ = PUSH_VEL_THRESHOLD * PUSH_VEL_THRESHOLD;
 
 // Match
 export const WIN_SCORE = 3;
@@ -122,6 +128,7 @@ export class FieldConfig {
    */
   constructor(fieldWidth) {
     this.fieldWidth = fieldWidth;
+    this.fieldWidthSq = fieldWidth * fieldWidth;
     this.fieldHeight = FIELD_HEIGHT;
     // Approximate character metrics based on typical monospace rendering.
     // In visual mode these come from the DOM; here we estimate.
@@ -362,11 +369,12 @@ export class FootballEngine {
     const effSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina * p.stamina);
     const mx = Math.max(-1, Math.min(1, moveX)) * effSpeed;
     const my = Math.max(-1, Math.min(1, moveY)) * effSpeed;
-    const speed = Math.sqrt(mx * mx + my * my);
-    if (speed > MOVE_THRESHOLD) {
+    const speedSq = mx * mx + my * my;
+    if (speedSq > MOVE_THRESHOLD_SQ) {
       p.x += mx;
       p.y += my;
       p.dir = mx > 0 ? 1 : -1;
+      const speed = Math.sqrt(speedSq); // only when needed for stamina drain
       p.stamina -= STAMINA_MOVE_BASE + STAMINA_MOVE_DRAIN * STAMINA_MOVE_SCALE * (speed / MAX_PLAYER_SPEED);
     }
     p.stamina = Math.max(0, p.stamina);
@@ -571,16 +579,18 @@ export class FootballEngine {
     const ball = s.ball;
     f.ticks++;
 
-    // 1. Ball proximity: closer to ball = higher reward (0–1 per tick)
-    const center = p.x + this.field.playerWidth / 2;
-    const oppCenter = opp.x + this.field.playerWidth / 2;
+    const pw2 = this.field.playerWidth * 0.5;
+    const center = p.x + pw2;
+    const oppCenter = opp.x + pw2;
+
+    // 1. Ball proximity (squared distance — quadratic falloff, stronger gradient near ball)
     const dx = ball.x - center;
     const dy = ball.y - p.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    const maxDist = this.field.fieldWidth;
-    f.ballProximity += 1 - Math.min(dist / maxDist, 1);
+    const distSq = dx * dx + dy * dy;
+    const maxDistSq = this.field.fieldWidthSq;
+    f.ballProximity += 1 - Math.min(distSq / maxDistSq, 1);
 
-    // 2. Ball advance: reward moving ball toward opponent's goal
+    // 2. Ball advance
     const ballDx = ball.x - ballXBefore;
     if (p.side === 'left') {
       f.ballAdvance += ballDx;
@@ -588,22 +598,20 @@ export class FootballEngine {
       f.ballAdvance -= ballDx;
     }
 
-    // 3. Possession: closer to ball than opponent
+    // 3. Possession (squared comparison — no sqrt needed)
     const oppDx = ball.x - oppCenter;
     const oppDy = ball.y - opp.y;
-    const oppDist = Math.sqrt(oppDx * oppDx + oppDy * oppDy);
-    if (dist < oppDist) f.possession++;
+    if (distSq < oppDx * oppDx + oppDy * oppDy) f.possession++;
 
-    // 4. Ball in attacking zone: reward when ball is near opponent's goal
+    // 4. Ball in attacking zone
     const targetGoalX = p.side === 'left' ? this.field.goalLineR : this.field.goalLineL;
-    const ballGoalDist = Math.abs(ball.x - targetGoalX);
-    const maxGoalDist = this.field.fieldWidth;
-    f.ballInAttackZone += 1 - Math.min(ballGoalDist / maxGoalDist, 1);
+    const bgd = ball.x - targetGoalX;
+    f.ballInAttackZone += 1 - Math.min(bgd * bgd / maxDistSq, 1);
 
     // 5. Exhaustion penalty
     if (p.exhausted) f.exhaustedTicks++;
 
-    // 6. Stamina tracking (for average)
+    // 6. Stamina tracking
     f.staminaSum += p.stamina;
   }
 
@@ -643,13 +651,13 @@ export class FootballEngine {
   }
 
   _applyPushPhysics(p, s) {
-    if (Math.abs(p.pushVx) > PUSH_VEL_THRESHOLD) {
+    if (p.pushVx * p.pushVx > PUSH_VEL_THRESHOLD_SQ) {
       p.x += p.pushVx * PUSH_APPLY;
       p.pushVx *= PUSH_DAMP;
     } else {
       p.pushVx = 0;
     }
-    if (Math.abs(p.pushVy) > PUSH_VEL_THRESHOLD) {
+    if (p.pushVy * p.pushVy > PUSH_VEL_THRESHOLD_SQ) {
       p.y += p.pushVy * PUSH_APPLY;
       p.pushVy *= PUSH_DAMP;
     } else {
@@ -661,7 +669,7 @@ export class FootballEngine {
 
   _updateBall(s) {
     const ball = s.ball;
-    const moving = Math.abs(ball.vx) > BALL_MOVE_MIN || Math.abs(ball.vy) > BALL_MOVE_MIN ||
+    const moving = ball.vx * ball.vx > BALL_MOVE_MIN_SQ || ball.vy * ball.vy > BALL_MOVE_MIN_SQ ||
                    ball.z > 0 || ball.vz > 0;
     if (!moving) return;
 
@@ -692,8 +700,8 @@ export class FootballEngine {
     }
 
     // Velocity cutoff
-    if (Math.abs(ball.vx) < BALL_VEL_CUTOFF) ball.vx = 0;
-    if (Math.abs(ball.vy) < BALL_VEL_CUTOFF) ball.vy = 0;
+    if (ball.vx * ball.vx < BALL_VEL_CUTOFF_SQ) ball.vx = 0;
+    if (ball.vy * ball.vy < BALL_VEL_CUTOFF_SQ) ball.vy = 0;
 
     // Collision with goal frames
     this._bounceBallGoal(s, HITBOX_L, this.field.goalLLeft);

@@ -71,22 +71,25 @@ def _init_persist_db():
 
 
 def _load_persisted_state():
-    """Load config, stats, fitness_history from disk if available."""
+    """Load all persistent state from disk: config, stats, history, and population."""
     if not PERSIST_PATH.exists():
         return
     try:
         disk = sqlite3.connect(str(PERSIST_PATH))
         disk.row_factory = sqlite3.Row
+        # Config
         for row in disk.execute("SELECT key, value FROM config").fetchall():
             _mem_db.execute(
                 "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
                 (row["key"], row["value"]),
             )
+        # Stats
         for row in disk.execute("SELECT key, value FROM stats").fetchall():
             _mem_db.execute(
                 "UPDATE stats SET value = ? WHERE key = ?",
                 (row["value"], row["key"]),
             )
+        # Fitness history
         for row in disk.execute(
             "SELECT generation_id, top_fitness, avg_fitness FROM fitness_history"
         ).fetchall():
@@ -94,6 +97,24 @@ def _load_persisted_state():
                 "INSERT OR IGNORE INTO fitness_history VALUES (?, ?, ?)",
                 (row["generation_id"], row["top_fitness"], row["avg_fitness"]),
             )
+        # Generation + brains (restore population so evolution continues)
+        gen_row = disk.execute("SELECT MAX(id) as id FROM generations").fetchone()
+        if gen_row and gen_row["id"]:
+            gen_id = gen_row["id"]
+            _mem_db.execute("INSERT OR IGNORE INTO generations (id) VALUES (?)", (gen_id,))
+            for row in disk.execute(
+                "SELECT id, generation_id, weights, fitness, matches_played, "
+                "goals_scored, goals_conceded, shaping_total "
+                "FROM brains WHERE generation_id = ?", (gen_id,)
+            ).fetchall():
+                _mem_db.execute(
+                    "INSERT OR IGNORE INTO brains (id, generation_id, weights, fitness, "
+                    "matches_played, goals_scored, goals_conceded, shaping_total) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (row["id"], row["generation_id"], row["weights"], row["fitness"],
+                     row["matches_played"], row["goals_scored"], row["goals_conceded"],
+                     row["shaping_total"]),
+                )
         _mem_db.commit()
         disk.close()
     except Exception:
@@ -112,7 +133,7 @@ def _flush_to_disk():
 
 
 def _do_flush():
-    """Copy config, stats, fitness_history from memory to disk."""
+    """Copy persistent state from memory to disk (~200KB every 30s)."""
     _init_persist_db()
     disk = sqlite3.connect(str(PERSIST_PATH))
     # Config
@@ -127,7 +148,7 @@ def _do_flush():
             "INSERT OR REPLACE INTO stats (key, value) VALUES (?, ?)",
             (row["key"], row["value"]),
         )
-    # Fitness history
+    # Fitness history (append only — INSERT OR IGNORE skips existing)
     for row in _mem_db.execute(
         "SELECT generation_id, top_fitness, avg_fitness FROM fitness_history"
     ).fetchall():
@@ -135,6 +156,26 @@ def _do_flush():
             "INSERT OR IGNORE INTO fitness_history VALUES (?, ?, ?)",
             (row["generation_id"], row["top_fitness"], row["avg_fitness"]),
         )
+    # Current generation + brains (overwrite — only keep latest snapshot)
+    gen_id = _mem_db.execute("SELECT MAX(id) as id FROM generations").fetchone()["id"]
+    if gen_id:
+        disk.execute("DELETE FROM brains")
+        disk.execute("DELETE FROM generations")
+        disk.execute("DELETE FROM matches")
+        disk.execute("DELETE FROM sqlite_sequence WHERE name IN ('brains','generations','matches')")
+        disk.execute("INSERT INTO generations (id) VALUES (?)", (gen_id,))
+        for row in _mem_db.execute(
+            "SELECT id, generation_id, weights, fitness, matches_played, "
+            "goals_scored, goals_conceded, shaping_total "
+            "FROM brains WHERE generation_id = ?", (gen_id,)
+        ).fetchall():
+            disk.execute(
+                "INSERT INTO brains (id, generation_id, weights, fitness, matches_played, "
+                "goals_scored, goals_conceded, shaping_total) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (row["id"], row["generation_id"], row["weights"], row["fitness"],
+                 row["matches_played"], row["goals_scored"], row["goals_conceded"],
+                 row["shaping_total"]),
+            )
     disk.commit()
     disk.close()
 

@@ -13,10 +13,11 @@ import { NeuralNet } from './nn.js';
 const API_BASE = '/api/football';
 const BATCH_SIZE = 125;
 const MAX_HEADLESS_TICKS = Math.ceil(45000 / 16); // 45s of game time
+const MIN_FIELD_WIDTH = 600;
+const FIELD_WIDTH_RANGE = 300;
 
-// Randomize field width for generalization
 function randomFieldWidth() {
-  return 600 + Math.random() * 300; // 600–900px
+  return MIN_FIELD_WIDTH + Math.random() * FIELD_WIDTH_RANGE;
 }
 
 function b64ToFloat32(b64) {
@@ -137,9 +138,8 @@ async function trainingLoop() {
         updateStats();
       }
       // Single request for all results
-      reportResults(batchResults).catch(err => console.warn('Batch report failed:', err));
-    } catch (err) {
-      console.warn('Training loop error:', err);
+      reportResults(batchResults).catch(() => {});
+    } catch {
       // Back off on error
       await new Promise(r => setTimeout(r, 2000));
     }

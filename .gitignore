@@ -8,3 +8,4 @@ misc/*
 # Football evolution
 games/football/api/venv/
 games/football/evolution/*.db
+games/football/**/__pycache__/

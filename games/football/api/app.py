@@ -135,9 +135,30 @@ def try_breed(db, gen_id):
                 (new_gen_id, w),
             )
         db.execute("COMMIT")
+        # Clean up old data after successful breeding
+        _cleanup_old_data(db, new_gen_id)
     except Exception:
         db.execute("ROLLBACK")
         raise
+
+
+KEEP_GENERATIONS = 5  # keep brains/matches for the last N generations
+
+
+def _cleanup_old_data(db, current_gen_id):
+    """Delete old brain weights and match rows to keep DB size bounded.
+
+    Keeps the last KEEP_GENERATIONS worth of data. Older generations
+    and their brains/matches are deleted. Runs outside a transaction
+    so it doesn't block training.
+    """
+    cutoff = current_gen_id - KEEP_GENERATIONS
+    if cutoff <= 0:
+        return
+    db.execute("DELETE FROM matches WHERE generation_id < ?", (cutoff,))
+    db.execute("DELETE FROM brains WHERE generation_id < ?", (cutoff,))
+    db.execute("DELETE FROM generations WHERE id < ?", (cutoff,))
+    db.commit()
 
 
 def weights_to_b64(blob):
@@ -344,6 +365,17 @@ def results_batch():
         ]:
             brain_updates.append((gs, gc, shaping, gs, gc, shaping, SHAPING_WEIGHT, bid))
 
+    # Update running totals
+    total_goals = sum(r[3] + r[4] for r in match_rows)  # score_a + score_b
+    db.execute(
+        "UPDATE stats SET value = value + ? WHERE key = 'total_matches'",
+        (len(match_rows),),
+    )
+    db.execute(
+        "UPDATE stats SET value = value + ? WHERE key = 'total_goals'",
+        (total_goals,),
+    )
+
     db.executemany(
         "INSERT INTO matches (generation_id, brain_a_id, brain_b_id, score_a, score_b) "
         "VALUES (?, ?, ?, ?, ?)",
@@ -407,13 +439,16 @@ def stats():
         "SELECT MAX(fitness) as f FROM brains WHERE generation_id = ?", (gen_id,)
     ).fetchone()
 
-    # Total matches across all generations
-    total = db.execute("SELECT COUNT(*) as c FROM matches").fetchone()
-
-    # Average goals per match
-    avg = db.execute(
-        "SELECT AVG(score_a + score_b) as avg_goals FROM matches"
+    # Running totals (survive cleanup of old data)
+    total_matches = db.execute(
+        "SELECT value FROM stats WHERE key = 'total_matches'"
     ).fetchone()
+    total_goals = db.execute(
+        "SELECT value FROM stats WHERE key = 'total_goals'"
+    ).fetchone()
+    tm = int(total_matches["value"]) if total_matches else 0
+    tg = total_goals["value"] if total_goals else 0
+    avg_goals = round(tg / tm, 1) if tm > 0 else 0
 
     # Population info
     pop = db.execute(
@@ -426,8 +461,8 @@ def stats():
         "generation": gen_id,
         "population": pop["c"],
         "top_fitness": round(top["f"] or 0, 2),
-        "total_matches": total["c"],
-        "avg_goals": round(avg["avg_goals"] or 0, 1),
+        "total_matches": tm,
+        "avg_goals": avg_goals,
         "min_matches_current_gen": pop["min_matches"] or 0,
     })
 
@@ -439,6 +474,7 @@ def reset():
     db.execute("DELETE FROM matches")
     db.execute("DELETE FROM brains")
     db.execute("DELETE FROM generations")
+    db.execute("UPDATE stats SET value = 0")
     db.execute("DELETE FROM sqlite_sequence")
     db.commit()
     ensure_generation_zero(db)

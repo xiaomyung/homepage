@@ -173,6 +173,7 @@ let matchEnding = false;
 
 // Manual control state
 const keys = {};
+const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
 let kickPressed = false;
 let pushPressed = false;
 
@@ -310,6 +311,7 @@ function render() {
 function updateScoreboard() {
   if (!state) return;
   sbLeft.textContent = vp1.name + ' ' + state.scoreL + ' ';
+  sbSep.textContent = '\u2502';
   sbRight.textContent = ' ' + state.scoreR + ' ' + vp2.name;
 }
 
@@ -493,10 +495,16 @@ function update() {
     matchTimerStopped = true;
     setTimeout(nextMatch, 2000);
     if (state.winner) {
-      scoreboardEl.textContent = 'Winner: ' + (state.winner === 'left' ? vp1.name : vp2.name);
+      const winnerName = state.winner === 'left' ? vp1.name : vp2.name;
+      sbLeft.textContent = '';
+      sbSep.textContent = 'Winner: ' + winnerName;
+      sbRight.textContent = '';
     } else {
-      scoreboardEl.textContent = 'Draw!';
+      sbLeft.textContent = '';
+      sbSep.textContent = 'Draw!';
+      sbRight.textContent = '';
     }
+    timerEl.textContent = '';
     return;
   }
 
@@ -569,7 +577,7 @@ function activateManualMode() {
 
 document.addEventListener('keydown', e => {
   keys[e.code] = true;
-  if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+  if (MOVE_KEYS.has(e.code)) {
     activateManualMode();
   }
 });
@@ -705,7 +713,7 @@ function startWorkers() {
       });
       workers.push(w);
     } catch (err) {
-      console.warn(`Failed to start training worker ${i}:`, err);
+      // Worker failed to start — training continues with remaining workers
     }
   }
 }

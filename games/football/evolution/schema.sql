@@ -26,3 +26,11 @@ CREATE TABLE IF NOT EXISTS matches (
 
 CREATE INDEX IF NOT EXISTS idx_brains_gen ON brains(generation_id);
 CREATE INDEX IF NOT EXISTS idx_matches_gen ON matches(generation_id);
+
+CREATE TABLE IF NOT EXISTS stats (
+    key TEXT PRIMARY KEY,
+    value REAL DEFAULT 0
+);
+
+INSERT OR IGNORE INTO stats (key, value) VALUES ('total_matches', 0);
+INSERT OR IGNORE INTO stats (key, value) VALUES ('total_goals', 0);

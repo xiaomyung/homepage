@@ -44,8 +44,18 @@ const PUSH_VICTIM_MULT = 2;     // pushed player loses 2x
 
 // Stamina
 const STAMINA_REGEN       = 0.005; // per tick (always recovers)
-const STAMINA_MOVE_DRAIN  = 0.012; // per tick at max speed
-const STAMINA_KICK_DRAIN  = 0.1;   // at max kick power
+const STAMINA_MOVE_BASE   = 0.006; // base drain for any movement
+const STAMINA_MOVE_DRAIN  = 0.012; // additional drain at max speed
+const STAMINA_KICK_DRAIN  = 0.1;   // flat cost per kick
+const STAMINA_AIRKICK_DRAIN = 0.1; // flat cost for air kick
+const STAMINA_EXHAUSTION_THRESHOLD = 0.5; // must recover to this before acting
+
+// Display / animation
+const BALL_RADIUS    = 4;
+const JUMP_HEIGHT    = 18;
+const JUMP_PHASE_MS  = 400;
+const WALK_ANIM_BASE = 6;
+const MOVE_THRESHOLD = 0.1;
 
 // Match
 export const WIN_SCORE = 3;
@@ -279,14 +289,12 @@ export class FootballEngine {
     this._clampPlayer(s.p2);
 
     // Track velocity from position delta
-    s.p1.vx = s.p1.x - s.p1.prevX;
-    s.p1.vy = s.p1.y - s.p1.prevY;
-    s.p2.vx = s.p2.x - s.p2.prevX;
-    s.p2.vy = s.p2.y - s.p2.prevY;
-    s.p1.prevX = s.p1.x;
-    s.p1.prevY = s.p1.y;
-    s.p2.prevX = s.p2.x;
-    s.p2.prevY = s.p2.y;
+    for (const p of [s.p1, s.p2]) {
+      p.vx = p.x - p.prevX;
+      p.vy = p.y - p.prevY;
+      p.prevX = p.x;
+      p.prevY = p.y;
+    }
 
     // Ball physics
     const ballXBefore = s.ball.x;
@@ -312,13 +320,17 @@ export class FootballEngine {
     }
   }
 
+  /** Update exhaustion state and apply regen. Returns true if exhausted. */
+  _updateStamina(p) {
+    if (p.stamina <= 0) p.exhausted = true;
+    if (p.exhausted && p.stamina >= STAMINA_EXHAUSTION_THRESHOLD) p.exhausted = false;
+    p.stamina = Math.min(1, p.stamina + STAMINA_REGEN);
+    return p.exhausted;
+  }
+
   /** Fast path for headless training — no animations, instant kicks/pushes. */
   _applyOutputsHeadless(s, p, out) {
-    // Exhaustion
-    if (p.stamina <= 0) p.exhausted = true;
-    if (p.exhausted && p.stamina >= 0.5) p.exhausted = false;
-    p.stamina = Math.min(1, p.stamina + STAMINA_REGEN);
-    if (p.exhausted) return;
+    if (this._updateStamina(p)) return;
 
     const [moveX, moveY, kick, kickDx, kickDy, kickDz, kickPower, push, pushPower] = out;
 
@@ -331,11 +343,11 @@ export class FootballEngine {
       p.x += mx;
       p.y += my;
       p.dir = mx > 0 ? 1 : -1;
-      p.stamina -= 0.006 + STAMINA_MOVE_DRAIN * 0.3 * (speed / MAX_PLAYER_SPEED);
+      p.stamina -= STAMINA_MOVE_BASE + STAMINA_MOVE_DRAIN * 0.3 * (speed / MAX_PLAYER_SPEED);
     }
     p.stamina = Math.max(0, p.stamina);
 
-    // Push — instant, no animation delay
+    // Push — instant
     if (push > 0) {
       const opp = p === s.p1 ? s.p2 : s.p1;
       this._tryPush(s, p, opp, pushPower);
@@ -356,15 +368,7 @@ export class FootballEngine {
     p.stateTime += TICK;
     p.ft++;
 
-    // Exhaustion: triggers at <=0, clears at 50% (checked BEFORE regen)
-    if (p.stamina <= 0) p.exhausted = true;
-    if (p.exhausted && p.stamina >= 0.5) p.exhausted = false;
-
-    // Stamina always recovers, even during animations and exhaustion
-    p.stamina = Math.min(1, p.stamina + STAMINA_REGEN);
-
-    // Exhausted — can't do anything, just stand and recover
-    if (p.exhausted) {
+    if (this._updateStamina(p)) {
       if (p.state !== 'idle') this._setState(p, 'idle');
       p.jumpY = 0;
       return;
@@ -383,13 +387,13 @@ export class FootballEngine {
     const my = Math.max(-1, Math.min(1, moveY)) * effectiveMaxSpeed;
     const speed = Math.sqrt(mx * mx + my * my);
 
-    if (speed > 0.1) {
+    if (speed > MOVE_THRESHOLD) {
       p.x += mx;
       p.y += my;
       p.dir = mx > 0 ? 1 : -1;
-      p.stamina -= 0.006 + STAMINA_MOVE_DRAIN * 0.3 * (speed / MAX_PLAYER_SPEED);
+      p.stamina -= STAMINA_MOVE_BASE + STAMINA_MOVE_DRAIN * 0.3 * (speed / MAX_PLAYER_SPEED);
       if (p.state !== 'walk') this._setState(p, 'walk');
-      const walkInt = Math.max(2, Math.round(6 * (MAX_PLAYER_SPEED / 2) / speed));
+      const walkInt = Math.max(2, Math.round(WALK_ANIM_BASE * (MAX_PLAYER_SPEED / 2) / speed));
       if (p.ft % walkInt === 0) p.fi = (p.fi + 1) % 2;
     } else {
       if (p.state !== 'idle') this._setState(p, 'idle');
@@ -445,8 +449,8 @@ export class FootballEngine {
         if (p.stateTime >= PUSH_ANIM_MS) this._setState(p, 'idle');
         return true;
       case 'jump': {
-        const phase = (p.stateTime % 400) / 400;
-        p.jumpY = Math.sin(phase * Math.PI) * 18;
+        const phase = (p.stateTime % JUMP_PHASE_MS) / JUMP_PHASE_MS;
+        p.jumpY = Math.sin(phase * Math.PI) * JUMP_HEIGHT;
         if (p.stateTime > 1500) {
           p.jumpY = 0;
           this._setState(p, 'idle');
@@ -479,7 +483,7 @@ export class FootballEngine {
     if (s.ball.z > 1) {
       p.airKickZ = s.ball.z;
       p.airKickFired = false;
-      p.stamina = Math.max(0, p.stamina - 0.1); // airkick costs 10% stamina
+      p.stamina = Math.max(0, p.stamina - STAMINA_AIRKICK_DRAIN);
       this._setState(p, 'airkick');
     } else {
       this._setState(p, 'kick');
@@ -676,7 +680,7 @@ export class FootballEngine {
   _bounceBallGoal(s, hitbox, goalLeft) {
     const ball = s.ball;
     const { charW, lineH } = this.field;
-    const br = 4;
+    const br = BALL_RADIUS;
     const bh = ball.y + ball.z;
     for (const [row, col] of hitbox) {
       const cx = goalLeft + col * charW;
@@ -816,9 +820,7 @@ export class FootballEngine {
   }
 
   _resetPlayerPos(p) {
-    const x = p.side === 'left'
-      ? this.field.midX - STARTING_GAP - this.field.playerWidth / 2
-      : this.field.midX + STARTING_GAP - this.field.playerWidth / 2;
+    const x = this._startingX(p);
     p.x = x;
     p.y = FIELD_HEIGHT / 2;
     p.dir = p.side === 'left' ? 1 : -1;
@@ -850,8 +852,8 @@ export class FootballEngine {
       s.pauseTimer--;
       if (s.goalScorer) {
         s.goalScorer.stateTime += TICK;
-        const phase = (s.goalScorer.stateTime % 400) / 400;
-        s.goalScorer.jumpY = Math.sin(phase * Math.PI) * 18;
+        const phase = (s.goalScorer.stateTime % JUMP_PHASE_MS) / JUMP_PHASE_MS;
+        s.goalScorer.jumpY = Math.sin(phase * Math.PI) * JUMP_HEIGHT;
         s.goalScorer.state = 'jump'; // direct set — keeps stateTime running for continuous jump
       }
       if (s.pauseTimer <= 0) this._resetMatch(s);
@@ -863,8 +865,8 @@ export class FootballEngine {
       [s.p1, s.p2].forEach(p => {
         if (p.state === 'jump') {
           p.stateTime += TICK;
-          const phase = (p.stateTime % 400) / 400;
-          p.jumpY = Math.sin(phase * Math.PI) * 18;
+          const phase = (p.stateTime % JUMP_PHASE_MS) / JUMP_PHASE_MS;
+          p.jumpY = Math.sin(phase * Math.PI) * JUMP_HEIGHT;
         }
       });
       // Update ball during goal roll

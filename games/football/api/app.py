@@ -242,7 +242,7 @@ def matchup():
                 weight_cache[b["id"]] = None if b["id"] in known_ids else weights_to_b64(b["weights"])
             pairs.append({
                 "brain_a": {"id": a["id"], "weights": weight_cache[a["id"]]},
-                "brain_b": {"id": b["id"], "weights": weight_cache[b["id"]]},
+                "brain_b": {"id": b["id"], "weights": weight_cache[b["id"]], "type": "normal"},
                 "generation_id": gen_id,
             })
 
@@ -353,7 +353,6 @@ def result():
     )
 
     # Single UPDATE per brain: update stats + recompute fitness inline
-    is_draw = 1 if score_a == score_b else 0
     for bid, gs, gc, shaping in [
         (brain_a_id, score_a, score_b, shaping_a),
         (brain_b_id, score_b, score_a, shaping_b),

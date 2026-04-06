@@ -11,7 +11,6 @@ CREATE TABLE IF NOT EXISTS brains (
     matches_played INTEGER DEFAULT 0,
     goals_scored INTEGER DEFAULT 0,
     goals_conceded INTEGER DEFAULT 0,
-    draws INTEGER DEFAULT 0,
     shaping_total REAL DEFAULT 0
 );
 

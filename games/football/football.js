@@ -831,7 +831,6 @@ window.addEventListener('resize', () => {
 
 let trainerSimsPerSec = 0;
 const WORKER_COUNT = navigator.hardwareConcurrency ? Math.max(1, navigator.hardwareConcurrency - 2) : 2;
-const workers = [];
 
 function updateStatsDisplay(data) {
   if (!data) {
@@ -867,7 +866,6 @@ function startWorkers() {
           trainerSimsPerSec = workerSimsPerSec.reduce((a, b) => a + b, 0);
         }
       });
-      workers.push(w);
     } catch (err) {
       // Worker failed to start — training continues with remaining workers
     }

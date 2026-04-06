@@ -667,7 +667,7 @@ export class FootballEngine {
 
     // Ceiling
     if (ball.y + ball.z > this.field.ceiling) {
-      ball.z = this.field.ceiling - ball.y;
+      ball.z = Math.max(0, this.field.ceiling - ball.y);
       ball.vz = -Math.abs(ball.vz) * AIR_BOUNCE;
     }
 

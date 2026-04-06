@@ -264,8 +264,8 @@ footer {
   width: 100%;
   max-width: 900px;
   height: 120px;
-  overflow: hidden;
-  margin-top: 0.75rem;
+  overflow: visible;
+  margin-top: 2.5rem;
 }
 
 #game-stage pre {
@@ -306,14 +306,35 @@ footer {
 #game-stage .fb-goal-r { left: auto !important; right: 30px; }
 
 #game-stage .fb-scoreboard {
+  position: absolute;
   bottom: auto;
-  top: 0;
-  left: 50% !important;
+  top: -20px;
+  left: 50%;
   transform: translateX(-50%);
-  color: rgba(255,255,255,0.2);
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
+  font-family: monospace;
   font-size: 0.6rem;
-  text-align: center;
+  color: rgba(255,255,255,0.2);
   pointer-events: none;
+  white-space: nowrap;
+}
+
+#game-stage .fb-sb-left {
+  text-align: right;
+  min-width: 60px;
+}
+
+#game-stage .fb-sb-sep {
+  flex: 0 0 auto;
+  padding: 0 4px;
+}
+
+#game-stage .fb-sb-right {
+  text-align: left;
+  min-width: 60px;
 }
 
 #game-stage .fb-name {
@@ -328,4 +349,163 @@ footer {
   transition: opacity 0.2s;
   transform-origin: 0 0;
   margin-bottom: 52px;
+}
+
+#game-stage .fb-timer {
+  width: 100%;
+  text-align: center;
+  color: rgba(255,255,255,0.2);
+  font-size: 0.5rem;
+  line-height: 1;
+  margin-top: 2px;
+}
+
+#game-stage .fb-brewing {
+  bottom: auto;
+  top: 50%;
+  left: 50% !important;
+  transform: translate(-50%, -50%);
+  color: rgba(255,255,255,0.25);
+  font-size: 0.8rem;
+  pointer-events: none;
+}
+
+.fb-stats-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  max-width: 900px;
+  margin-top: 0.35rem;
+}
+
+.fb-stats {
+  flex: 1;
+  color: rgba(255,255,255,0.15);
+  font-size: 0.55rem;
+  text-align: center;
+  pointer-events: none;
+  font-family: var(--mono);
+  white-space: pre;
+  padding: 0.25rem 0;
+}
+
+.fb-reset-btn {
+  flex: 0 0 auto;
+  margin-right: 4px;
+  width: 24px;
+  height: 24px;
+  padding: 4px;
+  border: 1px solid var(--accent-dim);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fb-reset-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.fb-reset-btn:hover {
+  color: var(--text-dim);
+  border-color: rgba(255,255,255,0.12);
+  background: var(--surface-hover);
+}
+
+/* ── Stamina bar ── */
+
+#game-stage .fb-stamina {
+  position: absolute;
+  top: -8px;
+  width: 50px;
+  height: 3px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 1.5px;
+  overflow: hidden;
+}
+
+#game-stage .fb-stamina-l { left: 32px; }
+#game-stage .fb-stamina-r { right: 32px; }
+
+#game-stage .fb-stamina .fb-stamina-fill {
+  height: 100%;
+  width: 100%;
+  background: rgba(255,255,255,0.25);
+  transition: width 0.1s linear;
+  border-radius: 1.5px;
+}
+
+/* ── Mobile touch controls ── */
+
+.fb-touch-controls {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 1rem;
+  z-index: 100;
+  justify-content: space-between;
+  align-items: flex-end;
+  pointer-events: none;
+}
+
+.fb-touch-controls > * {
+  pointer-events: auto;
+}
+
+.fb-joystick-area {
+  flex: 0 0 auto;
+}
+
+.fb-joystick-base {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  position: relative;
+  touch-action: none;
+}
+
+.fb-joystick-thumb {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.2);
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin: -16px 0 0 -16px;
+  transition: transform 0.05s;
+}
+
+.fb-touch-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.fb-btn-kick,
+.fb-btn-push {
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  padding: 0.8rem 1.2rem;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.4);
+  touch-action: manipulation;
+  user-select: none;
+}
+
+@media (max-width: 720px) {
+  .fb-touch-controls {
+    display: flex;
+  }
 }

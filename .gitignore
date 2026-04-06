@@ -4,3 +4,7 @@ CLAUDE.md
 *.crt
 misc
 misc/*
+
+# Football evolution
+games/football/api/venv/
+games/football/evolution/*.db

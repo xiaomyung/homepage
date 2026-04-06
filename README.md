@@ -15,7 +15,13 @@ Personal homelab dashboard served at `https://xiaomyung.com` — a static page w
 | `index.html` | Markup, service cards, section layout |
 | `style.css` | Monochrome dark theme, responsive grid, animations |
 | `app.js` | Health checks via `fetch` (5s timeout, 30s re-check); stagger animation setup; grid overflow capping |
-| `football.js` | ASCII football mini-game — two AI stickmen on a pitch below the dashboard; mouse controls player 1, click/tap to kick |
+| `games/football/football.js` | ASCII football — visual renderer, manual controls, API client |
+| `games/football/engine.js` | DOM-free game physics engine (used for both visual and headless) |
+| `games/football/nn.js` | Feedforward neural network (18→20→16→12→9, tanh) |
+| `games/football/trainer.js` | Web Worker for background headless training |
+| `games/football/api/app.py` | Flask API server for evolution backend |
+| `games/football/evolution/ga.py` | Genetic algorithm (selection, crossover, mutation) |
+| `games/football/evolution/schema.sql` | SQLite schema for brains and matches |
 | `misc/` | Dev assets (screenshots, drafts) — not served |
 
 ## Layout
@@ -45,6 +51,57 @@ Sections with 3+ cards are capped at ~2.2 visible cards with a hidden-scrollbar 
 | Dev Tools | Forgejo | `xiaomyung.com/forgejo` |
 | Gaming | Minecraft Panel | `xiaomyung.com/mc` |
 | Gaming | BlueMap | `xiaomyung.com/bluemap` |
+
+## Football AI Evolution
+
+The ASCII football game features neural network-controlled players trained via a genetic algorithm. Evolution runs server-side (Python + SQLite); each browser tab acts as a stateless match arena — more tabs = faster evolution.
+
+### Neural Network
+
+- **Architecture:** Input(18) → Hidden(20) → Hidden(16) → Hidden(12) → Output(9)
+- **Inputs:** player/opponent positions and velocities, player stamina, ball position/velocity (3D), goal positions, field width
+- **Outputs:** movement direction, kick (yes/no + 3D direction + power), push (yes/no + power)
+- **Activation:** tanh throughout, outputs scaled to capped physical values
+
+### Genetic Algorithm
+
+- Population: 50 brains, tournament selection (k=5), uniform crossover
+- Mutation: 5% rate, Gaussian noise (σ=0.3), top 2 elites preserved
+- New generation breeds when all brains have played ≥5 matches
+
+### Game Mechanics
+
+- **Stamina:** drains with speed, kicks, and pushes; auto-recovers; low stamina reduces caps
+- **Push:** NN-controlled strength; pusher loses stamina, victim loses 2×
+- **Kick accuracy:** noise proportional to power — max power = wild shot
+- **Headless sims:** randomize field width (600–900px) so brains generalize
+
+### Manual Controls
+
+- **WASD** — movement; **Left click** — kick; **Right click** — push
+- **Mobile:** on-screen joystick + kick/push buttons (appears ≤720px)
+- Manual mode disables the 120s match timeout
+
+### API Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/football/matchup?count=N` | GET | Get N brain pairs to play |
+| `/api/football/result` | POST | Report match outcome |
+| `/api/football/best` | GET | Current best brain weights |
+| `/api/football/stats` | GET | Generation, fitness, match counts |
+
+### Running the Backend
+
+```sh
+cd games/football/api
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python app.py  # runs on 127.0.0.1:5050
+```
+
+Caddy proxies `/api/football/*` to the Flask server. The SQLite database is auto-created at `games/football/evolution/football.db`.
 
 ## Deployment
 

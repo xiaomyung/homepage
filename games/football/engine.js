@@ -336,9 +336,11 @@ export class FootballEngine {
       this._resetBall(s);
     }
 
-    // Fitness shaping — accumulate per tick
-    this._trackFitness(s, s.p1, 'p1', ballXBefore);
-    this._trackFitness(s, s.p2, 'p2', ballXBefore);
+    // Fitness shaping — headless samples every 3rd tick for speed
+    if (!this.headless || s.tickCount % 3 === 0) {
+      this._trackFitness(s, s.p1, 'p1', ballXBefore);
+      this._trackFitness(s, s.p2, 'p2', ballXBefore);
+    }
   }
 
   /* ── NN output application ─────────────────────────────── */
@@ -704,8 +706,13 @@ export class FootballEngine {
     if (ball.vy * ball.vy < BALL_VEL_CUTOFF_SQ) ball.vy = 0;
 
     // Collision with goal frames
-    this._bounceBallGoal(s, HITBOX_L, this.field.goalLLeft);
-    this._bounceBallGoal(s, HITBOX_R, this.field.goalRLeft);
+    // Quick bounds check before hitbox iteration
+    if (ball.x - BALL_RADIUS < this.field.goalLLeft + this.field.goalLWidth) {
+      this._bounceBallGoal(s, HITBOX_L, this.field.goalLLeft);
+    }
+    if (ball.x + BALL_RADIUS > this.field.goalRLeft) {
+      this._bounceBallGoal(s, HITBOX_R, this.field.goalRLeft);
+    }
 
     // Out of bounds
     if (ball.x < -OUT_OF_BOUNDS || ball.x > this.field.fieldWidth + OUT_OF_BOUNDS) {
@@ -757,9 +764,14 @@ export class FootballEngine {
 
   _clampPlayer(p) {
     p.y = Math.max(0, Math.min(FIELD_HEIGHT, p.y));
-    const { charW, lineH, goalLLeft, goalRLeft, midX, playerWidth } = this.field;
-    this._collidePlayerGoal(p, HITBOX_L, goalLLeft, charW, lineH, playerWidth, midX);
-    this._collidePlayerGoal(p, HITBOX_R, goalRLeft, charW, lineH, playerWidth, midX);
+    const { charW, lineH, goalLLeft, goalLWidth, goalRLeft, goalRWidth, midX, playerWidth } = this.field;
+    // Quick bounding box pre-check — skip goal collision if player far from goal
+    if (p.x < goalLLeft + goalLWidth) {
+      this._collidePlayerGoal(p, HITBOX_L, goalLLeft, charW, lineH, playerWidth, midX);
+    }
+    if (p.x + playerWidth > goalRLeft) {
+      this._collidePlayerGoal(p, HITBOX_R, goalRLeft, charW, lineH, playerWidth, midX);
+    }
   }
 
   _collidePlayerGoal(p, hitbox, goalLeft, charW, lineH, pw, midX) {

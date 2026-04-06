@@ -49,10 +49,20 @@ async function reportResults(results) {
 const inputBufA = new Array(18);
 const inputBufB = new Array(18);
 
+// Reuse engine per field width to avoid constructor overhead
+const engineCache = new Map();
+function getEngine(fieldWidth) {
+  // Round to nearest 10px to limit cache size
+  const key = Math.round(fieldWidth / 10) * 10;
+  if (!engineCache.has(key)) {
+    engineCache.set(key, new FootballEngine(new FieldConfig(key), true));
+  }
+  return engineCache.get(key);
+}
+
 function runMatch(nnA, nnB) {
   const fieldWidth = randomFieldWidth();
-  const field = new FieldConfig(fieldWidth);
-  const engine = new FootballEngine(field, true);
+  const engine = getEngine(fieldWidth);
   const state = engine.createState();
 
   let ticks = 0;

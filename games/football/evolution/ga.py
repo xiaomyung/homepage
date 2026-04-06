@@ -101,13 +101,19 @@ def breed_next_generation(brains: list[dict], cfg: dict | None = None) -> list[b
     for i in range(min(ELITISM_COUNT, len(ranked))):
         new_weights.append(ranked[i]["weights"])
 
-    # Fill the rest with crossover + mutation
-    while len(new_weights) < pop_size:
+    # Fill with crossover + mutation, reserving 10% for random injection
+    inject_count = max(1, pop_size // 10)
+    breed_target = pop_size - inject_count
+    while len(new_weights) < breed_target:
         parent_a = tournament_select(brains)
         parent_b = tournament_select(brains)
         child = crossover(parent_a["weights"], parent_b["weights"])
         child = mutate(child, rate=mut_rate, std=mut_std)
         new_weights.append(child)
+
+    # Random injection: fresh brains to maintain diversity
+    for _ in range(inject_count):
+        new_weights.append(random_weights())
 
     return new_weights
 

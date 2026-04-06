@@ -44,6 +44,7 @@ INSERT OR IGNORE INTO config (key, value) VALUES ('mutation_rate', 0.05);
 INSERT OR IGNORE INTO config (key, value) VALUES ('mutation_std', 0.3);
 INSERT OR IGNORE INTO config (key, value) VALUES ('population_size', 50);
 INSERT OR IGNORE INTO config (key, value) VALUES ('match_duration', 45);
+INSERT OR IGNORE INTO config (key, value) VALUES ('goal_size', 2.0);
 
 CREATE TABLE IF NOT EXISTS fitness_history (
     generation_id INTEGER PRIMARY KEY,

@@ -146,11 +146,39 @@ def try_breed(db, gen_id):
                 (new_gen_id, w),
             )
         db.execute("COMMIT")
+
+        # Shrink goal size toward 1.0 when brains score goals
+        _shrink_goal_size(db, gen_id)
+
         # Clean up old data after successful breeding
         _cleanup_old_data(db, new_gen_id)
     except Exception:
         db.execute("ROLLBACK")
         raise
+
+
+GOAL_SIZE_SHRINK = 0.02  # shrink per qualifying generation
+GOAL_SIZE_MIN    = 1.0   # normal goal size
+
+
+def _shrink_goal_size(db, gen_id):
+    """Shrink goal opening toward normal when brains score."""
+    row = db.execute("SELECT value FROM config WHERE key = 'goal_size'").fetchone()
+    size = row["value"] if row else 2.0
+    if size <= GOAL_SIZE_MIN:
+        return
+    # Check if any goals scored in this generation
+    goals = db.execute(
+        "SELECT SUM(score_a + score_b) as g FROM matches WHERE generation_id = ?",
+        (gen_id,),
+    ).fetchone()
+    if goals and goals["g"] and goals["g"] > 0:
+        new_size = max(GOAL_SIZE_MIN, size - GOAL_SIZE_SHRINK)
+        db.execute(
+            "INSERT OR REPLACE INTO config (key, value) VALUES ('goal_size', ?)",
+            (new_size,),
+        )
+        db.commit()
 
 
 KEEP_GENERATIONS = 5  # keep brains/matches for the last N generations
@@ -246,11 +274,16 @@ def matchup():
                 "generation_id": gen_id,
             })
 
-    # Include match_duration so trainer can adjust
+    # Include config so trainer can adjust
     md_row = db.execute("SELECT value FROM config WHERE key = 'match_duration'").fetchone()
-    match_duration = md_row["value"] if md_row else 45
+    gs_row = db.execute("SELECT value FROM config WHERE key = 'goal_size'").fetchone()
 
-    return jsonify({"pairs": pairs, "generation_id": gen_id, "match_duration": match_duration})
+    return jsonify({
+        "pairs": pairs,
+        "generation_id": gen_id,
+        "match_duration": md_row["value"] if md_row else 45,
+        "goal_size": gs_row["value"] if gs_row else 2.0,
+    })
 
 
 SHAPING_WEIGHT = 0.1  # scale factor for shaping vs goals
@@ -263,6 +296,8 @@ S_ADVANCE        = 0.5   # ball advance per tick
 S_ADVANCE_CAP    = 5     # max advance reward
 S_ATTACK_ZONE    = 6     # ball near opponent goal (0–1 per tick, scaled)
 S_POSSESSION     = 5     # fraction of time closer to ball
+S_NEAR_MISS      = 3.0   # per near-miss (ball crossed goal line, almost scored)
+S_FRAME_HIT      = 1.0   # per frame hit (ball reached goal area)
 S_STAMINA        = 3     # average stamina level
 S_PUSH_LANDED    = 0.2   # per successful push
 S_EXHAUSTION     = 5     # exhaustion fraction penalty scale
@@ -299,6 +334,8 @@ def calc_shaping_score(fitness_data):
     possession = fitness_data.get("possession", 0) / ticks * S_POSSESSION
     avg_stamina = fitness_data.get("staminaSum", 0) / ticks * S_STAMINA
     pushes = fitness_data.get("pushesLanded", 0) * S_PUSH_LANDED
+    near_misses = fitness_data.get("nearMisses", 0) * S_NEAR_MISS
+    frame_hits = fitness_data.get("frameHits", 0) * S_FRAME_HIT
 
     exhausted_frac = fitness_data.get("exhaustedTicks", 0) / ticks
     exhaustion_penalty = min(exhausted_frac * S_EXHAUSTION, S_EXHAUSTION_CAP)
@@ -312,6 +349,8 @@ def calc_shaping_score(fitness_data):
         + attack_zone
         + possession
         + pushes
+        + near_misses
+        + frame_hits
         + avg_stamina
         - exhaustion_penalty
         - pushed_penalty

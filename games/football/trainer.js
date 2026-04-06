@@ -13,6 +13,7 @@ import { NeuralNet } from './nn.js';
 const API_BASE = '/api/football';
 const BATCH_SIZE = 125;
 let maxHeadlessTicks = Math.ceil(45000 / 16); // default 45s, updated from API
+let goalSize = 2.0; // adaptive goal size, updated from API
 const MIN_FIELD_WIDTH = 600;
 const FIELD_WIDTH_RANGE = 300;
 
@@ -49,20 +50,10 @@ async function reportResults(results) {
 const inputBufA = new Array(18);
 const inputBufB = new Array(18);
 
-// Reuse engine per field width to avoid constructor overhead
-const engineCache = new Map();
-function getEngine(fieldWidth) {
-  // Round to nearest 10px to limit cache size
-  const key = Math.round(fieldWidth / 10) * 10;
-  if (!engineCache.has(key)) {
-    engineCache.set(key, new FootballEngine(new FieldConfig(key), true));
-  }
-  return engineCache.get(key);
-}
-
 function runMatch(nnA, nnB) {
   const fieldWidth = randomFieldWidth();
-  const engine = getEngine(fieldWidth);
+  const field = new FieldConfig(fieldWidth, goalSize);
+  const engine = new FootballEngine(field, true);
   const state = engine.createState();
 
   let ticks = 0;
@@ -119,6 +110,9 @@ async function trainingLoop() {
       const genId = data.generation_id;
       if (data.match_duration) {
         maxHeadlessTicks = Math.ceil(data.match_duration * 1000 / 16);
+      }
+      if (data.goal_size !== undefined) {
+        goalSize = data.goal_size;
       }
 
       // Clear cache on generation change

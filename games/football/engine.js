@@ -126,9 +126,10 @@ export class FieldConfig {
   /**
    * @param {number} fieldWidth — total stage width in px
    */
-  constructor(fieldWidth) {
+  constructor(fieldWidth, goalMult = 1) {
     this.fieldWidth = fieldWidth;
     this.fieldWidthSq = fieldWidth * fieldWidth;
+    this.goalMult = goalMult; // 1=normal, 2=double-size goals (easier)
     this.fieldHeight = FIELD_HEIGHT;
     // Approximate character metrics based on typical monospace rendering.
     // In visual mode these come from the DOM; here we estimate.
@@ -216,6 +217,8 @@ function emptyFitness() {
     pushesLanded: 0,      // reward: successful pushes on opponent
     pushedReceived: 0,    // penalty: getting pushed
     goalKicks: 0,         // reward: kicks that advance ball toward goal
+    nearMisses: 0,        // reward: ball crossed goal line but missed opening
+    frameHits: 0,         // reward: ball bounced off goal frame
   };
 }
 
@@ -546,7 +549,7 @@ export class FootballEngine {
     }
 
     // Accuracy penalty: add noise proportional to power, then re-normalize
-    const noise = rawPower * KICK_NOISE_SCALE;
+    const noise = rawPower * rawPower * KICK_NOISE_SCALE; // quadratic — low power is accurate
     dx += gaussRandom() * noise;
     dy += gaussRandom() * noise;
     dz += gaussRandom() * noise * KICK_NOISE_VERT;
@@ -736,6 +739,9 @@ export class FootballEngine {
       const dir = ball.x < cx + charW / 2 ? -1 : 1;
       ball.x = dir < 0 ? cx - br - 1 : cx + charW + br + 1;
       ball.vx = dir * Math.abs(ball.vx) * BOUNCE_RETAIN;
+      // Track frame hit for fitness — ball reached the goal area
+      const attacker = goalLeft === this.field.goalLLeft ? 'p2' : 'p1';
+      s.fitness[attacker].frameHits++;
       return;
     }
   }
@@ -748,14 +754,20 @@ export class FootballEngine {
     if (!crossedL && !crossedR) return;
 
     // Ball must be: under crossbar (z), within goal frame depth (y)
-    const underCrossbar = ball.z <= 2 * lineH;
-    const withinFrame = ball.y <= 6 * lineH;
+    // goalMult widens the opening for easier scoring during training
+    const gm = this.field.goalMult;
+    const underCrossbar = ball.z <= 2 * lineH * gm;
+    const withinFrame = ball.y <= 6 * lineH * gm;
 
     if (underCrossbar && withinFrame) {
       if (crossedL) this._scoreGoal(s, 'left');
       else this._scoreGoal(s, 'right');
     } else {
-      // Over crossbar, wide of frame, or lobbed — all treated as out
+      // Near miss tracking — how close was it to scoring?
+      const yMiss = Math.max(0, ball.y - 6 * lineH * gm);
+      const zMiss = Math.max(0, ball.z - 2 * lineH * gm);
+      const which = crossedL ? 'p2' : 'p1'; // attacker
+      s.fitness[which].nearMisses += 1 / (1 + yMiss + zMiss);
       this._ballOut(s);
     }
   }

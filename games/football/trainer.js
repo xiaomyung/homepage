@@ -130,12 +130,12 @@ async function trainingLoop() {
         }
         const nnA = cachedBrains.get(pair.brain_a.id);
 
-        // Brain B — could be normal, random, or idle
+        // Brain B — could be normal, hof, random, or idle
         let nnB = null;
         const bType = pair.brain_b.type;
         if (bType === 'idle') {
           nnB = null; // engine receives null → opponent doesn't act
-        } else if (bType === 'random') {
+        } else if (bType === 'random' || bType === 'hof') {
           nnB = new NeuralNet(b64ToFloat32(pair.brain_b.weights));
         } else {
           // Normal brain from population

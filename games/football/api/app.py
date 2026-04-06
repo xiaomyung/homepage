@@ -97,6 +97,18 @@ def _load_persisted_state():
                 "INSERT OR IGNORE INTO fitness_history VALUES (?, ?, ?)",
                 (row["generation_id"], row["top_fitness"], row["avg_fitness"]),
             )
+        # Hall of fame
+        try:
+            for row in disk.execute(
+                "SELECT generation_id, weights, fitness FROM hall_of_fame"
+            ).fetchall():
+                _mem_db.execute(
+                    "INSERT OR IGNORE INTO hall_of_fame (generation_id, weights, fitness) "
+                    "VALUES (?, ?, ?)",
+                    (row["generation_id"], row["weights"], row["fitness"]),
+                )
+        except Exception:
+            pass  # table may not exist in old persist DBs
         # Generation + brains (restore population so evolution continues)
         gen_row = disk.execute("SELECT MAX(id) as id FROM generations").fetchone()
         if gen_row and gen_row["id"]:
@@ -155,6 +167,15 @@ def _do_flush():
         disk.execute(
             "INSERT OR IGNORE INTO fitness_history VALUES (?, ?, ?)",
             (row["generation_id"], row["top_fitness"], row["avg_fitness"]),
+        )
+    # Hall of fame (append only)
+    for row in _mem_db.execute(
+        "SELECT generation_id, weights, fitness FROM hall_of_fame"
+    ).fetchall():
+        disk.execute(
+            "INSERT OR IGNORE INTO hall_of_fame (generation_id, weights, fitness) "
+            "VALUES (?, ?, ?)",
+            (row["generation_id"], row["weights"], row["fitness"]),
         )
     # Current generation + brains (overwrite — only keep latest snapshot)
     gen_id = _mem_db.execute("SELECT MAX(id) as id FROM generations").fetchone()["id"]
@@ -278,6 +299,15 @@ def try_breed(db, gen_id):
         )
     db.commit()
 
+    # Save best brain to hall of fame every 50 generations
+    HOF_INTERVAL = 50
+    if gen_id % HOF_INTERVAL == 0 and brain_dicts:
+        best = max(brain_dicts, key=lambda b: b["fitness"])
+        db.execute(
+            "INSERT INTO hall_of_fame (generation_id, weights, fitness) VALUES (?, ?, ?)",
+            (gen_id, best["weights"], best["fitness"]),
+        )
+
     _shrink_goal_size(db, gen_id)
     _cleanup_old_data(db, new_gen_id)
 
@@ -397,6 +427,7 @@ def matchup():
 
         gen_id = current_generation(db)
         brains = get_brains_for_gen(db, gen_id)
+        hof_rows = db.execute("SELECT weights FROM hall_of_fame").fetchall()
 
     if len(brains) < 2:
         return jsonify({"error": "Not enough brains"}), 500
@@ -418,19 +449,23 @@ def matchup():
             weight_cache[a["id"]] = None if a["id"] in known_ids else weights_to_b64(a["weights"])
 
         roll = random.random()
-        if roll < 0.15:
+        if roll < 0.20 and hof_rows:
+            # Hall of fame opponent (20%)
+            hof = random.choice(hof_rows)
             pairs.append({
                 "brain_a": {"id": a["id"], "weights": weight_cache[a["id"]]},
-                "brain_b": {"id": None, "weights": None, "type": "idle"},
+                "brain_b": {"id": None, "weights": weights_to_b64(hof["weights"]), "type": "hof"},
                 "generation_id": gen_id,
             })
-        elif roll < 0.30:
+        elif roll < 0.25:
+            # Random opponent (5%)
             pairs.append({
                 "brain_a": {"id": a["id"], "weights": weight_cache[a["id"]]},
                 "brain_b": {"id": None, "weights": weights_to_b64(random_weights()), "type": "random"},
                 "generation_id": gen_id,
             })
         else:
+            # Self-play (75%, or 95% when HoF is empty)
             b = random.choice(brain_list)
             while b["id"] == a["id"] and len(brain_list) > 1:
                 b = random.choice(brain_list)

@@ -51,3 +51,10 @@ CREATE TABLE IF NOT EXISTS fitness_history (
     top_fitness REAL,
     avg_fitness REAL
 );
+
+CREATE TABLE IF NOT EXISTS hall_of_fame (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    generation_id INTEGER NOT NULL,
+    weights BLOB NOT NULL,
+    fitness REAL NOT NULL
+);

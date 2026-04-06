@@ -154,7 +154,7 @@ async function trainingLoop() {
           score_a: result.scoreA,
           score_b: result.scoreB,
           fitness_a: result.fitnessA,
-          fitness_b: bType ? null : result.fitnessB, // no fitness for idle/random opponents
+          fitness_b: bType === 'normal' ? result.fitnessB : null,
           generation_id: genId,
           opponent_type: bType || 'normal',
         });

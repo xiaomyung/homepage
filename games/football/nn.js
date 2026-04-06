@@ -81,13 +81,10 @@ export class NeuralNet {
   }
 
   /**
-   * Run a forward pass.
-   * @param {number[]} inputs — array of 18 floats
-   * @returns {number[]} — array of 9 floats (tanh-activated)
-   */
-  /**
    * Run a forward pass. Returns a reference to an internal buffer —
    * valid until the next forward() call on this instance.
+   * @param {number[]|Float64Array} inputs — 18 normalized floats
+   * @returns {Float64Array} — 9 output floats
    */
   forward(inputs) {
     let current = inputs;

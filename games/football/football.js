@@ -6,15 +6,13 @@
  * Falls back to simple chase-and-kick AI if the API is unreachable.
  */
 
-import { FootballEngine, FieldConfig, TICK, WIN_SCORE, MAX_PLAYER_SPEED, MAX_KICK_POWER, FIELD_HEIGHT, STARTING_GAP } from './engine.js';
-import { NeuralNet, TOTAL_WEIGHTS } from './nn.js';
+import { FootballEngine, FieldConfig, TICK } from './engine.js';
+import { NeuralNet } from './nn.js';
 
 /* ── Config ─────────────────────────────────────────────── */
 
 const VISUAL_MATCH_TIMEOUT  = 45000;     // ms before auto-ending a displayed match
 const MANUAL_IDLE_TIMEOUT   = 3000;      // ms of no input before returning to NN mode
-const MANUAL_KICK_REACH_MULT = 1.8;      // kick reach multiplier for human player
-const ANIM_FRAME_INT        = 6;
 const NAME_HIDE_DIST        = 35;
 const API_BASE              = '/api/football';
 const STATS_POLL_INTERVAL   = 3000;      // ms between stats fetches
@@ -462,7 +460,7 @@ async function fetchStats() {
   try {
     const res = await fetch(`${API_BASE}/stats`);
     if (!res.ok) return null;
-    return res.json();
+    return await res.json();
   } catch {
     return null;
   }

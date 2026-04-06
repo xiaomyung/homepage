@@ -502,7 +502,7 @@ export class FootballEngine {
 
   _canKick(s, p) {
     if (p.state === 'kick' || p.state === 'airkick') return false;
-    const { charW, lineH } = this.field;
+    const { lineH } = this.field;
     if (s.ball.z > PLAYER_HB_H * lineH) return false;
     const center = p.x + this.field.playerWidth / 2;
     const closeX = Math.abs(s.ball.x - center) < this.field.playerWidth * KICK_REACH_X;

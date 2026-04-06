@@ -206,10 +206,6 @@ def weights_to_b64(blob):
     return base64.b64encode(blob).decode("ascii")
 
 
-def b64_to_weights(s):
-    """Decode base64 string to weight bytes."""
-    return base64.b64decode(s)
-
 
 # ── Endpoints ──────────────────────────────────────────────
 
@@ -304,20 +300,6 @@ S_EXHAUSTION     = 5     # exhaustion fraction penalty scale
 S_EXHAUSTION_CAP = 4     # max exhaustion penalty
 S_PUSHED         = 0.15  # per push received
 S_PUSHED_CAP     = 2     # max push penalty
-HOF_SAVE_INTERVAL = 100  # save best brain every N generations
-
-
-def compute_shaped_fitness(goals_scored, goals_conceded, matches_played, shaping_score):
-    """Combine goal differential with shaping signals.
-
-    Goals are the primary signal (weighted heavily), shaping provides
-    gradient for brains that haven't scored yet.
-    """
-    if matches_played == 0:
-        return 0
-    goal_fitness = (goals_scored - goals_conceded) / matches_played
-    shaping_avg = shaping_score / matches_played
-    return goal_fitness + shaping_avg * SHAPING_WEIGHT
 
 
 def calc_shaping_score(fitness_data):

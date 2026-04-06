@@ -218,6 +218,30 @@ def get_brains_for_gen(db, gen_id):
     ).fetchall()
 
 
+# ── Adaptive mutation ────────────────────────────────────────
+STAGNATION_WINDOW = 20   # compare last 10 gens vs 10 before that
+STAGNATION_THRESH = 0.01 # min improvement to count as progress (fitness is [0,1])
+MUTATION_RATE_MAX = 0.25
+MUTATION_STD_MAX  = 0.8
+
+
+def _adapt_mutation(db, cfg):
+    """Ramp mutation when fitness plateaus, based on fitness_history."""
+    history = db.execute(
+        "SELECT top_fitness FROM fitness_history ORDER BY generation_id DESC LIMIT ?",
+        (STAGNATION_WINDOW,),
+    ).fetchall()
+    if len(history) < STAGNATION_WINDOW:
+        return
+    recent_best = max(r["top_fitness"] for r in history[:10])
+    older_best = max(r["top_fitness"] for r in history[10:])
+    improvement = recent_best - older_best
+    if improvement < STAGNATION_THRESH:
+        factor = min(3.0, 1.0 + (STAGNATION_THRESH - improvement) * 100)
+        cfg["mutation_rate"] = min(cfg.get("mutation_rate", 0.05) * factor, MUTATION_RATE_MAX)
+        cfg["mutation_std"] = min(cfg.get("mutation_std", 0.3) * factor, MUTATION_STD_MAX)
+
+
 def try_breed(db, gen_id):
     """Check if breeding should happen and do it if so."""
     brains = get_brains_for_gen(db, gen_id)
@@ -243,6 +267,7 @@ def try_breed(db, gen_id):
     )
 
     cfg = get_config(db)
+    _adapt_mutation(db, cfg)
     new_weights = breed_next_generation(brain_dicts, cfg)
     db.execute("INSERT INTO generations DEFAULT VALUES")
     new_gen_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]

@@ -55,8 +55,29 @@ const STAMINA_EXHAUSTION_THRESHOLD = 0.5; // must recover to this before acting
 const BALL_RADIUS    = 4;
 const JUMP_HEIGHT    = 18;
 const JUMP_PHASE_MS  = 400;
+const JUMP_CELEBRATE_MS = 1500; // total celebration jump duration
 const WALK_ANIM_BASE = 6;
 const MOVE_THRESHOLD = 0.1;
+const MIN_SPEED_STAMINA = 0.05;  // floor for quadratic stamina→speed scaling
+const MIN_KICK_POWER = 0.15;    // minimum kick power fraction
+const MIN_KICK_STAMINA = 0.2;   // floor for stamina→kick power
+const MIN_PUSH_STAMINA = 0.2;   // floor for stamina→push force
+const KICK_NOISE_VERT = 0.5;    // vertical kick noise reduction
+const KICK_DIR_MIN_LEN = 0.01;  // below this, kick uses default direction
+const KICK_DEFAULT_DZ = 0.1;    // default kick lob when direction is zero
+const PUSH_VEL_THRESHOLD = 0.5; // push velocity below this is zeroed
+const BOUNCE_VZ_MIN  = 1.5;     // min vz for ball to bounce on ground
+const BALL_VEL_CUTOFF = 0.1;    // velocities below this are zeroed
+const BALL_MOVE_MIN  = 0.01;    // ball movement detection threshold
+const WALL_BOUNCE_DAMP = 0.5;   // y-wall bounce velocity retention
+const OUT_OF_BOUNDS  = 50;      // px past field before ball is out
+const GOAL_LINE_OFFSET = 2;     // px adjustment for goal line position
+const GOALLINE_ROW   = 5;       // bottom row index of goal hitbox
+const CEILING_OFFSET = 20;      // px from stage bottom for ceiling
+const REPOSITION_TOL_X = 5;     // px tolerance for player at start
+const REPOSITION_TOL_Y = 3;
+const REPOSITION_Y_MAX = 4;     // max Y movement speed during reposition
+const FIELD_WIDTH_REF = 900;    // reference field width for NN normalization
 
 // Match
 export const WIN_SCORE = 3;
@@ -116,7 +137,7 @@ export class FieldConfig {
     // Then: goalLineL.offsetLeft + 2*charW - charW/2 = goalLLeft + goalLWidth - 1.5*charW
     // goalLineR element is positioned at goalRLeft
     // Then: goalLineR.offsetLeft + charW + charW/2 = goalRLeft + 1.5*charW
-    this.goalLineL = this.goalLLeft + this.goalLWidth - 1.5 * this.charW - 2;
+    this.goalLineL = this.goalLLeft + this.goalLWidth - 1.5 * this.charW - GOAL_LINE_OFFSET;
     this.goalLineR = this.goalRLeft + 1.5 * this.charW;
     // AI movement limits
     this.aiLimitL = this.goalLLeft + 6 * this.charW;
@@ -142,13 +163,13 @@ export class FieldConfig {
     fc.goalLWidth = goalL.offsetWidth;
     fc.goalRLeft = goalR.offsetLeft;
     fc.goalRWidth = goalR.offsetWidth;
-    fc.goalLineL = goalLineL.offsetLeft + 2 * charW - charW / 2 - 2;
+    fc.goalLineL = goalLineL.offsetLeft + 2 * charW - charW / 2 - GOAL_LINE_OFFSET;
     fc.goalLineR = goalLineR.offsetLeft + charW + charW / 2;
     fc.aiLimitL = goalL.offsetLeft + 6 * charW;
     fc.aiLimitR = goalR.offsetLeft + 3 * charW;
     fc.midX = (goalL.offsetLeft + goalL.offsetWidth + goalR.offsetLeft) / 2;
     fc.playerWidth = 3 * charW;
-    fc.ceiling = stage.offsetHeight - 20;
+    fc.ceiling = stage.offsetHeight - CEILING_OFFSET;
     return fc;
   }
 }
@@ -338,7 +359,7 @@ export class FootballEngine {
     const [moveX, moveY, kick, kickDx, kickDy, kickDz, kickPower, push, pushPower] = out;
 
     // Movement
-    const effSpeed = MAX_PLAYER_SPEED * Math.max(0.05, p.stamina * p.stamina);
+    const effSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina * p.stamina);
     const mx = Math.max(-1, Math.min(1, moveX)) * effSpeed;
     const my = Math.max(-1, Math.min(1, moveY)) * effSpeed;
     const speed = Math.sqrt(mx * mx + my * my);
@@ -350,15 +371,14 @@ export class FootballEngine {
     }
     p.stamina = Math.max(0, p.stamina);
 
-    // Push — instant
-    if (push > 0) {
+    // Push — instant (same state check as visual path)
+    if (push > 0 && p.state !== 'push') {
       const opp = p === s.p1 ? s.p2 : s.p1;
       this._tryPush(s, p, opp, pushPower);
     }
 
     // Kick — instant execution, no animation frames
     if (kick > 0 && this._canKick(s, p)) {
-      if (s.ball.z > 1) p.stamina = Math.max(0, p.stamina - STAMINA_AIRKICK_DRAIN);
       p._kickDx = Math.max(-1, Math.min(1, kickDx));
       p._kickDy = Math.max(-1, Math.min(1, kickDy));
       p._kickDz = Math.max(-1, Math.min(1, kickDz));
@@ -384,7 +404,7 @@ export class FootballEngine {
     const [moveX, moveY, kick, kickDx, kickDy, kickDz, kickPower, push, pushPower] = out;
 
     // Stamina-adjusted caps
-    const effectiveMaxSpeed = MAX_PLAYER_SPEED * Math.max(0.05, p.stamina * p.stamina);
+    const effectiveMaxSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina * p.stamina);
 
     // Movement
     const mx = Math.max(-1, Math.min(1, moveX)) * effectiveMaxSpeed;
@@ -455,7 +475,7 @@ export class FootballEngine {
       case 'jump': {
         const phase = (p.stateTime % JUMP_PHASE_MS) / JUMP_PHASE_MS;
         p.jumpY = Math.sin(phase * Math.PI) * JUMP_HEIGHT;
-        if (p.stateTime > 1500) {
+        if (p.stateTime > JUMP_CELEBRATE_MS) {
           p.jumpY = 0;
           this._setState(p, 'idle');
         }
@@ -495,8 +515,8 @@ export class FootballEngine {
   }
 
   _executeKick(s, p) {
-    const rawPower = Math.max(0.15, p._kickPower ?? 0.5); // minimum 15% power
-    const effectiveMaxPower = MAX_KICK_POWER * Math.max(0.2, p.stamina);
+    const rawPower = Math.max(MIN_KICK_POWER, p._kickPower ?? 0.5); // minimum 15% power
+    const effectiveMaxPower = MAX_KICK_POWER * Math.max(MIN_KICK_STAMINA, p.stamina);
     const force = rawPower * effectiveMaxPower;
 
     let dx = p._kickDx || 0;
@@ -505,10 +525,10 @@ export class FootballEngine {
 
     // Ensure valid direction — if all near zero, kick forward
     const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    if (len < 0.01) {
+    if (len < KICK_DIR_MIN_LEN) {
       dx = p.dir; // kick in facing direction
       dy = 0;
-      dz = 0.1;
+      dz = KICK_DEFAULT_DZ;
     } else {
       dx /= len;
       dy /= len;
@@ -519,7 +539,7 @@ export class FootballEngine {
     const noise = rawPower * KICK_NOISE_SCALE;
     dx += gaussRandom() * noise;
     dy += gaussRandom() * noise;
-    dz += gaussRandom() * noise * 0.5; // less vertical noise
+    dz += gaussRandom() * noise * KICK_NOISE_VERT;
     const len2 = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
     dx /= len2;
     dy /= len2;
@@ -598,7 +618,7 @@ export class FootballEngine {
     if (Math.abs(pusher.y - victim.y) > PUSH_RANGE_Y) return;
 
     const power01 = (powerNorm + 1) / 2; // map tanh output to 0–1
-    const effectiveMaxPush = MAX_PUSH_FORCE * Math.max(0.2, pusher.stamina);
+    const effectiveMaxPush = MAX_PUSH_FORCE * Math.max(MIN_PUSH_STAMINA, pusher.stamina);
     const force = power01 * effectiveMaxPush;
 
     pusher.dir = ca < cb ? 1 : -1;
@@ -623,13 +643,13 @@ export class FootballEngine {
   }
 
   _applyPushPhysics(p, s) {
-    if (Math.abs(p.pushVx) > 0.5) {
+    if (Math.abs(p.pushVx) > PUSH_VEL_THRESHOLD) {
       p.x += p.pushVx * PUSH_APPLY;
       p.pushVx *= PUSH_DAMP;
     } else {
       p.pushVx = 0;
     }
-    if (Math.abs(p.pushVy) > 0.5) {
+    if (Math.abs(p.pushVy) > PUSH_VEL_THRESHOLD) {
       p.y += p.pushVy * PUSH_APPLY;
       p.pushVy *= PUSH_DAMP;
     } else {
@@ -641,7 +661,7 @@ export class FootballEngine {
 
   _updateBall(s) {
     const ball = s.ball;
-    const moving = Math.abs(ball.vx) > 0.01 || Math.abs(ball.vy) > 0.01 ||
+    const moving = Math.abs(ball.vx) > BALL_MOVE_MIN || Math.abs(ball.vy) > BALL_MOVE_MIN ||
                    ball.z > 0 || ball.vz > 0;
     if (!moving) return;
 
@@ -657,13 +677,13 @@ export class FootballEngine {
       ball.z += ball.vz;
       if (ball.z <= 0) {
         ball.z = 0;
-        ball.vz = Math.abs(ball.vz) > 1.5 ? Math.abs(ball.vz) * AIR_BOUNCE : 0;
+        ball.vz = Math.abs(ball.vz) > BOUNCE_VZ_MIN ? Math.abs(ball.vz) * AIR_BOUNCE : 0;
       }
     }
 
     // Field-Y bounds
-    if (ball.y < 0) { ball.y = 0; ball.vy = Math.abs(ball.vy) * 0.5; }
-    if (ball.y > FIELD_HEIGHT) { ball.y = FIELD_HEIGHT; ball.vy = -Math.abs(ball.vy) * 0.5; }
+    if (ball.y < 0) { ball.y = 0; ball.vy = Math.abs(ball.vy) * WALL_BOUNCE_DAMP; }
+    if (ball.y > FIELD_HEIGHT) { ball.y = FIELD_HEIGHT; ball.vy = -Math.abs(ball.vy) * WALL_BOUNCE_DAMP; }
 
     // Ceiling
     if (ball.y + ball.z > this.field.ceiling) {
@@ -672,15 +692,15 @@ export class FootballEngine {
     }
 
     // Velocity cutoff
-    if (Math.abs(ball.vx) < 0.1) ball.vx = 0;
-    if (Math.abs(ball.vy) < 0.1) ball.vy = 0;
+    if (Math.abs(ball.vx) < BALL_VEL_CUTOFF) ball.vx = 0;
+    if (Math.abs(ball.vy) < BALL_VEL_CUTOFF) ball.vy = 0;
 
     // Collision with goal frames
     this._bounceBallGoal(s, HITBOX_L, this.field.goalLLeft);
     this._bounceBallGoal(s, HITBOX_R, this.field.goalRLeft);
 
     // Out of bounds
-    if (ball.x < -50 || ball.x > this.field.fieldWidth + 50) {
+    if (ball.x < -OUT_OF_BOUNDS || ball.x > this.field.fieldWidth + OUT_OF_BOUNDS) {
       this._ballOut(s);
     } else if (s.graceFrames <= 0) {
       this._checkGoalLine(s);
@@ -737,7 +757,7 @@ export class FootballEngine {
   _collidePlayerGoal(p, hitbox, goalLeft, charW, lineH, pw, midX) {
     const ph = PLAYER_HB_H * lineH;
     for (const [row, col, ch] of hitbox) {
-      if (ch === '_' && row === 5) continue;
+      if (ch === '_' && row === GOALLINE_ROW) continue;
       if (ch === '|') continue;
       const cx = goalLeft + col * charW;
       const cy = (5 - row) * lineH;
@@ -854,8 +874,8 @@ export class FootballEngine {
   _playersAtStart(s) {
     const t1 = this._startingX(s.p1);
     const t2 = this._startingX(s.p2);
-    return Math.abs(s.p1.x - t1) < 5 && Math.abs(s.p1.y - FIELD_HEIGHT / 2) < 5 &&
-           Math.abs(s.p2.x - t2) < 5 && Math.abs(s.p2.y - FIELD_HEIGHT / 2) < 5;
+    return Math.abs(s.p1.x - t1) < REPOSITION_TOL_X && Math.abs(s.p1.y - FIELD_HEIGHT / 2) < REPOSITION_TOL_X &&
+           Math.abs(s.p2.x - t2) < REPOSITION_TOL_X && Math.abs(s.p2.y - FIELD_HEIGHT / 2) < REPOSITION_TOL_X;
   }
 
   /* ── Paused state handling ─────────────────────────────── */
@@ -906,9 +926,9 @@ export class FootballEngine {
         const ty = FIELD_HEIGHT / 2;
         const dx = tx - p.x;
         const dy = ty - p.y;
-        if (Math.abs(dx) > 5 || Math.abs(dy) > 3) {
+        if (Math.abs(dx) > REPOSITION_TOL_X || Math.abs(dy) > REPOSITION_TOL_Y) {
           p.x += Math.sign(dx) * Math.min(Math.abs(dx) * 0.1, REPOSITION_SPEED);
-          p.y += Math.sign(dy) * Math.min(Math.abs(dy) * 0.1, 4);
+          p.y += Math.sign(dy) * Math.min(Math.abs(dy) * 0.1, REPOSITION_Y_MAX);
           p.dir = dx > 0 ? 1 : -1;
           if (p.ft % WALK_ANIM_BASE === 0) p.fi = (p.fi + 1) % 2;
         } else {
@@ -973,7 +993,7 @@ export class FootballEngine {
     out[14] = ball.vz / MAX_KICK_POWER;
     out[15] = (tgx / fw) * 2 - 1;
     out[16] = (ogx / fw) * 2 - 1;
-    out[17] = (fw / 900) * 2 - 1;
+    out[17] = (fw / FIELD_WIDTH_REF) * 2 - 1;
     // Clamp all to [-1, 1]
     for (let i = 0; i < 18; i++) {
       if (out[i] > 1) out[i] = 1;

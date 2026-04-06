@@ -255,6 +255,22 @@ def matchup():
 
 SHAPING_WEIGHT = 0.1  # scale factor for shaping vs goals
 
+# Fitness shaping reward/penalty weights
+S_PROXIMITY      = 8     # ball closeness (0–1 per tick, scaled)
+S_KICK           = 0.3   # per kick
+S_GOAL_KICK      = 0.7   # per kick toward goal
+S_ADVANCE        = 0.5   # ball advance per tick
+S_ADVANCE_CAP    = 5     # max advance reward
+S_ATTACK_ZONE    = 6     # ball near opponent goal (0–1 per tick, scaled)
+S_POSSESSION     = 5     # fraction of time closer to ball
+S_STAMINA        = 3     # average stamina level
+S_PUSH_LANDED    = 0.2   # per successful push
+S_EXHAUSTION     = 5     # exhaustion fraction penalty scale
+S_EXHAUSTION_CAP = 4     # max exhaustion penalty
+S_PUSHED         = 0.15  # per push received
+S_PUSHED_CAP     = 2     # max push penalty
+HOF_SAVE_INTERVAL = 100  # save best brain every N generations
+
 
 def compute_shaped_fitness(goals_scored, goals_conceded, matches_played, shaping_score):
     """Combine goal differential with shaping signals.
@@ -270,47 +286,23 @@ def compute_shaped_fitness(goals_scored, goals_conceded, matches_played, shaping
 
 
 def calc_shaping_score(fitness_data):
-    """Calculate a single shaping score from per-match fitness metrics.
-
-    Rewards good football decisions, penalizes bad ones.
-    All signals are normalized so no single one dominates.
-    """
+    """Calculate a single shaping score from per-match fitness metrics."""
     if not fitness_data or fitness_data.get("ticks", 0) == 0:
         return 0
     ticks = fitness_data["ticks"]
 
-    # === REWARDS ===
+    proximity = fitness_data.get("ballProximity", 0) / ticks * S_PROXIMITY
+    kicks = fitness_data.get("kicks", 0) * S_KICK
+    goal_kicks = fitness_data.get("goalKicks", 0) * S_GOAL_KICK
+    advance = min(fitness_data.get("ballAdvance", 0) / ticks * S_ADVANCE, S_ADVANCE_CAP)
+    attack_zone = fitness_data.get("ballInAttackZone", 0) / ticks * S_ATTACK_ZONE
+    possession = fitness_data.get("possession", 0) / ticks * S_POSSESSION
+    avg_stamina = fitness_data.get("staminaSum", 0) / ticks * S_STAMINA
+    pushes = fitness_data.get("pushesLanded", 0) * S_PUSH_LANDED
 
-    # Ball proximity: average closeness to ball (0–1 per tick), scaled up
-    proximity = fitness_data.get("ballProximity", 0) / ticks * 8
-
-    # Kicks: reward each kick, bonus for kicks toward goal
-    kicks = fitness_data.get("kicks", 0) * 0.3
-    goal_kicks = fitness_data.get("goalKicks", 0) * 0.7  # extra for right direction
-
-    # Ball advance: average per-tick ball movement toward goal, capped
-    advance = min(fitness_data.get("ballAdvance", 0) / ticks * 0.5, 5)
-
-    # Ball in attacking zone: reward ball being near opponent's goal (0–1 per tick)
-    attack_zone = fitness_data.get("ballInAttackZone", 0) / ticks * 6
-
-    # Possession: fraction of time closer to ball than opponent
-    possession = fitness_data.get("possession", 0) / ticks * 5
-
-    # Stamina management: average stamina level (reward staying healthy)
-    avg_stamina = fitness_data.get("staminaSum", 0) / ticks * 3
-
-    # Successful pushes: small reward for tactical pushing
-    pushes = fitness_data.get("pushesLanded", 0) * 0.2
-
-    # === PENALTIES ===
-
-    # Exhaustion: fraction of time spent frozen (capped to not dominate rewards)
     exhausted_frac = fitness_data.get("exhaustedTicks", 0) / ticks
-    exhaustion_penalty = min(exhausted_frac * 5, 4)
-
-    # Getting pushed: each push received is a small penalty
-    pushed_penalty = min(fitness_data.get("pushedReceived", 0) * 0.15, 2)
+    exhaustion_penalty = min(exhausted_frac * S_EXHAUSTION, S_EXHAUSTION_CAP)
+    pushed_penalty = min(fitness_data.get("pushedReceived", 0) * S_PUSHED, S_PUSHED_CAP)
 
     score = (
         proximity

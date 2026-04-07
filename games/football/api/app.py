@@ -107,7 +107,7 @@ def _load_persisted_state():
                     "VALUES (?, ?, ?)",
                     (row["generation_id"], row["weights"], row["fitness"]),
                 )
-        except Exception:
+        except sqlite3.OperationalError:
             pass  # table may not exist in old persist DBs
         # Generation + brains (restore population so evolution continues)
         gen_row = disk.execute("SELECT MAX(id) as id FROM generations").fetchone()
@@ -129,8 +129,8 @@ def _load_persisted_state():
                 )
         _mem_db.commit()
         disk.close()
-    except Exception:
-        pass  # persist DB might be corrupted — start fresh
+    except (sqlite3.DatabaseError, OSError):
+        pass  # persist DB might be corrupted or unreadable — start fresh
 
 
 def _flush_to_disk():
@@ -279,8 +279,8 @@ def try_breed(db, gen_id):
         return
 
     # Record fitness history
-    top_f = max(b["fitness"] for b in brain_dicts) if brain_dicts else 0
-    avg_f = sum(b["fitness"] for b in brain_dicts) / len(brain_dicts) if brain_dicts else 0
+    top_f = max(b["fitness"] for b in brain_dicts)
+    avg_f = sum(b["fitness"] for b in brain_dicts) / len(brain_dicts)
     db.execute(
         "INSERT OR REPLACE INTO fitness_history (generation_id, top_fitness, avg_fitness) "
         "VALUES (?, ?, ?)",
@@ -299,8 +299,7 @@ def try_breed(db, gen_id):
         )
     db.commit()
 
-    # Save best brain to hall of fame every 50 generations
-    HOF_INTERVAL = 50
+    # Save best brain to hall of fame periodically
     if gen_id % HOF_INTERVAL == 0 and brain_dicts:
         best = max(brain_dicts, key=lambda b: b["fitness"])
         db.execute(
@@ -336,6 +335,7 @@ def _shrink_goal_size(db, gen_id):
         db.commit()
 
 
+HOF_INTERVAL     = 50
 KEEP_GENERATIONS = 5
 
 

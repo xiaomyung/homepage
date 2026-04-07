@@ -208,13 +208,13 @@ function emptyFitness() {
   return {
     ticks: 0,
     ballProximity: 0,     // reward: staying close to ball
-    kicks: 0,             // reward: each kick
+    kicks: 0,             // count: each kick (not used in fitness, kept for stats)
     ballAdvance: 0,       // reward: moving ball toward opponent goal
     ballInAttackZone: 0,  // reward: ball near opponent's goal
     possession: 0,        // reward: ticks closer to ball than opponent
     exhaustedTicks: 0,    // penalty: ticks spent frozen from exhaustion
     staminaSum: 0,        // for computing average stamina (reward managing it)
-    pushesLanded: 0,      // reward: successful pushes on opponent
+    pushesLanded: 0,      // count: successful pushes (not used in fitness, kept for stats)
     pushedReceived: 0,    // penalty: getting pushed
     goalKicks: 0,         // reward: kicks that advance ball toward goal
     nearMisses: 0,        // reward: ball crossed goal line but missed opening
@@ -587,9 +587,9 @@ export class FootballEngine {
     const ball = s.ball;
     f.ticks++;
 
-    const pw2 = this.field.playerWidth * 0.5;
-    const center = p.x + pw2;
-    const oppCenter = opp.x + pw2;
+    const halfPW = this.field.playerWidth * 0.5;
+    const center = p.x + halfPW;
+    const oppCenter = opp.x + halfPW;
 
     // 1. Ball proximity (squared distance — quadratic falloff, stronger gradient near ball)
     const dx = ball.x - center;
@@ -915,8 +915,8 @@ export class FootballEngine {
   _playersAtStart(s) {
     const t1 = this._startingX(s.p1);
     const t2 = this._startingX(s.p2);
-    return Math.abs(s.p1.x - t1) < REPOSITION_TOL_X && Math.abs(s.p1.y - FIELD_HEIGHT / 2) < REPOSITION_TOL_X &&
-           Math.abs(s.p2.x - t2) < REPOSITION_TOL_X && Math.abs(s.p2.y - FIELD_HEIGHT / 2) < REPOSITION_TOL_X;
+    return Math.abs(s.p1.x - t1) < REPOSITION_TOL_X && Math.abs(s.p1.y - FIELD_HEIGHT / 2) < REPOSITION_TOL_Y &&
+           Math.abs(s.p2.x - t2) < REPOSITION_TOL_X && Math.abs(s.p2.y - FIELD_HEIGHT / 2) < REPOSITION_TOL_Y;
   }
 
   /* ── Paused state handling ─────────────────────────────── */

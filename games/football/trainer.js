@@ -7,7 +7,7 @@
  * Communicates with main thread via postMessage for stats updates.
  */
 
-import { FootballEngine, FieldConfig, WIN_SCORE } from './engine.js';
+import { FootballEngine, FieldConfig } from './engine.js';
 import { NeuralNet } from './nn.js';
 
 const API_BASE = '/api/football';

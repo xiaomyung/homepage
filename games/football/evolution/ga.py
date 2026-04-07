@@ -1,8 +1,9 @@
 """Genetic algorithm for football neural network evolution."""
 
-import struct
-import random
 import math
+import random
+import sqlite3
+import struct
 
 # Must match nn.js: Input(18) -> Hidden(20) -> Hidden(16) -> Hidden(12) -> Output(9)
 LAYERS = [18, 20, 16, 12, 9]
@@ -30,7 +31,7 @@ def get_config(db):
         rows = db.execute("SELECT key, value FROM config").fetchall()
         for r in rows:
             cfg[r[0]] = r[1]
-    except Exception:
+    except sqlite3.DatabaseError:
         pass
     return cfg
 
@@ -89,9 +90,10 @@ def breed_next_generation(brains: list[dict], cfg: dict | None = None) -> list[b
     cfg: optional config dict with mutation_rate, mutation_std, population_size.
     Returns: list of weight blobs for the new generation.
     """
-    pop_size = int(cfg.get("population_size", POPULATION_SIZE)) if cfg else POPULATION_SIZE
-    mut_rate = cfg.get("mutation_rate", MUTATION_RATE) if cfg else MUTATION_RATE
-    mut_std = cfg.get("mutation_std", MUTATION_STD) if cfg else MUTATION_STD
+    cfg = cfg or {}
+    pop_size = int(cfg.get("population_size", POPULATION_SIZE))
+    mut_rate = cfg.get("mutation_rate", MUTATION_RATE)
+    mut_std = cfg.get("mutation_std", MUTATION_STD)
 
     ranked = sorted(brains, key=lambda b: b["fitness"], reverse=True)
 
@@ -101,7 +103,7 @@ def breed_next_generation(brains: list[dict], cfg: dict | None = None) -> list[b
     for i in range(min(ELITISM_COUNT, len(ranked))):
         new_weights.append(ranked[i]["weights"])
 
-    # Fill with crossover + mutation, reserving ~2% for random injection
+    # Fill with crossover + mutation, reserving ~6% for random injection
     inject_count = max(1, pop_size // 16)  # ~6% random injection
     breed_target = pop_size - inject_count
     while len(new_weights) < breed_target:

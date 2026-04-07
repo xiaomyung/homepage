@@ -112,15 +112,4 @@ export class NeuralNet {
     return current;
   }
 
-  /** @returns {Float32Array} copy of the weights */
-  getWeights() {
-    return new Float32Array(this.weights);
-  }
-
-  /** @param {Float32Array|number[]} weights */
-  static fromWeights(weights) {
-    return new NeuralNet(weights);
-  }
 }
-
-export { TOTAL_WEIGHTS, LAYERS };

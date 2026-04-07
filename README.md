@@ -167,15 +167,39 @@ The ASCII football game features neural network-controlled players trained via a
 
 ### Genetic Algorithm
 
-- Population: 50 brains, tournament selection (k=5), uniform crossover
-- Mutation: 5% rate, Gaussian noise (σ=0.3), top 2 elites preserved
+- Population: 50 brains, tournament selection (k=3), uniform crossover
+- Mutation: 5% base rate, Gaussian noise (σ=0.3), top 2 elites preserved, ~6% random injection
+- **Adaptive mutation:** when fitness plateaus over 20 generations, mutation rate and std ramp up to 3× automatically
+- **Hall of Fame:** best brain saved every 50 generations; 20% of training matches pit current brains against historical champions
 - New generation breeds when all brains have played ≥5 matches
+
+### Fitness
+
+All components normalized to [0, 1] with tunable weights (`W_*` constants in `app.py`):
+
+| Weight | Component | What it rewards |
+|--------|-----------|----------------|
+| 0.40 | Goals scored | Scoring (goals/3) |
+| 0.09 | Attack zone | Ball near opponent's goal |
+| 0.08 | Possession | Ticks closer to ball than opponent |
+| 0.08 | Goal kicks | Kicks directed at goal |
+| 0.07 | Near misses | Shots that barely miss |
+| 0.05 | Proximity | Staying close to ball |
+| 0.05 | Advance | Moving ball toward goal |
+| 0.05 | Frame hits | Hitting the goal post |
+| 0.04 | Saves | Defensive clearances near own goal |
+| 0.03 | Air kicks | Spectacular aerial kicks |
+| 0.03 | Stamina | Managing stamina well |
+| −0.05 | Conceded | Goals conceded penalty |
+| −0.03 | Exhaustion | Time spent frozen |
+| −0.02 | Pushed | Getting pushed penalty |
 
 ### Game Mechanics
 
 - **Stamina:** drains with speed, kicks, and pushes; auto-recovers; low stamina reduces caps
 - **Push:** NN-controlled strength; pusher loses stamina, victim loses 2×
 - **Kick accuracy:** noise proportional to power — max power = wild shot
+- **Air kick:** when kickDz output > 0.5, player jumps (height up to 2 text rows, controlled by kickDz). Wider reach than ground kicks, but only connects on airborne balls — air kicking a ground ball = whiff
 - **Headless sims:** randomize field width (600–900px) so brains generalize
 
 ### Manual Controls
@@ -188,10 +212,14 @@ The ASCII football game features neural network-controlled players trained via a
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/football/matchup?count=N` | GET | Get N brain pairs to play |
-| `/api/football/result` | POST | Report match outcome |
+| `/api/football/matchup?count=N` | GET | Get N brain pairs to play (75% self-play, 20% HoF, 5% random) |
+| `/api/football/results` | POST | Report batch of match outcomes |
+| `/api/football/showcase` | GET | Two different brains for visual match display |
 | `/api/football/best` | GET | Current best brain weights |
 | `/api/football/stats` | GET | Generation, fitness, match counts |
+| `/api/football/config` | GET/POST | Get or set evolution parameters |
+| `/api/football/history` | GET | Fitness history for graphing |
+| `/api/football/reset` | POST | Wipe all data and restart |
 
 ### Running the Backend
 

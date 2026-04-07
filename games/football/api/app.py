@@ -612,6 +612,50 @@ def best():
     })
 
 
+@app.route("/api/football/showcase")
+def showcase():
+    """Get two different brains for the visual match display."""
+    with _db_lock:
+        db = get_db()
+        ensure_generation_zero(db)
+        gen_id = current_generation(db)
+        top2 = db.execute(
+            "SELECT id, weights, fitness, matches_played FROM brains "
+            "WHERE generation_id = ? AND matches_played > 0 "
+            "ORDER BY fitness DESC LIMIT 2",
+            (gen_id,),
+        ).fetchall()
+        hof = db.execute(
+            "SELECT weights, fitness FROM hall_of_fame ORDER BY RANDOM() LIMIT 1"
+        ).fetchone()
+
+    if not top2 or len(top2) < 2:
+        return jsonify({"brewing": True})
+
+    roll = random.random()
+    if roll < 0.5:
+        # Best vs 2nd best (most competitive)
+        brain_a, brain_b = top2[0], top2[1]
+        matchup_type = "top2"
+    elif roll < 0.8 and hof:
+        # Best vs HoF champion
+        brain_a = top2[0]
+        brain_b = hof
+        matchup_type = "hof"
+    else:
+        # Fallback to top 2
+        brain_a, brain_b = top2[0], top2[1]
+        matchup_type = "top2"
+
+    return jsonify({
+        "brain_a": weights_to_b64(brain_a["weights"]),
+        "brain_b": weights_to_b64(brain_b["weights"]),
+        "generation_id": gen_id,
+        "matchup_type": matchup_type,
+        "brewing": False,
+    })
+
+
 @app.route("/api/football/stats")
 def stats():
     """Evolution statistics."""

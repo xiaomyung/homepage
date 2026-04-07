@@ -442,15 +442,18 @@ function b64ToFloat32(b64) {
   return new Float32Array(buffer);
 }
 
-async function fetchBestBrain() {
+async function fetchShowcase() {
   try {
-    const res = await fetch(`${API_BASE}/best`);
+    const res = await fetch(`${API_BASE}/showcase`);
     if (!res.ok) throw new Error(res.status);
     const data = await res.json();
-    if (data.brewing || !data.weights) {
+    if (data.brewing || !data.brain_a) {
       return null; // still brewing
     }
-    return new NeuralNet(b64ToFloat32(data.weights));
+    return {
+      nn1: new NeuralNet(b64ToFloat32(data.brain_a)),
+      nn2: new NeuralNet(b64ToFloat32(data.brain_b)),
+    };
   } catch {
     return 'fallback';
   }
@@ -468,7 +471,7 @@ async function fetchStats() {
 
 /* ── Match lifecycle ────────────────────────────────────── */
 
-function startMatch(nn) {
+function startMatch(brains) {
   if (!engine) return;
 
   state = engine.createState();
@@ -476,17 +479,17 @@ function startMatch(nn) {
   matchTimerStopped = false;
   matchEnding = false;
 
-  if (nn === 'fallback' || nn === null) {
+  if (brains === 'fallback' || brains === null) {
     fallbackMode = true;
     nn1 = null;
     nn2 = null;
   } else {
     fallbackMode = false;
-    nn1 = nn;
-    nn2 = nn; // same brain, mirrored inputs
+    nn1 = brains.nn1;
+    nn2 = brains.nn2;
   }
 
-  brewing = nn === null;
+  brewing = brains === null;
 
   // Pick fresh names
   vp1.name = pickName();
@@ -501,8 +504,8 @@ async function nextMatch() {
   if (nextMatchPending) return;
   nextMatchPending = true;
   try {
-    const nn = await fetchBestBrain();
-    startMatch(nn);
+    const brains = await fetchShowcase();
+    startMatch(brains);
   } finally {
     nextMatchPending = false;
   }

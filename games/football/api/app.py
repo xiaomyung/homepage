@@ -361,47 +361,40 @@ def weights_to_b64(blob):
 
 # ── Fitness weights ──────────────────────────────────────────
 # All components normalized to [0, 1] before weighting.
-# Adjust these to rebalance what brains optimise for.
-# Design: reward actual football skill — aiming, scoring, defending.
-# Caps set to what a *good* brain does, so mediocre brains score partial credit.
+# Positive weights sum to 1.0 (perfect play = 1.0).
+# Penalty weights sum to 1.0 (worst possible play = -1.0).
+# Range: [-1.0, 1.0]. Rewards precision over spam.
 
-# OFFENSIVE SKILL — aiming and scoring
-W_GOAL_KICKS  = 0.25   # kicks aimed at goal / CAP (the core skill)
-W_GOALS       = 0.15   # goals scored / CAP (the objective)
-W_NEAR_MISS   = 0.10   # shots barely missing / CAP (accuracy signal)
-W_FRAME_HIT   = 0.06   # ball hitting goal frame / CAP (close shots)
-W_WIN_BONUS   = 0.08   # 1.0 win, 0.5 draw, 0.0 loss (outcome matters)
+# POSITIVE (sum = 1.00)
+W_KICK_ACCURACY     = 0.21  # goalKicks / max(kicks, 1)
+W_GOALS             = 0.16  # goals / CAP_GOALS
+W_STAMINA           = 0.13  # avg stamina (per-tick avg)
+W_NEAR_MISS         = 0.11  # nearMisses / CAP_NEAR_MISS
+W_FRAME_HIT         = 0.09  # frameHits / CAP_FRAME_HIT
+W_WIN_BONUS         = 0.09  # 1.0 win / 0.5 draw / 0.0 loss
+W_SAVES             = 0.06  # saves / CAP_SAVES
+W_AIR_KICK_ACCURACY = 0.06  # goalAirKicks / max(airKicks, 1)
+W_ATTACK_ZONE       = 0.04  # ball near opponent goal (per-tick avg)
+W_POSSESSION        = 0.03  # possession fraction (per-tick avg)
+W_ADVANCE           = 0.02  # ball advance (per-tick avg)
 
-# DEFENSIVE SKILL
-W_SAVES       = 0.08   # defensive clearances / CAP
-W_CONCEDED    = 0.04   # penalty: goals conceded
+# PENALTIES (sum = 1.00)
+W_EXHAUSTION        = 0.40  # fraction of match exhausted
+W_WASTED_KICKS      = 0.27  # wastedKicks / max(kicks, 1)
+W_WASTED_AIR_KICKS  = 0.13  # wastedAirKicks / max(airKicks, 1)
+W_CONCEDED          = 0.13  # goals conceded / CAP_GOALS
+W_PUSHED            = 0.07  # pushed / CAP_PUSHED
 
-# GAME SENSE
-W_ATTACK_ZONE = 0.05   # ball near opponent goal (field control)
-W_POSSESSION  = 0.04   # ticks closer to ball than opponent
-W_ADVANCE     = 0.03   # ball movement toward opponent goal
-
-# STYLE / ATHLETICISM
-W_AIR_KICKS   = 0.04   # air kicks / CAP (spectacular play)
-W_STAMINA     = 0.04   # average stamina (resource management)
-
-# MINOR
-W_PROXIMITY   = 0.02   # closeness to ball
-W_EXHAUSTION  = 0.01   # penalty: fraction exhausted
-W_PUSHED      = 0.01   # penalty: times pushed
-
-# Caps — represent what a *skilled* brain does consistently
-CAP_GOAL_KICKS = 10    # 10 goal-aimed kicks per match
-CAP_GOALS      = 2     # 2 goals per match (hard at goal_size 1.0)
-CAP_NEAR_MISS  = 3     # 3 near misses
-CAP_FRAME_HIT  = 2     # 2 frame hits
-CAP_SAVES      = 3     # 3 defensive saves
-CAP_AIR_KICKS  = 3     # 3 air kicks
-CAP_PUSHED     = 5
+# Caps for count-based metrics
+CAP_GOALS     = 2
+CAP_NEAR_MISS = 3
+CAP_FRAME_HIT = 3
+CAP_SAVES     = 5
+CAP_PUSHED    = 5
 
 
 def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
-    """Calculate per-match fitness in [0, 1]. All components normalized first."""
+    """Calculate per-match fitness in [-1, 1]. Positive = skill, negative = penalties."""
     goals = min(goals_scored / CAP_GOALS, 1)
     conceded = min(goals_conceded / CAP_GOALS, 1)
 
@@ -416,45 +409,49 @@ def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
         return W_GOALS * goals + W_WIN_BONUS * win_bonus - W_CONCEDED * conceded
 
     ticks = fitness_data["ticks"]
+    kicks = fitness_data.get("kicks", 0)
+    air_kicks_raw = fitness_data.get("airKicks", 0)
 
     # Per-tick averages [0, 1]
-    proximity   = fitness_data.get("ballProximity", 0) / ticks
     possession  = fitness_data.get("possession", 0) / ticks
     attack_zone = fitness_data.get("ballInAttackZone", 0) / ticks
     advance     = max(0, min(fitness_data.get("ballAdvance", 0) / ticks, 1))
     stamina     = fitness_data.get("staminaSum", 0) / ticks
     exhaustion  = fitness_data.get("exhaustedTicks", 0) / ticks
 
+    # Ratio-based (precision over volume)
+    kick_accuracy     = fitness_data.get("goalKicks", 0) / max(kicks, 1)
+    air_kick_accuracy = fitness_data.get("goalAirKicks", 0) / max(air_kicks_raw, 1)
+    wasted_kicks      = fitness_data.get("wastedKicks", 0) / max(kicks, 1)
+    wasted_air_kicks  = fitness_data.get("wastedAirKicks", 0) / max(air_kicks_raw, 1)
+
     # Count-based (capped to [0, 1])
-    goal_kicks  = min(fitness_data.get("goalKicks", 0) / CAP_GOAL_KICKS, 1)
     near_misses = min(fitness_data.get("nearMisses", 0) / CAP_NEAR_MISS, 1)
     frame_hits  = min(fitness_data.get("frameHits", 0) / CAP_FRAME_HIT, 1)
     saves       = min(fitness_data.get("saves", 0) / CAP_SAVES, 1)
-    air_kicks   = min(fitness_data.get("airKicks", 0) / CAP_AIR_KICKS, 1)
     pushed      = min(fitness_data.get("pushedReceived", 0) / CAP_PUSHED, 1)
 
-    return (
-        # Offense (0.64)
-        W_GOAL_KICKS  * goal_kicks
-        + W_GOALS       * goals
-        + W_NEAR_MISS   * near_misses
-        + W_FRAME_HIT   * frame_hits
-        + W_WIN_BONUS   * win_bonus
-        # Defense (0.08 - penalty)
-        + W_SAVES       * saves
-        - W_CONCEDED    * conceded
-        # Game sense (0.12)
-        + W_ATTACK_ZONE * attack_zone
-        + W_POSSESSION  * possession
-        + W_ADVANCE     * advance
-        # Style (0.08)
-        + W_AIR_KICKS   * air_kicks
-        + W_STAMINA     * stamina
-        # Minor (0.02 - penalties)
-        + W_PROXIMITY   * proximity
-        - W_EXHAUSTION  * exhaustion
-        - W_PUSHED      * pushed
+    positive = (
+        W_KICK_ACCURACY     * kick_accuracy
+        + W_GOALS             * goals
+        + W_STAMINA           * stamina
+        + W_NEAR_MISS         * near_misses
+        + W_FRAME_HIT         * frame_hits
+        + W_WIN_BONUS         * win_bonus
+        + W_SAVES             * saves
+        + W_AIR_KICK_ACCURACY * air_kick_accuracy
+        + W_ATTACK_ZONE       * attack_zone
+        + W_POSSESSION        * possession
+        + W_ADVANCE           * advance
     )
+    penalty = (
+        W_EXHAUSTION        * exhaustion
+        + W_WASTED_KICKS      * wasted_kicks
+        + W_WASTED_AIR_KICKS  * wasted_air_kicks
+        + W_CONCEDED          * conceded
+        + W_PUSHED            * pushed
+    )
+    return positive - penalty
 
 
 # ── Endpoints ────────────────────────────────────────────────

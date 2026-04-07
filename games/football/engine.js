@@ -219,6 +219,8 @@ function emptyFitness() {
     goalKicks: 0,         // reward: kicks that advance ball toward goal
     nearMisses: 0,        // reward: ball crossed goal line but missed opening
     frameHits: 0,         // reward: ball bounced off goal frame
+    saves: 0,             // reward: kicked ball away when heading toward own goal
+    airKicks: 0,          // reward: kicked ball while airborne (spectacular play)
   };
 }
 
@@ -577,6 +579,13 @@ export class FootballEngine {
     // Did the kick advance ball toward opponent's goal?
     const goalDir = p.side === 'left' ? 1 : -1;
     if (s.ball.vx * goalDir > 0) s.fitness[which].goalKicks++;
+    // Defensive save: kicked ball that was heading toward own goal
+    const ownGoalX = p.side === 'left' ? 0 : this.field.fieldWidth;
+    if (s.ball.vx * -goalDir > 0 && Math.abs(s.ball.x - ownGoalX) < this.field.fieldWidth * 0.3) {
+      s.fitness[which].saves++;
+    }
+    // Air kick (spectacular play)
+    if (s.ball.z > 1) s.fitness[which].airKicks++;
   }
 
   /* ── Fitness shaping ────────────────────────────────────── */

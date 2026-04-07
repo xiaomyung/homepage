@@ -360,14 +360,17 @@ def weights_to_b64(blob):
 # Adjust these to rebalance what brains optimise for.
 
 W_GOALS       = 0.40   # goals scored / 3 (only reward scoring)
-W_PROXIMITY   = 0.08   # avg closeness to ball (quadratic falloff)
+W_CONCEDED    = 0.05   # penalty: goals conceded / 3
+W_PROXIMITY   = 0.05   # avg closeness to ball (quadratic falloff)
 W_POSSESSION  = 0.08   # fraction of ticks closer to ball than opponent
 W_ATTACK_ZONE = 0.09   # avg ball closeness to opponent goal
 W_ADVANCE     = 0.05   # ball movement toward opponent goal (clamped)
 W_GOAL_KICKS  = 0.08   # kicks directed at goal (capped at 15/match)
 W_NEAR_MISS   = 0.07   # shots that barely miss (capped at 5/match)
 W_FRAME_HIT   = 0.05   # ball hitting goal frame (capped at 3/match)
-W_STAMINA     = 0.05   # average stamina level
+W_SAVES       = 0.04   # defensive clearances (capped at 5/match)
+W_AIR_KICKS   = 0.03   # spectacular air kicks (capped at 5/match)
+W_STAMINA     = 0.03   # average stamina level
 W_EXHAUSTION  = 0.03   # penalty: fraction of time exhausted
 W_PUSHED      = 0.02   # penalty: times pushed (capped at 5/match)
 
@@ -375,16 +378,19 @@ W_PUSHED      = 0.02   # penalty: times pushed (capped at 5/match)
 CAP_GOAL_KICKS = 15
 CAP_NEAR_MISS  = 5
 CAP_FRAME_HIT  = 3
+CAP_SAVES      = 5
+CAP_AIR_KICKS  = 5
 CAP_PUSHED     = 5
 
 
 def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
     """Calculate per-match fitness in [0, 1]. All components normalized first."""
-    # Goals component: only reward scoring, not surviving
+    # Goals: only reward scoring, not surviving
     goals = min(goals_scored / 3, 1)
+    conceded = min(goals_conceded / 3, 1)
 
     if not fitness_data or fitness_data.get("ticks", 0) == 0:
-        return goals * W_GOALS
+        return goals * W_GOALS - conceded * W_CONCEDED
 
     ticks = fitness_data["ticks"]
 
@@ -398,6 +404,8 @@ def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
     goal_kicks  = min(fitness_data.get("goalKicks", 0) / CAP_GOAL_KICKS, 1)
     near_misses = min(fitness_data.get("nearMisses", 0) / CAP_NEAR_MISS, 1)
     frame_hits  = min(fitness_data.get("frameHits", 0) / CAP_FRAME_HIT, 1)
+    saves       = min(fitness_data.get("saves", 0) / CAP_SAVES, 1)
+    air_kicks   = min(fitness_data.get("airKicks", 0) / CAP_AIR_KICKS, 1)
     pushed      = min(fitness_data.get("pushedReceived", 0) / CAP_PUSHED, 1)
 
     return (
@@ -409,7 +417,10 @@ def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
         + W_GOAL_KICKS  * goal_kicks
         + W_NEAR_MISS   * near_misses
         + W_FRAME_HIT   * frame_hits
+        + W_SAVES       * saves
+        + W_AIR_KICKS   * air_kicks
         + W_STAMINA     * stamina
+        - W_CONCEDED    * conceded
         - W_EXHAUSTION  * exhaustion
         - W_PUSHED      * pushed
     )

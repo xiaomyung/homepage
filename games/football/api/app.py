@@ -37,8 +37,9 @@ from ga import (
 
 app = Flask(__name__)
 
-SCHEMA_PATH = Path(__file__).resolve().parent.parent / "evolution" / "schema.sql"
-PERSIST_PATH = Path(__file__).resolve().parent.parent / "evolution" / "football_persist.db"
+EVOLUTION_DIR = Path(__file__).resolve().parent.parent / "evolution"
+SCHEMA_PATH = EVOLUTION_DIR / "schema.sql"
+PERSIST_PATH = EVOLUTION_DIR / "football_persist.db"
 
 # ── In-memory DB ─────────────────────────────────────────────
 
@@ -51,22 +52,26 @@ def get_db():
     return _mem_db
 
 
+def _apply_schema(db):
+    """Apply the evolution schema to a DB connection."""
+    with open(SCHEMA_PATH) as f:
+        db.executescript(f.read())
+
+
 def _init_mem_db():
     """Initialize in-memory DB with schema and load persisted state."""
     global _mem_db
     _mem_db = sqlite3.connect(":memory:", check_same_thread=False)
     _mem_db.row_factory = sqlite3.Row
     _mem_db.execute("PRAGMA foreign_keys=ON")
-    with open(SCHEMA_PATH) as f:
-        _mem_db.executescript(f.read())
+    _apply_schema(_mem_db)
     _load_persisted_state()
 
 
 def _init_persist_db():
     """Ensure the persist DB has the schema."""
     db = sqlite3.connect(str(PERSIST_PATH))
-    with open(SCHEMA_PATH) as f:
-        db.executescript(f.read())
+    _apply_schema(db)
     db.close()
 
 
@@ -140,7 +145,7 @@ def _flush_to_disk():
         try:
             with _db_lock:
                 _do_flush()
-        except Exception:
+        except (sqlite3.DatabaseError, OSError):
             pass  # best-effort
 
 
@@ -239,11 +244,15 @@ def get_brains_for_gen(db, gen_id):
     ).fetchall()
 
 
-# ── Adaptive mutation ────────────────────────────────────────
+# ── Evolution constants ──────────────────────────────────────
 STAGNATION_WINDOW = 20   # compare last 10 gens vs 10 before that
 STAGNATION_THRESH = 0.01 # min improvement to count as progress (fitness is [0,1])
 MUTATION_RATE_MAX = 0.25
 MUTATION_STD_MAX  = 0.8
+GOAL_SIZE_SHRINK  = 0.02
+GOAL_SIZE_MIN     = 1.0
+HOF_INTERVAL      = 50
+KEEP_GENERATIONS  = 5
 
 
 def _adapt_mutation(db, cfg):
@@ -312,10 +321,6 @@ def try_breed(db, gen_id):
     _cleanup_old_data(db, new_gen_id)
 
 
-GOAL_SIZE_SHRINK = 0.02
-GOAL_SIZE_MIN    = 1.0
-
-
 def _shrink_goal_size(db, gen_id):
     """Shrink goal opening toward normal when brains score."""
     row = db.execute("SELECT value FROM config WHERE key = 'goal_size'").fetchone()
@@ -326,17 +331,13 @@ def _shrink_goal_size(db, gen_id):
         "SELECT SUM(score_a + score_b) as g FROM matches WHERE generation_id = ?",
         (gen_id,),
     ).fetchone()
-    if goals and goals["g"] and goals["g"] > 0:
+    if goals and goals["g"] > 0:
         new_size = max(GOAL_SIZE_MIN, size - GOAL_SIZE_SHRINK)
         db.execute(
             "INSERT OR REPLACE INTO config (key, value) VALUES ('goal_size', ?)",
             (new_size,),
         )
         db.commit()
-
-
-HOF_INTERVAL     = 50
-KEEP_GENERATIONS = 5
 
 
 def _cleanup_old_data(db, current_gen_id):
@@ -506,6 +507,8 @@ def matchup():
 def result():
     """Report a single match result."""
     data = request.get_json()
+    if not data:
+        return jsonify({"error": "invalid JSON"}), 400
     brain_a_id = data["brain_a_id"]
     brain_b_id = data["brain_b_id"]
     score_a = data["score_a"]
@@ -547,6 +550,8 @@ def result():
 def results_batch():
     """Report multiple match results in one request."""
     data = request.get_json()
+    if not data:
+        return jsonify({"error": "invalid JSON"}), 400
     items = data.get("results", [])
     if not items:
         return jsonify({"ok": True})
@@ -573,7 +578,7 @@ def results_batch():
                 fit_b = calc_match_fitness(item.get("fitness_b"), score_b, score_a)
                 brain_updates.append((score_b, score_a, fit_b, fit_b, brain_b_id))
 
-        total_goals = sum(r[3] + r[4] for r in match_rows)
+        total_goals = sum(sa + sb for (_, _, _, sa, sb) in match_rows)
         db.execute("UPDATE stats SET value = value + ? WHERE key = 'total_matches'", (len(match_rows),))
         db.execute("UPDATE stats SET value = value + ? WHERE key = 'total_goals'", (total_goals,))
 
@@ -691,8 +696,10 @@ def stats():
         ensure_generation_zero(db)
         gen_id = current_generation(db)
 
-        top = db.execute(
-            "SELECT MAX(fitness) as f FROM brains WHERE generation_id = ?", (gen_id,)
+        # Use fitness_history for last completed generation (current gen may be 0)
+        last_hist = db.execute(
+            "SELECT top_fitness, avg_fitness FROM fitness_history "
+            "ORDER BY generation_id DESC LIMIT 1"
         ).fetchone()
 
         total_matches = db.execute(
@@ -708,16 +715,26 @@ def stats():
             (gen_id,),
         ).fetchone()
 
+        hof_size = db.execute("SELECT COUNT(*) as c FROM hall_of_fame").fetchone()["c"]
+
+        cfg_rows = db.execute("SELECT key, value FROM config").fetchall()
+        cfg = {r["key"]: r["value"] for r in cfg_rows}
+
     tm = int(total_matches["value"]) if total_matches else 0
     tg = total_goals["value"] if total_goals else 0
 
     return jsonify({
         "generation": gen_id,
         "population": pop["c"],
-        "top_fitness": round(top["f"] or 0, 2),
+        "top_fitness": round(last_hist["top_fitness"], 2) if last_hist else 0,
+        "avg_fitness": round(last_hist["avg_fitness"], 2) if last_hist else 0,
         "total_matches": tm,
         "avg_goals": round(tg / tm, 1) if tm > 0 else 0,
         "min_matches_current_gen": pop["min_matches"] or 0,
+        "hof_size": hof_size,
+        "goal_size": round(cfg.get("goal_size", 2.0), 2),
+        "mutation_rate": cfg.get("mutation_rate", 0.05),
+        "mutation_std": cfg.get("mutation_std", 0.3),
     })
 
 

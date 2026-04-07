@@ -10,105 +10,29 @@ Personal homelab dashboard served at `https://xiaomyung.com` — a static page w
 
 ## Running locally (without Caddy)
 
-You can run the dashboard and the football neuroevolution locally with just Python — no Caddy, no DNS rewrite, no services needed. Health-check dots will show "offline" (expected — there are no services to probe), but the football game and AI training work fully.
+Requires **Python 3.10+**. Works on Linux, macOS, and Windows.
 
-### Quick start
+**Terminal 1 — start the evolution API:**
 
 ```sh
-# 1. Start the evolution API
 cd games/football/api
-python3 -m venv venv && source venv/bin/activate
+python3 -m venv venv
+source venv/bin/activate        # Linux/macOS
+# venv\Scripts\activate          # Windows (cmd)
+# venv\Scripts\Activate.ps1      # Windows (PowerShell)
 pip install -r requirements.txt
-python app.py                    # Flask on 127.0.0.1:5050
-
-# 2. In a second terminal, serve the static files from the repo root
-python3 -m http.server 5050 -d . # WRONG — port conflict
+python app.py
 ```
 
-The problem: the JS code fetches `/api/football/*` as a relative path, so the static file server and the API must share the same origin. The easiest way is a tiny reverse proxy script.
-
-### Option A — Python dev server (recommended)
-
-A single-file dev server that serves static files *and* proxies `/api/football` to Flask:
+**Terminal 2 — start the dev server (from repo root):**
 
 ```sh
-# Terminal 1 — Flask API
-cd games/football/api
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-python app.py                    # runs on 127.0.0.1:5050
-
-# Terminal 2 — dev server (from repo root)
-python3 dev-server.py            # opens http://localhost:8000
+python dev-server.py
 ```
 
-Create `dev-server.py` in the repo root (already gitignored patterns cover it, or add it):
+Open **http://localhost:8000**. The dashboard loads with service dots showing "offline" (no homelab services to probe), but the football game and AI training work fully.
 
-```python
-"""Minimal dev server: static files + reverse proxy to Flask API."""
-import http.server
-import urllib.request
-import os
-
-API = "http://127.0.0.1:5050"
-PORT = 8000
-DIR = os.path.dirname(os.path.abspath(__file__))
-
-class Handler(http.server.SimpleHTTPRequestHandler):
-    def __init__(self, *a, **kw):
-        super().__init__(*a, directory=DIR, **kw)
-
-    def do_GET(self):
-        if self.path.startswith("/api/football"):
-            self._proxy()
-        else:
-            super().do_GET()
-
-    def do_POST(self):
-        self._proxy()
-
-    def _proxy(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length) if length else None
-        req = urllib.request.Request(
-            API + self.path,
-            data=body,
-            headers={"Content-Type": self.headers.get("Content-Type", "application/json")},
-            method=self.command,
-        )
-        try:
-            with urllib.request.urlopen(req) as resp:
-                self.send_response(resp.status)
-                self.send_header("Content-Type", resp.headers.get("Content-Type", "application/json"))
-                self.end_headers()
-                self.wfile.write(resp.read())
-        except Exception as e:
-            self.send_error(502, str(e))
-
-print(f"Dev server at http://localhost:{PORT}")
-http.server.HTTPServer(("", PORT), Handler).serve_forever()
-```
-
-### Option B — any static file server + browser CORS disabled
-
-If you'd rather use your own static server (Vite, `npx serve`, etc.), run it on any port and launch Chrome with CORS disabled for local dev:
-
-```sh
-# macOS
-open -na "Google Chrome" --args --disable-web-security --user-data-dir=/tmp/chrome-dev
-
-# Linux
-google-chrome --disable-web-security --user-data-dir=/tmp/chrome-dev
-```
-
-Then update `API_BASE` in `football.js` and `trainer.js` to `http://127.0.0.1:5050/api/football` (absolute URL).
-
-### What you'll see
-
-- The dashboard loads with all service dots showing **offline** — this is normal without the homelab services
-- The football game renders below the dashboard with two ASCII stickmen
-- If the Flask API is running, headless training starts automatically in a web worker
-- The scoreboard, stats line, and config panel (gear icon) show live evolution progress
+`dev-server.py` serves static files and proxies `/api/football/*` to Flask — no Caddy needed.
 
 ## Files
 

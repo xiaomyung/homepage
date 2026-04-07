@@ -198,7 +198,6 @@ function createPlayerState(side, midX, playerWidth) {
   return {
     x, y: FIELD_HEIGHT / 2,
     vx: 0, vy: 0,
-    prevX: x, prevY: FIELD_HEIGHT / 2,
     stamina: 1,
     exhausted: false, // true when stamina hits 0, clears at 50%
     state: 'idle', stateTime: 0, fi: 0, ft: 0,
@@ -333,14 +332,6 @@ export class FootballEngine {
     // Clamp players
     this._clampPlayer(s.p1);
     this._clampPlayer(s.p2);
-
-    // Track velocity from position delta
-    for (const p of [s.p1, s.p2]) {
-      p.vx = p.x - p.prevX;
-      p.vy = p.y - p.prevY;
-      p.prevX = p.x;
-      p.prevY = p.y;
-    }
 
     // Ball physics
     const ballXBefore = s.ball.x;
@@ -955,12 +946,12 @@ export class FootballEngine {
     p.dir = p.side === 'left' ? 1 : -1;
     this._setState(p, 'idle');
     p.jumpY = 0;
+    p.vx = 0;
+    p.vy = 0;
     p.pushVx = 0;
     p.pushVy = 0;
     p.stamina = 1;
     p.exhausted = false;
-    p.prevX = x;
-    p.prevY = FIELD_HEIGHT / 2;
   }
 
   _startingX(p) {

@@ -7,13 +7,13 @@
  * Communicates with main thread via postMessage for stats updates.
  */
 
-import { FootballEngine, FieldConfig } from './engine.js';
+import { FootballEngine, FieldConfig, TICK } from './engine.js';
 import { NeuralNet } from './nn.js';
 
 const API_BASE = '/api/football';
 const BATCH_SIZE = 125;
 const SOURCE_ID = 'browser-' + Math.random().toString(36).slice(2, 8);
-let maxHeadlessTicks = Math.ceil(45000 / 16); // default 45s, updated from API
+let maxHeadlessTicks = Math.ceil(45000 / TICK); // default 45s, updated from API
 let goalSize = 2.0; // adaptive goal size, updated from API
 const MIN_FIELD_WIDTH = 600;
 const FIELD_WIDTH_RANGE = 300;
@@ -110,7 +110,7 @@ async function trainingLoop() {
       const pairs = data.pairs;
       const genId = data.generation_id;
       if (data.match_duration) {
-        maxHeadlessTicks = Math.ceil(data.match_duration * 1000 / 16);
+        maxHeadlessTicks = Math.ceil(data.match_duration * 1000 / TICK);
       }
       if (data.goal_size !== undefined) {
         goalSize = data.goal_size;

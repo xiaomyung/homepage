@@ -138,7 +138,7 @@ All components normalized to [0, 1] with tunable weights (`W_*` constants in `ap
 |----------|--------|---------|
 | `/api/football/matchup?count=N` | GET | Get N brain pairs to play (75% self-play, 20% HoF, 5% random) |
 | `/api/football/results` | POST | Report batch of match outcomes |
-| `/api/football/showcase` | GET | Two different brains for visual match display |
+| `/api/football/showcase` | GET | Two diverse brains for visual match (40% vs HoF, 30% vs mid-ranked, 20% vs random, 10% HoF vs HoF) |
 | `/api/football/best` | GET | Current best brain weights |
 | `/api/football/stats` | GET | Generation, fitness, match counts |
 | `/api/football/config` | GET/POST | Get or set evolution parameters |

@@ -258,8 +258,13 @@ HOF_INTERVAL      = 50
 KEEP_GENERATIONS  = 5
 MATCHUP_HOF_RATE  = 0.10   # fraction of training matches vs HoF opponents
 MATCHUP_RAND_RATE = 0.05   # fraction of training matches vs random brains
-MATCHUP_MAX_COUNT = 100    # max pairs per /matchup request
-HISTORY_MAX_LIMIT = 100000 # max rows from /history endpoint
+MATCHUP_MAX_COUNT     = 100    # max pairs per /matchup request
+HISTORY_MAX_LIMIT     = 100000 # max rows from /history endpoint
+SHOWCASE_HOF_RATE     = 0.40   # showcase: best vs HoF champion
+SHOWCASE_MID_RATE     = 0.70   # showcase: best vs mid-ranked (cumulative)
+SHOWCASE_RAND_RATE    = 0.90   # showcase: best vs random pop (cumulative)
+SHOWCASE_MID_RANK_MIN = 20     # mid-ranked brain offset range
+SHOWCASE_MID_RANK_MAX = 40
 
 
 def _adapt_mutation(db, cfg):
@@ -466,7 +471,10 @@ def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
 @app.route("/api/football/matchup")
 def matchup():
     """Get brain pairs to play. ?count=N, ?known=id1,id2,... to skip weights."""
-    count = min(int(request.args.get("count", 5)), MATCHUP_MAX_COUNT)
+    try:
+        count = min(int(request.args.get("count", 5)), MATCHUP_MAX_COUNT)
+    except (ValueError, TypeError):
+        return jsonify({"error": "invalid count"}), 400
     with _db_lock:
         db = get_db()
         ensure_generation_zero(db)
@@ -684,7 +692,7 @@ def showcase():
         mid = db.execute(
             "SELECT id, weights, fitness FROM brains "
             "WHERE matches_played > 0 ORDER BY fitness DESC LIMIT 1 OFFSET ?",
-            (random.randint(20, 40),),
+            (random.randint(SHOWCASE_MID_RANK_MIN, SHOWCASE_MID_RANK_MAX),),
         ).fetchone()
         rand_pop = db.execute(
             "SELECT id, weights, fitness FROM brains "
@@ -698,15 +706,15 @@ def showcase():
         return jsonify({"brewing": True})
 
     roll = random.random()
-    if roll < 0.40 and hof_rows:
+    if roll < SHOWCASE_HOF_RATE and hof_rows:
         # Best vs random HoF champion (different era/lineage)
         brain_a, brain_b = best, random.choice(hof_rows)
         matchup_type = "vs_hof"
-    elif roll < 0.70 and mid:
+    elif roll < SHOWCASE_MID_RATE and mid:
         # Best vs mid-ranked brain (different strategy niche)
         brain_a, brain_b = best, mid
         matchup_type = "vs_mid"
-    elif roll < 0.90 and rand_pop and rand_pop["id"] != best["id"]:
+    elif roll < SHOWCASE_RAND_RATE and rand_pop and rand_pop["id"] != best["id"]:
         # Best vs random population member
         brain_a, brain_b = best, rand_pop
         matchup_type = "vs_random"
@@ -802,11 +810,14 @@ def config():
         db = get_db()
         if request.method == "POST":
             data = request.get_json()
-            for key, value in data.items():
-                db.execute(
-                    "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
-                    (key, float(value)),
-                )
+            try:
+                for key, value in data.items():
+                    db.execute(
+                        "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                        (key, float(value)),
+                    )
+            except (ValueError, TypeError):
+                return jsonify({"error": "invalid config value"}), 400
             db.commit()
             return jsonify({"ok": True})
         rows = db.execute("SELECT key, value FROM config").fetchall()
@@ -816,7 +827,10 @@ def config():
 @app.route("/api/football/history")
 def history():
     """Fitness history for graphing. ?limit=N (default 100)."""
-    limit = min(int(request.args.get("limit", 100)), HISTORY_MAX_LIMIT)
+    try:
+        limit = min(int(request.args.get("limit", 100)), HISTORY_MAX_LIMIT)
+    except (ValueError, TypeError):
+        return jsonify({"error": "invalid limit"}), 400
     with _db_lock:
         db = get_db()
         rows = db.execute(

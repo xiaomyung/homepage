@@ -20,7 +20,7 @@ const AI_PREDICT_FRAMES     = 20;
 const MAX_WORKERS           = navigator.hardwareConcurrency || 4;
 const STORAGE_KEY_WORKERS   = 'fb-worker-count';
 let activeWorkers = [];
-let targetWorkerCount = parseInt(localStorage.getItem(STORAGE_KEY_WORKERS)) || MAX_WORKERS;
+let targetWorkerCount = Math.min(parseInt(localStorage.getItem(STORAGE_KEY_WORKERS)) || MAX_WORKERS, MAX_WORKERS);
 
 /* ── Frames ─────────────────────────────────────────────── */
 
@@ -762,8 +762,8 @@ async function loadFitnessGraph() {
 
     ctx.clearRect(0, 0, w, h);
 
-    const maxF = Math.max(...data.map(d => d.top), 0.1);
-    const minF = Math.min(...data.map(d => d.avg));
+    const maxF = data.reduce((m, d) => d.top > m ? d.top : m, 0.1);
+    const minF = data.reduce((m, d) => d.avg < m ? d.avg : m, Infinity);
     const step = gw / Math.max(data.length - 1, 1);
 
     function drawLine(key, color, lw) {
@@ -861,6 +861,7 @@ function setWorkerCount(count) {
   // Start additional workers
   while (activeWorkers.length < count) {
     try {
+      // bump ?v= when trainer.js changes to invalidate browser worker cache
       const w = new Worker(new URL('./trainer.js?v=3', import.meta.url), { type: 'module' });
       activeWorkers.push(w);
     } catch {

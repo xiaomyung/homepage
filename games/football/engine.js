@@ -215,20 +215,20 @@ function createPlayerState(side, midX, playerWidth) {
 function emptyFitness() {
   return {
     ticks: 0,
-    ballProximity: 0,     // avg closeness to ball (quadratic falloff)
-    kicks: 0,             // count: each kick (not used in fitness, kept for stats)
+    ballProximity: 0,     // cumulative closeness to ball (summed per tick, tight radius)
+    kicks: 0,             // count: total kicks (used in fitness ratios + volume guard)
     ballAdvance: 0,       // reward: moving ball toward opponent goal
-    ballInAttackZone: 0,  // reward: ball near opponent's goal
-    possession: 0,        // reward: ticks closer to ball than opponent
+    ballInAttackZone: 0,  // tracked but not used in fitness (kept for potential future use)
+    possession: 0,        // tracked but not used in fitness (kept for potential future use)
     exhaustedTicks: 0,    // penalty: ticks spent frozen from exhaustion
     staminaSum: 0,        // for computing average stamina (reward managing it)
-    pushesLanded: 0,      // count: successful pushes (not used in fitness, kept for stats)
+    pushesLanded: 0,      // tracked but not used in fitness (kept for stats)
     pushedReceived: 0,    // penalty: getting pushed
-    goalKicks: 0,         // reward: kicks that advance ball toward goal
-    nearMisses: 0,        // reward: ball crossed goal line but missed opening
+    goalKicks: 0,         // used in kick accuracy ratio (goalKicks / kicks)
+    nearMisses: 0,        // reward: weighted score for near-goal misses (fractional per event)
     frameHits: 0,         // reward: ball bounced off goal frame
     saves: 0,             // reward: kicked ball away when heading toward own goal
-    airKicks: 0,          // reward: kicked ball while airborne (spectacular play)
+    airKicks: 0,          // count: kicks while airborne (denominator for air kick accuracy)
     wastedKicks: 0,       // penalty: kicks producing negligible ball speed
     wastedAirKicks: 0,    // penalty: air kicks producing negligible ball speed
     goalAirKicks: 0,      // reward: air kicks aimed at opponent goal
@@ -638,7 +638,6 @@ export class FootballEngine {
 
     const halfPW = this.field.playerWidth * 0.5;
     const center = p.x + halfPW;
-    const oppCenter = opp.x + halfPW;
 
     // 1. Ball proximity (tight engagement radius — 0 beyond PROX_RADIUS_FRAC of field)
     const dx = ball.x - center;
@@ -654,17 +653,7 @@ export class FootballEngine {
       f.ballAdvance -= ballDx;
     }
 
-    // 3. Possession (squared comparison — no sqrt needed)
-    const oppDx = ball.x - oppCenter;
-    const oppDy = ball.y - opp.y;
-    if (distSq < oppDx * oppDx + oppDy * oppDy) f.possession++;
-
-    // 4. Ball in attacking zone
-    const targetGoalX = p.side === 'left' ? this.field.goalLineR : this.field.goalLineL;
-    const bgd = ball.x - targetGoalX;
-    f.ballInAttackZone += 1 - Math.min(bgd * bgd / this.field.fieldWidthSq, 1);
-
-    // 5. Exhaustion penalty
+    // 3. Exhaustion penalty
     if (p.exhausted) f.exhaustedTicks++;
 
     // 6. Stamina tracking

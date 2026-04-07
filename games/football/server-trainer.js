@@ -7,7 +7,7 @@
  * CPU load is controlled via systemd CPUQuota — no in-process throttling.
  *
  * Usage: node server-trainer.js [workers] [api-url]
- *   workers  — number of worker threads (default: cpus - 2, min 1)
+ *   workers  — number of worker threads (default: 4)
  *   api-url  — Flask API base URL (default: http://127.0.0.1:5050)
  */
 
@@ -21,25 +21,24 @@ if (isMainThread) {
 
   const workerSims = new Array(workerCount).fill(0);
   const thisFile = fileURLToPath(import.meta.url);
+  const RESPAWN_DELAY_MS = 2000;
 
-  for (let i = 0; i < workerCount; i++) {
+  function spawnWorker(i, respawn = false) {
     const w = new Worker(thisFile, { workerData: { apiBase } });
     w.on('message', msg => {
       if (msg.type === 'stats') workerSims[i] = msg.simsPerSecond;
     });
     w.on('error', err => console.error(`[worker ${i}] error:`, err.message));
-    w.on('exit', code => {
-      console.error(`[worker ${i}] exited (code ${code}), restarting...`);
-      // Respawn after a brief delay
-      setTimeout(() => {
-        const w2 = new Worker(thisFile, { workerData: { apiBase } });
-        w2.on('message', msg => {
-          if (msg.type === 'stats') workerSims[i] = msg.simsPerSecond;
-        });
-        w2.on('error', err => console.error(`[worker ${i}] error:`, err.message));
-      }, 2000);
-    });
+    if (!respawn) {
+      // Only first-level spawn gets an exit handler (systemd handles deeper crashes)
+      w.on('exit', code => {
+        console.error(`[worker ${i}] exited (code ${code}), restarting...`);
+        setTimeout(() => spawnWorker(i, true), RESPAWN_DELAY_MS);
+      });
+    }
   }
+
+  for (let i = 0; i < workerCount; i++) spawnWorker(i);
 
   // Print aggregated stats every 5 seconds
   setInterval(() => {
@@ -51,7 +50,7 @@ if (isMainThread) {
 
 } else {
   // ── Worker thread: training loop ────────────────────────────
-  const { FootballEngine, FieldConfig } = await import('./engine.js');
+  const { FootballEngine, FieldConfig, TICK } = await import('./engine.js');
   const { NeuralNet } = await import('./nn.js');
 
   const API_BASE = `${workerData.apiBase}/api/football`;
@@ -60,7 +59,7 @@ if (isMainThread) {
   const MIN_FIELD_WIDTH = 600;
   const FIELD_WIDTH_RANGE = 300;
 
-  let maxHeadlessTicks = Math.ceil(45000 / 16);
+  let maxHeadlessTicks = Math.ceil(45000 / TICK);
   let goalSize = 2.0;
 
   function b64ToFloat32(b64) {
@@ -129,7 +128,7 @@ if (isMainThread) {
         const data = await res.json();
 
         const { pairs, generation_id: genId } = data;
-        if (data.match_duration) maxHeadlessTicks = Math.ceil(data.match_duration * 1000 / 16);
+        if (data.match_duration) maxHeadlessTicks = Math.ceil(data.match_duration * 1000 / TICK);
         if (data.goal_size !== undefined) goalSize = data.goal_size;
 
         if (genId !== cachedGen) { cachedBrains.clear(); cachedGen = genId; }

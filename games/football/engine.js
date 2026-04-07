@@ -520,10 +520,11 @@ export class FootballEngine {
     p._kickDz = Math.max(-1, Math.min(1, dz));
     p._kickPower = (Math.max(-1, Math.min(1, power)) + 1) / 2; // map [-1,1] to [0,1]
 
-    if (dz > 0) {
+    if (dz > 0.5) {
       // Player chooses to jump — height controlled by kickDz
       const { lineH } = this.field;
-      p.airKickZ = dz * AIRKICK_MAX_H * lineH; // max 2 text rows high
+      const jumpFrac = (dz - 0.5) * 2; // remap [0.5, 1] → [0, 1]
+      p.airKickZ = jumpFrac * AIRKICK_MAX_H * lineH; // max 2 text rows high
       p.airKickFired = false;
       p.stamina = Math.max(0, p.stamina - STAMINA_AIRKICK_DRAIN);
       this._setState(p, 'airkick');

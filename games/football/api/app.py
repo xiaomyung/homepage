@@ -253,6 +253,8 @@ GOAL_SIZE_SHRINK  = 0.02
 GOAL_SIZE_MIN     = 1.0
 HOF_INTERVAL      = 50
 KEEP_GENERATIONS  = 5
+MATCHUP_HOF_RATE  = 0.10  # fraction of training matches vs HoF opponents
+MATCHUP_RAND_RATE = 0.05  # fraction of training matches vs random brains
 
 
 def _adapt_mutation(db, cfg):
@@ -462,7 +464,7 @@ def matchup():
             weight_cache[a["id"]] = None if a["id"] in known_ids else weights_to_b64(a["weights"])
 
         roll = random.random()
-        if roll < 0.20 and hof_rows:
+        if roll < MATCHUP_HOF_RATE and hof_rows:
             # Hall of fame opponent (20%)
             hof = random.choice(hof_rows)
             pairs.append({
@@ -470,7 +472,7 @@ def matchup():
                 "brain_b": {"id": None, "weights": weights_to_b64(hof["weights"]), "type": "hof"},
                 "generation_id": gen_id,
             })
-        elif roll < 0.25:
+        elif roll < MATCHUP_HOF_RATE + MATCHUP_RAND_RATE:
             # Random opponent (5%)
             pairs.append({
                 "brain_a": {"id": a["id"], "weights": weight_cache[a["id"]]},
@@ -478,7 +480,7 @@ def matchup():
                 "generation_id": gen_id,
             })
         else:
-            # Self-play (75%, or 95% when HoF is empty)
+            # Self-play (remainder, or higher when HoF is empty)
             b = random.choice(brain_list)
             while b["id"] == a["id"] and len(brain_list) > 1:
                 b = random.choice(brain_list)

@@ -91,10 +91,10 @@ The ASCII football game features neural network-controlled players trained via a
 
 ### Genetic Algorithm
 
-- Population: 50 brains, tournament selection (k=3), uniform crossover
-- Mutation: 5% base rate, Gaussian noise (σ=0.3), top 2 elites preserved, ~6% random injection
+- Population: 50 brains, tournament selection (k=5), two-point crossover
+- Mutation: 5% base rate, Gaussian noise (σ=0.3), top 5 elites preserved, ~6% random injection
 - **Adaptive mutation:** when fitness plateaus over 20 generations, mutation rate and std ramp up to 3× automatically
-- **Hall of Fame:** best brain saved every 50 generations; 20% of training matches pit current brains against historical champions
+- **Hall of Fame:** best brain saved every 50 generations; 10% of training matches pit current brains against historical champions
 - New generation breeds when all brains have played ≥5 matches
 
 ### Fitness
@@ -136,7 +136,7 @@ All components normalized to [0, 1] with tunable weights (`W_*` constants in `ap
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/football/matchup?count=N` | GET | Get N brain pairs to play (75% self-play, 20% HoF, 5% random) |
+| `/api/football/matchup?count=N` | GET | Get N brain pairs to play (85% self-play, 10% HoF, 5% random) |
 | `/api/football/results` | POST | Report batch of match outcomes |
 | `/api/football/showcase` | GET | Two diverse brains for visual match (40% vs HoF, 30% vs mid-ranked, 20% vs random, 10% HoF vs HoF) |
 | `/api/football/best` | GET | Current best brain weights |

@@ -46,11 +46,11 @@ const PUSH_DAMP      = 0.88;
 const PUSH_APPLY     = 0.12;
 const PUSH_ANIM_MS   = 300;
 const PUSH_STAMINA_COST = 0.15;  // at full push_power
-const PUSH_VICTIM_MULT = 2;     // pushed player loses 2x
+const PUSH_VICTIM_MULT = 3;     // pushed player loses 3x
 
 // Stamina
 const STAMINA_REGEN       = 0.005; // per tick (always recovers)
-const STAMINA_MOVE_BASE   = 0.006; // base drain for any movement
+const STAMINA_MOVE_BASE   = 0.003; // base drain for any movement
 const STAMINA_MOVE_SCALE  = 0.3;   // speed-proportional drain multiplier
 const STAMINA_MOVE_DRAIN  = 0.012; // additional drain at max speed
 const STAMINA_MOVE_SPEED_DRAIN = STAMINA_MOVE_DRAIN * STAMINA_MOVE_SCALE; // pre-computed
@@ -323,6 +323,10 @@ export class FootballEngine {
 
     if (s.graceFrames > 0) s.graceFrames--;
 
+    // Save positions before movement
+    const p1PreX = s.p1.x, p1PreY = s.p1.y;
+    const p2PreX = s.p2.x, p2PreY = s.p2.y;
+
     // Apply NN outputs to players
     if (p1Out) this._applyOutputs(s, s.p1, p1Out);
     if (p2Out) this._applyOutputs(s, s.p2, p2Out);
@@ -331,9 +335,16 @@ export class FootballEngine {
     this._applyPushPhysics(s.p1, s);
     this._applyPushPhysics(s.p2, s);
 
-    // Clamp players
-    this._clampPlayer(s.p1);
-    this._clampPlayer(s.p2);
+    // Clamp + stuck detection: if player didn't actually move, zero velocity
+    for (const [p, preX, preY] of [[s.p1, p1PreX, p1PreY], [s.p2, p2PreX, p2PreY]]) {
+      this._clampPlayer(p);
+      const dx = p.x - preX, dy = p.y - preY;
+      if (dx * dx + dy * dy < 1) {  // less than 1px net movement = stuck
+        p.vx = 0;
+        p.vy = 0;
+        if (p.state === 'walk') this._setState(p, 'idle');
+      }
+    }
 
     // Ball physics
     const ballXBefore = s.ball.x;
@@ -372,8 +383,12 @@ export class FootballEngine {
   /** Apply movement with inertia — shared by headless and visual paths. */
   _applyMovement(p, moveX, moveY) {
     const effSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina);
-    const targetVx = Math.max(-1, Math.min(1, moveX)) * effSpeed;
-    const targetVy = Math.max(-1, Math.min(1, moveY)) * effSpeed;
+    let targetVx = Math.max(-1, Math.min(1, moveX)) * effSpeed;
+    let targetVy = Math.max(-1, Math.min(1, moveY)) * effSpeed;
+
+    // Block movement into boundaries (prevents walk-in-place at edges)
+    if ((p.y <= 0 && targetVy < 0) || (p.y >= FIELD_HEIGHT && targetVy > 0)) { targetVy = 0; p.vy = 0; }
+    if ((p.x <= 0 && targetVx < 0) || (p.x >= this.field.fieldWidth - this.field.playerWidth && targetVx > 0)) { targetVx = 0; p.vx = 0; }
 
     // Extra stamina cost for reversing direction
     if (p.vx * targetVx < 0 || p.vy * targetVy < 0) {
@@ -391,6 +406,9 @@ export class FootballEngine {
       p.y += p.vy;
       p.dir = p.vx > 0 ? 1 : -1;
       p.stamina -= STAMINA_MOVE_BASE + STAMINA_MOVE_SPEED_DRAIN * (speed / MAX_PLAYER_SPEED);
+    } else {
+      p.vx = 0;
+      p.vy = 0;
     }
     p.stamina = Math.max(0, p.stamina);
     return speed;
@@ -403,10 +421,11 @@ export class FootballEngine {
 
     this._applyMovement(p, moveX, moveY);
 
-    // Push — instant (same state check as visual path)
+    // Push — instant, reset state immediately (visual path uses animation timer)
     if (push > 0 && p.state !== 'push') {
       const opp = p === s.p1 ? s.p2 : s.p1;
       this._tryPush(s, p, opp, pushPower);
+      if (p.state === 'push') this._setState(p, 'idle');
     }
 
     // Kick — instant execution, no animation frames

@@ -56,6 +56,7 @@ if (isMainThread) {
 
   const API_BASE = `${workerData.apiBase}/api/football`;
   const BATCH_SIZE = 125;
+  const SOURCE_ID = 'server-' + Math.random().toString(36).slice(2, 8);
   const MIN_FIELD_WIDTH = 600;
   const FIELD_WIDTH_RANGE = 300;
 
@@ -100,16 +101,17 @@ if (isMainThread) {
 
   // Stats
   let matchesThisSecond = 0;
+  let simsPerSecond = 0;
   let lastStatTime = Date.now();
 
   function updateStats() {
     const now = Date.now();
     const elapsed = now - lastStatTime;
     if (elapsed >= 1000) {
-      const sps = Math.round(matchesThisSecond * 1000 / elapsed);
+      simsPerSecond = Math.round(matchesThisSecond * 1000 / elapsed);
       matchesThisSecond = 0;
       lastStatTime = now;
-      parentPort.postMessage({ type: 'stats', simsPerSecond: sps });
+      parentPort.postMessage({ type: 'stats', simsPerSecond });
     }
   }
 
@@ -168,7 +170,7 @@ if (isMainThread) {
         await fetch(`${API_BASE}/results`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ results: batchResults }),
+          body: JSON.stringify({ results: batchResults, source: SOURCE_ID, sims_per_sec: simsPerSecond }),
         });
       } catch {
         await new Promise(r => setTimeout(r, 2000));

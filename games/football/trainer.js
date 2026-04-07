@@ -12,6 +12,7 @@ import { NeuralNet } from './nn.js';
 
 const API_BASE = '/api/football';
 const BATCH_SIZE = 125;
+const SOURCE_ID = 'browser-' + Math.random().toString(36).slice(2, 8);
 let maxHeadlessTicks = Math.ceil(45000 / 16); // default 45s, updated from API
 let goalSize = 2.0; // adaptive goal size, updated from API
 const MIN_FIELD_WIDTH = 600;
@@ -42,7 +43,7 @@ async function reportResults(results) {
   await fetch(`${API_BASE}/results`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ results }),
+    body: JSON.stringify({ results, source: SOURCE_ID, sims_per_sec: simsPerSecond }),
   });
 }
 

@@ -45,6 +45,7 @@ PERSIST_PATH = EVOLUTION_DIR / "football_persist.db"
 
 _mem_db = None
 _db_lock = threading.Lock()
+_trainer_stats = {}  # source_id → {"sims_per_sec": N, "last_seen": timestamp}
 
 
 def get_db():
@@ -581,6 +582,12 @@ def results_batch():
     data = request.get_json()
     if not data:
         return jsonify({"error": "invalid JSON"}), 400
+
+    source = data.get("source")
+    sps = data.get("sims_per_sec")
+    if source and sps is not None:
+        _trainer_stats[source] = {"sims_per_sec": int(sps), "last_seen": time.time()}
+
     items = data.get("results", [])
     if not items:
         return jsonify({"ok": True})
@@ -752,6 +759,20 @@ def stats():
     tm = int(total_matches["value"]) if total_matches else 0
     tg = total_goals["value"] if total_goals else 0
 
+    # Aggregate trainer stats by category (active in last 15s)
+    now = time.time()
+    trainers = {"browser": 0, "server": 0, "other": 0}
+    for src, info in list(_trainer_stats.items()):
+        if now - info["last_seen"] > 15:
+            del _trainer_stats[src]
+            continue
+        if src.startswith("browser-"):
+            trainers["browser"] += info["sims_per_sec"]
+        elif src.startswith("server"):
+            trainers["server"] += info["sims_per_sec"]
+        else:
+            trainers["other"] += info["sims_per_sec"]
+
     return jsonify({
         "generation": gen_id,
         "population": pop["c"],
@@ -764,6 +785,7 @@ def stats():
         "goal_size": round(cfg.get("goal_size", 2.0), 2),
         "mutation_rate": cfg.get("mutation_rate", 0.05),
         "mutation_std": cfg.get("mutation_std", 0.3),
+        "trainers": trainers,
     })
 
 

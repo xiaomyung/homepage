@@ -804,6 +804,12 @@ function updateStatsDisplay(data) {
     statsEl.textContent = fallbackMode ? 'Evolution offline — fallback AI' : '';
     return;
   }
+  const t = data.trainers || {};
+  const trainingParts = [];
+  if (t.browser) trainingParts.push(`${t.browser} this`);
+  if (t.server) trainingParts.push(`${t.server} server`);
+  if (t.other) trainingParts.push(`${t.other} other`);
+
   const items = [
     ['Generation', data.generation],
     ['Top fitness', data.top_fitness],
@@ -814,7 +820,7 @@ function updateStatsDisplay(data) {
     ['Mutation', data.mutation_rate != null ? `${data.mutation_rate} / \u03c3${data.mutation_std}` : '—'],
     ['Goal size', data.goal_size ?? '—'],
   ];
-  if (trainerSimsPerSec > 0) items.push(['Training', `${trainerSimsPerSec} sims/s`]);
+  if (trainingParts.length) items.push(['Training', trainingParts.join(' · ') + ' sims/s']);
   statsEl.innerHTML = items.map(([k, v]) =>
     `<span class="fb-stat-item"><span class="fb-stat-label">${k}</span> ${v}</span>`
   ).join('');
@@ -831,7 +837,7 @@ function startWorkers() {
   const workerSimsPerSec = new Array(WORKER_COUNT).fill(0);
   for (let i = 0; i < WORKER_COUNT; i++) {
     try {
-      const w = new Worker(new URL('./trainer.js', import.meta.url), { type: 'module' });
+      const w = new Worker(new URL('./trainer.js?v=2', import.meta.url), { type: 'module' });
       w.addEventListener('message', e => {
         if (e.data.type === 'stats') {
           workerSimsPerSec[i] = e.data.simsPerSecond;

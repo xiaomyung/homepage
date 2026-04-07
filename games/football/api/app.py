@@ -46,6 +46,7 @@ PERSIST_PATH = EVOLUTION_DIR / "football_persist.db"
 _mem_db = None
 _db_lock = threading.Lock()
 _trainer_stats = {}  # source_id → {"sims_per_sec": N, "last_seen": timestamp}
+TRAINER_STALE_SECONDS = 15  # drop trainers not seen within this window
 
 
 def get_db():
@@ -254,8 +255,10 @@ GOAL_SIZE_SHRINK  = 0.02
 GOAL_SIZE_MIN     = 1.0
 HOF_INTERVAL      = 50
 KEEP_GENERATIONS  = 5
-MATCHUP_HOF_RATE  = 0.10  # fraction of training matches vs HoF opponents
-MATCHUP_RAND_RATE = 0.05  # fraction of training matches vs random brains
+MATCHUP_HOF_RATE  = 0.10   # fraction of training matches vs HoF opponents
+MATCHUP_RAND_RATE = 0.05   # fraction of training matches vs random brains
+MATCHUP_MAX_COUNT = 100    # max pairs per /matchup request
+HISTORY_MAX_LIMIT = 100000 # max rows from /history endpoint
 
 
 def _adapt_mutation(db, cfg):
@@ -360,30 +363,27 @@ def weights_to_b64(blob):
 
 
 # ── Fitness weights ──────────────────────────────────────────
-# All components normalized to [0, 1] before weighting.
 # Positive weights sum to 1.0 (perfect play = 1.0).
 # Penalty weights sum to 1.0 (worst possible play = -1.0).
-# Range: [-1.0, 1.0]. Rewards precision over spam.
+# Range: [-1.0, 1.0]. Rewards precision + outcomes, penalizes waste.
 
 # POSITIVE (sum = 1.00)
-W_KICK_ACCURACY     = 0.21  # goalKicks / max(kicks, 1)
-W_GOALS             = 0.16  # goals / CAP_GOALS
-W_STAMINA           = 0.13  # avg stamina (per-tick avg)
-W_NEAR_MISS         = 0.11  # nearMisses / CAP_NEAR_MISS
-W_FRAME_HIT         = 0.09  # frameHits / CAP_FRAME_HIT
-W_WIN_BONUS         = 0.09  # 1.0 win / 0.5 draw / 0.0 loss
-W_SAVES             = 0.06  # saves / CAP_SAVES
-W_AIR_KICK_ACCURACY = 0.06  # goalAirKicks / max(airKicks, 1)
-W_ATTACK_ZONE       = 0.04  # ball near opponent goal (per-tick avg)
-W_POSSESSION        = 0.03  # possession fraction (per-tick avg)
-W_ADVANCE           = 0.02  # ball advance (per-tick avg)
+W_KICK_ACCURACY     = 0.20  # (goalKicks / kicks) * volume_guard
+W_GOALS             = 0.20  # goals / CAP_GOALS
+W_STAMINA           = 0.15  # avg stamina (per-tick avg)
+W_NEAR_MISS         = 0.12  # nearMisses / CAP_NEAR_MISS
+W_WIN_BONUS         = 0.10  # 1.0 win / 0.5 draw / 0.0 loss
+W_FRAME_HIT         = 0.08  # frameHits / CAP_FRAME_HIT
+W_SAVES             = 0.07  # saves / CAP_SAVES
+W_AIR_KICK_ACCURACY = 0.05  # (goalAirKicks / airKicks) * volume_guard
+W_PROXIMITY         = 0.03  # avg closeness to ball
 
 # PENALTIES (sum = 1.00)
-W_EXHAUSTION        = 0.40  # fraction of match exhausted
-W_WASTED_KICKS      = 0.27  # wastedKicks / max(kicks, 1)
+W_EXHAUSTION        = 0.35  # fraction of match exhausted
+W_WASTED_KICKS      = 0.25  # wastedKicks / max(kicks, 1)
+W_CONCEDED          = 0.15  # goals conceded / CAP_GOALS
 W_WASTED_AIR_KICKS  = 0.13  # wastedAirKicks / max(airKicks, 1)
-W_CONCEDED          = 0.13  # goals conceded / CAP_GOALS
-W_PUSHED            = 0.07  # pushed / CAP_PUSHED
+W_PUSHED            = 0.12  # pushed / CAP_PUSHED
 
 # Caps for count-based metrics
 CAP_GOALS     = 2
@@ -391,6 +391,9 @@ CAP_NEAR_MISS = 3
 CAP_FRAME_HIT = 3
 CAP_SAVES     = 5
 CAP_PUSHED    = 5
+
+# Volume guard — prevents gaming ratio metrics with tiny kick counts
+KICK_VOLUME_FLOOR = 10
 
 
 def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
@@ -412,16 +415,17 @@ def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
     kicks = fitness_data.get("kicks", 0)
     air_kicks_raw = fitness_data.get("airKicks", 0)
 
-    # Per-tick averages [0, 1]
-    possession  = fitness_data.get("possession", 0) / ticks
-    attack_zone = fitness_data.get("ballInAttackZone", 0) / ticks
-    advance     = max(0, min(fitness_data.get("ballAdvance", 0) / ticks, 1))
-    stamina     = fitness_data.get("staminaSum", 0) / ticks
-    exhaustion  = fitness_data.get("exhaustedTicks", 0) / ticks
+    # Volume guard: scales ratio metrics down when kick count is below floor
+    kick_volume = min(kicks / KICK_VOLUME_FLOOR, 1)
 
-    # Ratio-based (precision over volume)
-    kick_accuracy     = fitness_data.get("goalKicks", 0) / max(kicks, 1)
-    air_kick_accuracy = fitness_data.get("goalAirKicks", 0) / max(air_kicks_raw, 1)
+    # Per-tick averages [0, 1]
+    proximity  = fitness_data.get("ballProximity", 0) / ticks
+    stamina    = fitness_data.get("staminaSum", 0) / ticks
+    exhaustion = fitness_data.get("exhaustedTicks", 0) / ticks
+
+    # Ratio-based with volume guard
+    kick_accuracy     = (fitness_data.get("goalKicks", 0) / max(kicks, 1)) * kick_volume
+    air_kick_accuracy = (fitness_data.get("goalAirKicks", 0) / max(air_kicks_raw, 1)) * kick_volume
     wasted_kicks      = fitness_data.get("wastedKicks", 0) / max(kicks, 1)
     wasted_air_kicks  = fitness_data.get("wastedAirKicks", 0) / max(air_kicks_raw, 1)
 
@@ -436,19 +440,17 @@ def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
         + W_GOALS             * goals
         + W_STAMINA           * stamina
         + W_NEAR_MISS         * near_misses
-        + W_FRAME_HIT         * frame_hits
         + W_WIN_BONUS         * win_bonus
+        + W_FRAME_HIT         * frame_hits
         + W_SAVES             * saves
         + W_AIR_KICK_ACCURACY * air_kick_accuracy
-        + W_ATTACK_ZONE       * attack_zone
-        + W_POSSESSION        * possession
-        + W_ADVANCE           * advance
+        + W_PROXIMITY         * proximity
     )
     penalty = (
         W_EXHAUSTION        * exhaustion
         + W_WASTED_KICKS      * wasted_kicks
-        + W_WASTED_AIR_KICKS  * wasted_air_kicks
         + W_CONCEDED          * conceded
+        + W_WASTED_AIR_KICKS  * wasted_air_kicks
         + W_PUSHED            * pushed
     )
     return positive - penalty
@@ -460,7 +462,7 @@ def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
 @app.route("/api/football/matchup")
 def matchup():
     """Get brain pairs to play. ?count=N, ?known=id1,id2,... to skip weights."""
-    count = min(int(request.args.get("count", 5)), 100)
+    count = min(int(request.args.get("count", 5)), MATCHUP_MAX_COUNT)
     with _db_lock:
         db = get_db()
         ensure_generation_zero(db)
@@ -490,7 +492,7 @@ def matchup():
 
         roll = random.random()
         if roll < MATCHUP_HOF_RATE and hof_rows:
-            # Hall of fame opponent (20%)
+            # Hall of fame opponent
             hof = random.choice(hof_rows)
             pairs.append({
                 "brain_a": {"id": a["id"], "weights": weight_cache[a["id"]]},
@@ -536,10 +538,13 @@ def result():
     data = request.get_json()
     if not data:
         return jsonify({"error": "invalid JSON"}), 400
-    brain_a_id = data["brain_a_id"]
-    brain_b_id = data["brain_b_id"]
-    score_a = data["score_a"]
-    score_b = data["score_b"]
+    try:
+        brain_a_id = data["brain_a_id"]
+        brain_b_id = data["brain_b_id"]
+        score_a = data["score_a"]
+        score_b = data["score_b"]
+    except KeyError:
+        return jsonify({"error": "missing required fields"}), 400
     gen_id = data.get("generation_id")
     fit_a = calc_match_fitness(data.get("fitness_a"), score_a, score_b)
     fit_b = calc_match_fitness(data.get("fitness_b"), score_b, score_a)
@@ -760,7 +765,7 @@ def stats():
     now = time.time()
     trainers = {"browser": 0, "server": 0, "other": 0}
     for src, info in list(_trainer_stats.items()):
-        if now - info["last_seen"] > 15:
+        if now - info["last_seen"] > TRAINER_STALE_SECONDS:
             del _trainer_stats[src]
             continue
         if src.startswith("browser-"):
@@ -807,7 +812,7 @@ def config():
 @app.route("/api/football/history")
 def history():
     """Fitness history for graphing. ?limit=N (default 100)."""
-    limit = min(int(request.args.get("limit", 100)), 100000)
+    limit = min(int(request.args.get("limit", 100)), HISTORY_MAX_LIMIT)
     with _db_lock:
         db = get_db()
         rows = db.execute(

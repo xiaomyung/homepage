@@ -17,6 +17,10 @@ const NAME_HIDE_DIST        = 35;
 const API_BASE              = '/api/football';
 const STATS_POLL_INTERVAL   = 3000;      // ms between stats fetches
 const AI_PREDICT_FRAMES     = 20;
+const MAX_WORKERS           = navigator.hardwareConcurrency || 4;
+const STORAGE_KEY_WORKERS   = 'fb-worker-count';
+let activeWorkers = [];
+let targetWorkerCount = parseInt(localStorage.getItem(STORAGE_KEY_WORKERS)) || MAX_WORKERS;
 
 /* ── Frames ─────────────────────────────────────────────── */
 
@@ -155,8 +159,27 @@ configPanel.innerHTML = `
   <div class="fb-config-graph">
     <canvas class="fb-fitness-canvas"></canvas>
   </div>
+  <div class="fb-worker-control">
+    <span class="fb-stat-label">Workers</span>
+    <button class="fb-worker-btn" data-delta="-1">−</button>
+    <span class="fb-worker-count"></span>
+    <button class="fb-worker-btn" data-delta="+1">+</button>
+  </div>
 `;
 configPanel.appendChild(statsEl);
+
+// Worker count control
+const workerCountEl = configPanel.querySelector('.fb-worker-count');
+function updateWorkerDisplay() {
+  workerCountEl.textContent = targetWorkerCount + '/' + MAX_WORKERS;
+}
+updateWorkerDisplay();
+configPanel.querySelectorAll('.fb-worker-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    setWorkerCount(targetWorkerCount + parseInt(btn.dataset.delta));
+    updateWorkerDisplay();
+  });
+});
 
 // Wrapper for buttons
 const statsRow = document.createElement('div');
@@ -796,9 +819,6 @@ window.addEventListener('resize', () => {
 
 /* ── Stats polling ──────────────────────────────────────── */
 
-let trainerSimsPerSec = 0;
-const WORKER_COUNT = navigator.hardwareConcurrency ? Math.max(1, navigator.hardwareConcurrency - 2) : 2;
-
 function updateStatsDisplay(data) {
   if (!data) {
     statsEl.textContent = fallbackMode ? 'Evolution offline — fallback AI' : '';
@@ -833,20 +853,23 @@ setInterval(async () => {
 
 /* ── Web Worker ─────────────────────────────────────────── */
 
-function startWorkers() {
-  const workerSimsPerSec = new Array(WORKER_COUNT).fill(0);
-  for (let i = 0; i < WORKER_COUNT; i++) {
+function setWorkerCount(count) {
+  count = Math.max(0, Math.min(MAX_WORKERS, count));
+  targetWorkerCount = count;
+  localStorage.setItem(STORAGE_KEY_WORKERS, count);
+
+  // Start additional workers
+  while (activeWorkers.length < count) {
     try {
-      const w = new Worker(new URL('./trainer.js?v=2', import.meta.url), { type: 'module' });
-      w.addEventListener('message', e => {
-        if (e.data.type === 'stats') {
-          workerSimsPerSec[i] = e.data.simsPerSecond;
-          trainerSimsPerSec = workerSimsPerSec.reduce((a, b) => a + b, 0);
-        }
-      });
+      const w = new Worker(new URL('./trainer.js?v=3', import.meta.url), { type: 'module' });
+      activeWorkers.push(w);
     } catch {
-      // Worker failed to start — training continues with remaining workers
+      break;
     }
+  }
+  // Terminate excess workers
+  while (activeWorkers.length > count) {
+    activeWorkers.pop().terminate();
   }
 }
 
@@ -866,7 +889,7 @@ function init() {
 
   // Start with fetching best brain
   nextMatch();
-  startWorkers();
+  setWorkerCount(targetWorkerCount);
 
   // Initial stats fetch
   fetchStats().then(updateStatsDisplay);

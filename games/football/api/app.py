@@ -361,49 +361,70 @@ def weights_to_b64(blob):
 # ── Fitness weights ──────────────────────────────────────────
 # All components normalized to [0, 1] before weighting.
 # Adjust these to rebalance what brains optimise for.
+# Design: reward actual football skill — aiming, scoring, defending.
+# Caps set to what a *good* brain does, so mediocre brains score partial credit.
 
-W_GOALS       = 0.40   # goals scored / 3 (only reward scoring)
-W_CONCEDED    = 0.05   # penalty: goals conceded / 3
-W_PROXIMITY   = 0.05   # avg closeness to ball (quadratic falloff)
-W_POSSESSION  = 0.08   # fraction of ticks closer to ball than opponent
-W_ATTACK_ZONE = 0.09   # avg ball closeness to opponent goal
-W_ADVANCE     = 0.05   # ball movement toward opponent goal (clamped)
-W_GOAL_KICKS  = 0.08   # kicks directed at goal (capped at 15/match)
-W_NEAR_MISS   = 0.07   # shots that barely miss (capped at 5/match)
-W_FRAME_HIT   = 0.05   # ball hitting goal frame (capped at 3/match)
-W_SAVES       = 0.04   # defensive clearances (capped at 5/match)
-W_AIR_KICKS   = 0.03   # spectacular air kicks (capped at 5/match)
-W_STAMINA     = 0.03   # average stamina level
-W_EXHAUSTION  = 0.03   # penalty: fraction of time exhausted
-W_PUSHED      = 0.02   # penalty: times pushed (capped at 5/match)
+# OFFENSIVE SKILL — aiming and scoring
+W_GOAL_KICKS  = 0.25   # kicks aimed at goal / CAP (the core skill)
+W_GOALS       = 0.15   # goals scored / CAP (the objective)
+W_NEAR_MISS   = 0.10   # shots barely missing / CAP (accuracy signal)
+W_FRAME_HIT   = 0.06   # ball hitting goal frame / CAP (close shots)
+W_WIN_BONUS   = 0.08   # 1.0 win, 0.5 draw, 0.0 loss (outcome matters)
 
-# Caps for count-based metrics (normalize raw counts to [0, 1])
-CAP_GOAL_KICKS = 15
-CAP_NEAR_MISS  = 5
-CAP_FRAME_HIT  = 3
-CAP_SAVES      = 5
-CAP_AIR_KICKS  = 5
+# DEFENSIVE SKILL
+W_SAVES       = 0.08   # defensive clearances / CAP
+W_CONCEDED    = 0.04   # penalty: goals conceded
+
+# GAME SENSE
+W_ATTACK_ZONE = 0.05   # ball near opponent goal (field control)
+W_POSSESSION  = 0.04   # ticks closer to ball than opponent
+W_ADVANCE     = 0.03   # ball movement toward opponent goal
+
+# STYLE / ATHLETICISM
+W_AIR_KICKS   = 0.04   # air kicks / CAP (spectacular play)
+W_STAMINA     = 0.04   # average stamina (resource management)
+
+# MINOR
+W_PROXIMITY   = 0.02   # closeness to ball
+W_EXHAUSTION  = 0.01   # penalty: fraction exhausted
+W_PUSHED      = 0.01   # penalty: times pushed
+
+# Caps — represent what a *skilled* brain does consistently
+CAP_GOAL_KICKS = 10    # 10 goal-aimed kicks per match
+CAP_GOALS      = 2     # 2 goals per match (hard at goal_size 1.0)
+CAP_NEAR_MISS  = 3     # 3 near misses
+CAP_FRAME_HIT  = 2     # 2 frame hits
+CAP_SAVES      = 3     # 3 defensive saves
+CAP_AIR_KICKS  = 3     # 3 air kicks
 CAP_PUSHED     = 5
 
 
 def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
     """Calculate per-match fitness in [0, 1]. All components normalized first."""
-    # Goals: only reward scoring, not surviving
-    goals = min(goals_scored / 3, 1)
-    conceded = min(goals_conceded / 3, 1)
+    goals = min(goals_scored / CAP_GOALS, 1)
+    conceded = min(goals_conceded / CAP_GOALS, 1)
+
+    if goals_scored > goals_conceded:
+        win_bonus = 1.0
+    elif goals_scored == goals_conceded:
+        win_bonus = 0.5
+    else:
+        win_bonus = 0.0
 
     if not fitness_data or fitness_data.get("ticks", 0) == 0:
-        return goals * W_GOALS - conceded * W_CONCEDED
+        return W_GOALS * goals + W_WIN_BONUS * win_bonus - W_CONCEDED * conceded
 
     ticks = fitness_data["ticks"]
 
-    proximity   = fitness_data.get("ballProximity", 0) / ticks      # [0, 1]
-    possession  = fitness_data.get("possession", 0) / ticks         # [0, 1]
-    attack_zone = fitness_data.get("ballInAttackZone", 0) / ticks   # [0, 1]
-    advance     = max(0, min(fitness_data.get("ballAdvance", 0) / ticks, 1))  # [0, 1]
-    stamina     = fitness_data.get("staminaSum", 0) / ticks         # [0, 1]
-    exhaustion  = fitness_data.get("exhaustedTicks", 0) / ticks     # [0, 1]
+    # Per-tick averages [0, 1]
+    proximity   = fitness_data.get("ballProximity", 0) / ticks
+    possession  = fitness_data.get("possession", 0) / ticks
+    attack_zone = fitness_data.get("ballInAttackZone", 0) / ticks
+    advance     = max(0, min(fitness_data.get("ballAdvance", 0) / ticks, 1))
+    stamina     = fitness_data.get("staminaSum", 0) / ticks
+    exhaustion  = fitness_data.get("exhaustedTicks", 0) / ticks
 
+    # Count-based (capped to [0, 1])
     goal_kicks  = min(fitness_data.get("goalKicks", 0) / CAP_GOAL_KICKS, 1)
     near_misses = min(fitness_data.get("nearMisses", 0) / CAP_NEAR_MISS, 1)
     frame_hits  = min(fitness_data.get("frameHits", 0) / CAP_FRAME_HIT, 1)
@@ -412,18 +433,24 @@ def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
     pushed      = min(fitness_data.get("pushedReceived", 0) / CAP_PUSHED, 1)
 
     return (
-        W_GOALS       * goals
-        + W_PROXIMITY   * proximity
-        + W_POSSESSION  * possession
-        + W_ATTACK_ZONE * attack_zone
-        + W_ADVANCE     * advance
-        + W_GOAL_KICKS  * goal_kicks
+        # Offense (0.64)
+        W_GOAL_KICKS  * goal_kicks
+        + W_GOALS       * goals
         + W_NEAR_MISS   * near_misses
         + W_FRAME_HIT   * frame_hits
+        + W_WIN_BONUS   * win_bonus
+        # Defense (0.08 - penalty)
         + W_SAVES       * saves
+        - W_CONCEDED    * conceded
+        # Game sense (0.12)
+        + W_ATTACK_ZONE * attack_zone
+        + W_POSSESSION  * possession
+        + W_ADVANCE     * advance
+        # Style (0.08)
         + W_AIR_KICKS   * air_kicks
         + W_STAMINA     * stamina
-        - W_CONCEDED    * conceded
+        # Minor (0.02 - penalties)
+        + W_PROXIMITY   * proximity
         - W_EXHAUSTION  * exhaustion
         - W_PUSHED      * pushed
     )

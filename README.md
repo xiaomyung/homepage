@@ -99,24 +99,26 @@ The ASCII football game features neural network-controlled players trained via a
 
 ### Fitness
 
-All components normalized to [0, 1] with tunable weights (`W_*` constants in `app.py`):
+All components normalized to [0, 1] with tunable weights (`W_*` constants in `app.py`).
+Caps set to what a skilled brain achieves, so fitness reflects real play quality.
 
 | Weight | Component | What it rewards |
 |--------|-----------|----------------|
-| 0.40 | Goals scored | Scoring (goals/3) |
-| 0.09 | Attack zone | Ball near opponent's goal |
-| 0.08 | Possession | Ticks closer to ball than opponent |
-| 0.08 | Goal kicks | Kicks directed at goal |
-| 0.07 | Near misses | Shots that barely miss |
-| 0.05 | Proximity | Staying close to ball |
-| 0.05 | Advance | Moving ball toward goal |
-| 0.05 | Frame hits | Hitting the goal post |
-| 0.04 | Saves | Defensive clearances near own goal |
-| 0.03 | Air kicks | Spectacular aerial kicks |
-| 0.03 | Stamina | Managing stamina well |
-| −0.05 | Conceded | Goals conceded penalty |
-| −0.03 | Exhaustion | Time spent frozen |
-| −0.02 | Pushed | Getting pushed penalty |
+| 0.25 | Goal kicks | Kicks aimed at opponent goal (/10) |
+| 0.15 | Goals | Scoring (/2) |
+| 0.10 | Near misses | Shots that barely miss (/3) |
+| 0.08 | Win bonus | 1.0 win / 0.5 draw / 0.0 loss |
+| 0.08 | Saves | Defensive clearances (/3) |
+| 0.06 | Frame hits | Hitting the goal post (/2) |
+| 0.05 | Attack zone | Ball near opponent's goal |
+| 0.04 | Possession | Ticks closer to ball than opponent |
+| 0.04 | Air kicks | Spectacular aerial kicks (/3) |
+| 0.04 | Stamina | Managing stamina well |
+| 0.03 | Advance | Moving ball toward goal |
+| 0.02 | Proximity | Staying close to ball |
+| −0.04 | Conceded | Goals conceded penalty |
+| −0.01 | Exhaustion | Time spent frozen |
+| −0.01 | Pushed | Getting pushed penalty |
 
 ### Game Mechanics
 

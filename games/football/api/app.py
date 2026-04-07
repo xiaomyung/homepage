@@ -97,6 +97,18 @@ def _load_persisted_state():
                 "INSERT OR IGNORE INTO fitness_history VALUES (?, ?, ?)",
                 (row["generation_id"], row["top_fitness"], row["avg_fitness"]),
             )
+        # Hall of fame
+        try:
+            for row in disk.execute(
+                "SELECT generation_id, weights, fitness FROM hall_of_fame"
+            ).fetchall():
+                _mem_db.execute(
+                    "INSERT OR IGNORE INTO hall_of_fame (generation_id, weights, fitness) "
+                    "VALUES (?, ?, ?)",
+                    (row["generation_id"], row["weights"], row["fitness"]),
+                )
+        except sqlite3.OperationalError:
+            pass  # table may not exist in old persist DBs
         # Generation + brains (restore population so evolution continues)
         gen_row = disk.execute("SELECT MAX(id) as id FROM generations").fetchone()
         if gen_row and gen_row["id"]:
@@ -117,8 +129,8 @@ def _load_persisted_state():
                 )
         _mem_db.commit()
         disk.close()
-    except Exception:
-        pass  # persist DB might be corrupted — start fresh
+    except (sqlite3.DatabaseError, OSError):
+        pass  # persist DB might be corrupted or unreadable — start fresh
 
 
 def _flush_to_disk():
@@ -155,6 +167,15 @@ def _do_flush():
         disk.execute(
             "INSERT OR IGNORE INTO fitness_history VALUES (?, ?, ?)",
             (row["generation_id"], row["top_fitness"], row["avg_fitness"]),
+        )
+    # Hall of fame (append only)
+    for row in _mem_db.execute(
+        "SELECT generation_id, weights, fitness FROM hall_of_fame"
+    ).fetchall():
+        disk.execute(
+            "INSERT OR IGNORE INTO hall_of_fame (generation_id, weights, fitness) "
+            "VALUES (?, ?, ?)",
+            (row["generation_id"], row["weights"], row["fitness"]),
         )
     # Current generation + brains (overwrite — only keep latest snapshot)
     gen_id = _mem_db.execute("SELECT MAX(id) as id FROM generations").fetchone()["id"]
@@ -218,6 +239,30 @@ def get_brains_for_gen(db, gen_id):
     ).fetchall()
 
 
+# ── Adaptive mutation ────────────────────────────────────────
+STAGNATION_WINDOW = 20   # compare last 10 gens vs 10 before that
+STAGNATION_THRESH = 0.01 # min improvement to count as progress (fitness is [0,1])
+MUTATION_RATE_MAX = 0.25
+MUTATION_STD_MAX  = 0.8
+
+
+def _adapt_mutation(db, cfg):
+    """Ramp mutation when fitness plateaus, based on fitness_history."""
+    history = db.execute(
+        "SELECT top_fitness FROM fitness_history ORDER BY generation_id DESC LIMIT ?",
+        (STAGNATION_WINDOW,),
+    ).fetchall()
+    if len(history) < STAGNATION_WINDOW:
+        return
+    recent_best = max(r["top_fitness"] for r in history[:10])
+    older_best = max(r["top_fitness"] for r in history[10:])
+    improvement = recent_best - older_best
+    if improvement < STAGNATION_THRESH:
+        factor = min(3.0, 1.0 + (STAGNATION_THRESH - improvement) * 100)
+        cfg["mutation_rate"] = min(cfg.get("mutation_rate", 0.05) * factor, MUTATION_RATE_MAX)
+        cfg["mutation_std"] = min(cfg.get("mutation_std", 0.3) * factor, MUTATION_STD_MAX)
+
+
 def try_breed(db, gen_id):
     """Check if breeding should happen and do it if so."""
     brains = get_brains_for_gen(db, gen_id)
@@ -234,8 +279,8 @@ def try_breed(db, gen_id):
         return
 
     # Record fitness history
-    top_f = max(b["fitness"] for b in brain_dicts) if brain_dicts else 0
-    avg_f = sum(b["fitness"] for b in brain_dicts) / len(brain_dicts) if brain_dicts else 0
+    top_f = max(b["fitness"] for b in brain_dicts)
+    avg_f = sum(b["fitness"] for b in brain_dicts) / len(brain_dicts)
     db.execute(
         "INSERT OR REPLACE INTO fitness_history (generation_id, top_fitness, avg_fitness) "
         "VALUES (?, ?, ?)",
@@ -243,6 +288,7 @@ def try_breed(db, gen_id):
     )
 
     cfg = get_config(db)
+    _adapt_mutation(db, cfg)
     new_weights = breed_next_generation(brain_dicts, cfg)
     db.execute("INSERT INTO generations DEFAULT VALUES")
     new_gen_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -252,6 +298,15 @@ def try_breed(db, gen_id):
             (new_gen_id, w),
         )
     db.commit()
+
+    # Save best brain to hall of fame periodically
+    if gen_id % HOF_INTERVAL == 0 and brain_dicts:
+        best = max(brain_dicts, key=lambda b: b["fitness"])
+        db.execute(
+            "INSERT INTO hall_of_fame (generation_id, weights, fitness) VALUES (?, ?, ?)",
+            (gen_id, best["weights"], best["fitness"]),
+        )
+        db.commit()
 
     _shrink_goal_size(db, gen_id)
     _cleanup_old_data(db, new_gen_id)
@@ -280,6 +335,7 @@ def _shrink_goal_size(db, gen_id):
         db.commit()
 
 
+HOF_INTERVAL     = 50
 KEEP_GENERATIONS = 5
 
 
@@ -299,53 +355,74 @@ def weights_to_b64(blob):
     return base64.b64encode(blob).decode("ascii")
 
 
-# ── Fitness shaping ──────────────────────────────────────────
+# ── Fitness weights ──────────────────────────────────────────
+# All components normalized to [0, 1] before weighting.
+# Adjust these to rebalance what brains optimise for.
 
-SHAPING_WEIGHT = 0.01  # scale factor for shaping vs goals (goals dominate)
+W_GOALS       = 0.40   # goals scored / 3 (only reward scoring)
+W_CONCEDED    = 0.05   # penalty: goals conceded / 3
+W_PROXIMITY   = 0.05   # avg closeness to ball (quadratic falloff)
+W_POSSESSION  = 0.08   # fraction of ticks closer to ball than opponent
+W_ATTACK_ZONE = 0.09   # avg ball closeness to opponent goal
+W_ADVANCE     = 0.05   # ball movement toward opponent goal (clamped)
+W_GOAL_KICKS  = 0.08   # kicks directed at goal (capped at 15/match)
+W_NEAR_MISS   = 0.07   # shots that barely miss (capped at 5/match)
+W_FRAME_HIT   = 0.05   # ball hitting goal frame (capped at 3/match)
+W_SAVES       = 0.04   # defensive clearances (capped at 5/match)
+W_AIR_KICKS   = 0.03   # spectacular air kicks (capped at 5/match)
+W_STAMINA     = 0.03   # average stamina level
+W_EXHAUSTION  = 0.03   # penalty: fraction of time exhausted
+W_PUSHED      = 0.02   # penalty: times pushed (capped at 5/match)
 
-# S_ = shaping reward/penalty coefficients
-S_PROXIMITY      = 8
-S_KICK           = 0.3
-S_GOAL_KICK      = 0.7
-S_ADVANCE        = 0.5
-S_ADVANCE_CAP    = 5
-S_ATTACK_ZONE    = 6
-S_POSSESSION     = 5
-S_NEAR_MISS      = 3.0
-S_FRAME_HIT      = 1.0
-S_STAMINA        = 3
-S_PUSH_LANDED    = 0.2
-S_EXHAUSTION     = 5
-S_EXHAUSTION_CAP = 4
-S_PUSHED         = 0.15
-S_PUSHED_CAP     = 2
+# Caps for count-based metrics (normalize raw counts to [0, 1])
+CAP_GOAL_KICKS = 15
+CAP_NEAR_MISS  = 5
+CAP_FRAME_HIT  = 3
+CAP_SAVES      = 5
+CAP_AIR_KICKS  = 5
+CAP_PUSHED     = 5
 
 
-def calc_shaping_score(fitness_data):
-    """Calculate a single shaping score from per-match fitness metrics."""
+def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
+    """Calculate per-match fitness in [0, 1]. All components normalized first."""
+    # Goals: only reward scoring, not surviving
+    goals = min(goals_scored / 3, 1)
+    conceded = min(goals_conceded / 3, 1)
+
     if not fitness_data or fitness_data.get("ticks", 0) == 0:
-        return 0
+        return goals * W_GOALS - conceded * W_CONCEDED
+
     ticks = fitness_data["ticks"]
 
-    proximity = fitness_data.get("ballProximity", 0) / ticks * S_PROXIMITY
-    kicks = fitness_data.get("kicks", 0) * S_KICK
-    goal_kicks = fitness_data.get("goalKicks", 0) * S_GOAL_KICK
-    advance = min(fitness_data.get("ballAdvance", 0) / ticks * S_ADVANCE, S_ADVANCE_CAP)
-    attack_zone = fitness_data.get("ballInAttackZone", 0) / ticks * S_ATTACK_ZONE
-    possession = fitness_data.get("possession", 0) / ticks * S_POSSESSION
-    avg_stamina = fitness_data.get("staminaSum", 0) / ticks * S_STAMINA
-    pushes = fitness_data.get("pushesLanded", 0) * S_PUSH_LANDED
-    near_misses = fitness_data.get("nearMisses", 0) * S_NEAR_MISS
-    frame_hits = fitness_data.get("frameHits", 0) * S_FRAME_HIT
+    proximity   = fitness_data.get("ballProximity", 0) / ticks      # [0, 1]
+    possession  = fitness_data.get("possession", 0) / ticks         # [0, 1]
+    attack_zone = fitness_data.get("ballInAttackZone", 0) / ticks   # [0, 1]
+    advance     = max(0, min(fitness_data.get("ballAdvance", 0) / ticks, 1))  # [0, 1]
+    stamina     = fitness_data.get("staminaSum", 0) / ticks         # [0, 1]
+    exhaustion  = fitness_data.get("exhaustedTicks", 0) / ticks     # [0, 1]
 
-    exhausted_frac = fitness_data.get("exhaustedTicks", 0) / ticks
-    exhaustion_penalty = min(exhausted_frac * S_EXHAUSTION, S_EXHAUSTION_CAP)
-    pushed_penalty = min(fitness_data.get("pushedReceived", 0) * S_PUSHED, S_PUSHED_CAP)
+    goal_kicks  = min(fitness_data.get("goalKicks", 0) / CAP_GOAL_KICKS, 1)
+    near_misses = min(fitness_data.get("nearMisses", 0) / CAP_NEAR_MISS, 1)
+    frame_hits  = min(fitness_data.get("frameHits", 0) / CAP_FRAME_HIT, 1)
+    saves       = min(fitness_data.get("saves", 0) / CAP_SAVES, 1)
+    air_kicks   = min(fitness_data.get("airKicks", 0) / CAP_AIR_KICKS, 1)
+    pushed      = min(fitness_data.get("pushedReceived", 0) / CAP_PUSHED, 1)
 
     return (
-        proximity + kicks + goal_kicks + advance + attack_zone
-        + possession + pushes + near_misses + frame_hits + avg_stamina
-        - exhaustion_penalty - pushed_penalty
+        W_GOALS       * goals
+        + W_PROXIMITY   * proximity
+        + W_POSSESSION  * possession
+        + W_ATTACK_ZONE * attack_zone
+        + W_ADVANCE     * advance
+        + W_GOAL_KICKS  * goal_kicks
+        + W_NEAR_MISS   * near_misses
+        + W_FRAME_HIT   * frame_hits
+        + W_SAVES       * saves
+        + W_AIR_KICKS   * air_kicks
+        + W_STAMINA     * stamina
+        - W_CONCEDED    * conceded
+        - W_EXHAUSTION  * exhaustion
+        - W_PUSHED      * pushed
     )
 
 
@@ -362,6 +439,7 @@ def matchup():
 
         gen_id = current_generation(db)
         brains = get_brains_for_gen(db, gen_id)
+        hof_rows = db.execute("SELECT weights FROM hall_of_fame").fetchall()
 
     if len(brains) < 2:
         return jsonify({"error": "Not enough brains"}), 500
@@ -383,19 +461,23 @@ def matchup():
             weight_cache[a["id"]] = None if a["id"] in known_ids else weights_to_b64(a["weights"])
 
         roll = random.random()
-        if roll < 0.15:
+        if roll < 0.20 and hof_rows:
+            # Hall of fame opponent (20%)
+            hof = random.choice(hof_rows)
             pairs.append({
                 "brain_a": {"id": a["id"], "weights": weight_cache[a["id"]]},
-                "brain_b": {"id": None, "weights": None, "type": "idle"},
+                "brain_b": {"id": None, "weights": weights_to_b64(hof["weights"]), "type": "hof"},
                 "generation_id": gen_id,
             })
-        elif roll < 0.30:
+        elif roll < 0.25:
+            # Random opponent (5%)
             pairs.append({
                 "brain_a": {"id": a["id"], "weights": weight_cache[a["id"]]},
                 "brain_b": {"id": None, "weights": weights_to_b64(random_weights()), "type": "random"},
                 "generation_id": gen_id,
             })
         else:
+            # Self-play (75%, or 95% when HoF is empty)
             b = random.choice(brain_list)
             while b["id"] == a["id"] and len(brain_list) > 1:
                 b = random.choice(brain_list)
@@ -429,8 +511,8 @@ def result():
     score_a = data["score_a"]
     score_b = data["score_b"]
     gen_id = data.get("generation_id")
-    shaping_a = calc_shaping_score(data.get("fitness_a"))
-    shaping_b = calc_shaping_score(data.get("fitness_b"))
+    fit_a = calc_match_fitness(data.get("fitness_a"), score_a, score_b)
+    fit_b = calc_match_fitness(data.get("fitness_b"), score_b, score_a)
 
     with _db_lock:
         db = get_db()
@@ -440,9 +522,9 @@ def result():
             "VALUES (?, ?, ?, ?, ?)",
             (gen_id or cur_gen, brain_a_id, brain_b_id, score_a, score_b),
         )
-        for bid, gs, gc, shaping in [
-            (brain_a_id, score_a, score_b, shaping_a),
-            (brain_b_id, score_b, score_a, shaping_b),
+        for bid, gs, gc, fit in [
+            (brain_a_id, score_a, score_b, fit_a),
+            (brain_b_id, score_b, score_a, fit_b),
         ]:
             db.execute(
                 "UPDATE brains SET "
@@ -450,11 +532,9 @@ def result():
                 "goals_scored = goals_scored + ?, "
                 "goals_conceded = goals_conceded + ?, "
                 "shaping_total = shaping_total + ?, "
-                "fitness = CAST((goals_scored + ?) - (goals_conceded + ?) AS REAL) "
-                "  / (matches_played + 1) "
-                "  + (shaping_total + ?) / (matches_played + 1) * ? "
+                "fitness = (shaping_total + ?) / (matches_played + 1) "
                 "WHERE id = ?",
-                (gs, gc, shaping, gs, gc, shaping, SHAPING_WEIGHT, bid),
+                (gs, gc, fit, fit, bid),
             )
         db.commit()
         if gen_id is None or gen_id == cur_gen:
@@ -484,14 +564,14 @@ def results_batch():
             score_a = item["score_a"]
             score_b = item["score_b"]
             gen_id = item.get("generation_id")
-            shaping_a = calc_shaping_score(item.get("fitness_a"))
+            fit_a = calc_match_fitness(item.get("fitness_a"), score_a, score_b)
 
             match_rows.append((gen_id or cur_gen, brain_a_id, brain_b_id or brain_a_id, score_a, score_b))
-            brain_updates.append((score_a, score_b, shaping_a, score_a, score_b, shaping_a, SHAPING_WEIGHT, brain_a_id))
+            brain_updates.append((score_a, score_b, fit_a, fit_a, brain_a_id))
 
             if brain_b_id is not None and item.get("opponent_type", "normal") == "normal":
-                shaping_b = calc_shaping_score(item.get("fitness_b"))
-                brain_updates.append((score_b, score_a, shaping_b, score_b, score_a, shaping_b, SHAPING_WEIGHT, brain_b_id))
+                fit_b = calc_match_fitness(item.get("fitness_b"), score_b, score_a)
+                brain_updates.append((score_b, score_a, fit_b, fit_b, brain_b_id))
 
         total_goals = sum(r[3] + r[4] for r in match_rows)
         db.execute("UPDATE stats SET value = value + ? WHERE key = 'total_matches'", (len(match_rows),))
@@ -508,9 +588,7 @@ def results_batch():
             "goals_scored = goals_scored + ?, "
             "goals_conceded = goals_conceded + ?, "
             "shaping_total = shaping_total + ?, "
-            "fitness = CAST((goals_scored + ?) - (goals_conceded + ?) AS REAL) "
-            "  / (matches_played + 1) "
-            "  + (shaping_total + ?) / (matches_played + 1) * ? "
+            "fitness = (shaping_total + ?) / (matches_played + 1) "
             "WHERE id = ?",
             brain_updates,
         )
@@ -541,6 +619,50 @@ def best():
         "weights": weights_to_b64(row["weights"]),
         "fitness": row["fitness"],
         "generation_id": gen_id,
+        "brewing": False,
+    })
+
+
+@app.route("/api/football/showcase")
+def showcase():
+    """Get two different brains for the visual match display."""
+    with _db_lock:
+        db = get_db()
+        ensure_generation_zero(db)
+        gen_id = current_generation(db)
+        # Try current gen first, fall back to any recent gen with played brains
+        top2 = db.execute(
+            "SELECT id, weights, fitness, matches_played FROM brains "
+            "WHERE matches_played > 0 "
+            "ORDER BY fitness DESC LIMIT 2",
+        ).fetchall()
+        hof = db.execute(
+            "SELECT weights, fitness FROM hall_of_fame ORDER BY RANDOM() LIMIT 1"
+        ).fetchone()
+
+    if not top2 or len(top2) < 2:
+        return jsonify({"brewing": True})
+
+    roll = random.random()
+    if roll < 0.5:
+        # Best vs 2nd best (most competitive)
+        brain_a, brain_b = top2[0], top2[1]
+        matchup_type = "top2"
+    elif roll < 0.8 and hof:
+        # Best vs HoF champion
+        brain_a = top2[0]
+        brain_b = hof
+        matchup_type = "hof"
+    else:
+        # Fallback to top 2
+        brain_a, brain_b = top2[0], top2[1]
+        matchup_type = "top2"
+
+    return jsonify({
+        "brain_a": weights_to_b64(brain_a["weights"]),
+        "brain_b": weights_to_b64(brain_b["weights"]),
+        "generation_id": gen_id,
+        "matchup_type": matchup_type,
         "brewing": False,
     })
 

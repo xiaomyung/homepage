@@ -10,105 +10,29 @@ Personal homelab dashboard served at `https://xiaomyung.com` — a static page w
 
 ## Running locally (without Caddy)
 
-You can run the dashboard and the football neuroevolution locally with just Python — no Caddy, no DNS rewrite, no services needed. Health-check dots will show "offline" (expected — there are no services to probe), but the football game and AI training work fully.
+Requires **Python 3.10+**. Works on Linux, macOS, and Windows.
 
-### Quick start
+**Terminal 1 — start the evolution API:**
 
 ```sh
-# 1. Start the evolution API
 cd games/football/api
-python3 -m venv venv && source venv/bin/activate
+python3 -m venv venv
+source venv/bin/activate        # Linux/macOS
+# venv\Scripts\activate          # Windows (cmd)
+# venv\Scripts\Activate.ps1      # Windows (PowerShell)
 pip install -r requirements.txt
-python app.py                    # Flask on 127.0.0.1:5050
-
-# 2. In a second terminal, serve the static files from the repo root
-python3 -m http.server 5050 -d . # WRONG — port conflict
+python app.py
 ```
 
-The problem: the JS code fetches `/api/football/*` as a relative path, so the static file server and the API must share the same origin. The easiest way is a tiny reverse proxy script.
-
-### Option A — Python dev server (recommended)
-
-A single-file dev server that serves static files *and* proxies `/api/football` to Flask:
+**Terminal 2 — start the dev server (from repo root):**
 
 ```sh
-# Terminal 1 — Flask API
-cd games/football/api
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-python app.py                    # runs on 127.0.0.1:5050
-
-# Terminal 2 — dev server (from repo root)
-python3 dev-server.py            # opens http://localhost:8000
+python dev-server.py
 ```
 
-Create `dev-server.py` in the repo root (already gitignored patterns cover it, or add it):
+Open **http://localhost:8000**. The dashboard loads with service dots showing "offline" (no homelab services to probe), but the football game and AI training work fully.
 
-```python
-"""Minimal dev server: static files + reverse proxy to Flask API."""
-import http.server
-import urllib.request
-import os
-
-API = "http://127.0.0.1:5050"
-PORT = 8000
-DIR = os.path.dirname(os.path.abspath(__file__))
-
-class Handler(http.server.SimpleHTTPRequestHandler):
-    def __init__(self, *a, **kw):
-        super().__init__(*a, directory=DIR, **kw)
-
-    def do_GET(self):
-        if self.path.startswith("/api/football"):
-            self._proxy()
-        else:
-            super().do_GET()
-
-    def do_POST(self):
-        self._proxy()
-
-    def _proxy(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length) if length else None
-        req = urllib.request.Request(
-            API + self.path,
-            data=body,
-            headers={"Content-Type": self.headers.get("Content-Type", "application/json")},
-            method=self.command,
-        )
-        try:
-            with urllib.request.urlopen(req) as resp:
-                self.send_response(resp.status)
-                self.send_header("Content-Type", resp.headers.get("Content-Type", "application/json"))
-                self.end_headers()
-                self.wfile.write(resp.read())
-        except Exception as e:
-            self.send_error(502, str(e))
-
-print(f"Dev server at http://localhost:{PORT}")
-http.server.HTTPServer(("", PORT), Handler).serve_forever()
-```
-
-### Option B — any static file server + browser CORS disabled
-
-If you'd rather use your own static server (Vite, `npx serve`, etc.), run it on any port and launch Chrome with CORS disabled for local dev:
-
-```sh
-# macOS
-open -na "Google Chrome" --args --disable-web-security --user-data-dir=/tmp/chrome-dev
-
-# Linux
-google-chrome --disable-web-security --user-data-dir=/tmp/chrome-dev
-```
-
-Then update `API_BASE` in `football.js` and `trainer.js` to `http://127.0.0.1:5050/api/football` (absolute URL).
-
-### What you'll see
-
-- The dashboard loads with all service dots showing **offline** — this is normal without the homelab services
-- The football game renders below the dashboard with two ASCII stickmen
-- If the Flask API is running, headless training starts automatically in a web worker
-- The scoreboard, stats line, and config panel (gear icon) show live evolution progress
+`dev-server.py` serves static files and proxies `/api/football/*` to Flask — no Caddy needed.
 
 ## Files
 
@@ -167,15 +91,39 @@ The ASCII football game features neural network-controlled players trained via a
 
 ### Genetic Algorithm
 
-- Population: 50 brains, tournament selection (k=5), uniform crossover
-- Mutation: 5% rate, Gaussian noise (σ=0.3), top 2 elites preserved
+- Population: 50 brains, tournament selection (k=3), uniform crossover
+- Mutation: 5% base rate, Gaussian noise (σ=0.3), top 2 elites preserved, ~6% random injection
+- **Adaptive mutation:** when fitness plateaus over 20 generations, mutation rate and std ramp up to 3× automatically
+- **Hall of Fame:** best brain saved every 50 generations; 20% of training matches pit current brains against historical champions
 - New generation breeds when all brains have played ≥5 matches
+
+### Fitness
+
+All components normalized to [0, 1] with tunable weights (`W_*` constants in `app.py`):
+
+| Weight | Component | What it rewards |
+|--------|-----------|----------------|
+| 0.40 | Goals scored | Scoring (goals/3) |
+| 0.09 | Attack zone | Ball near opponent's goal |
+| 0.08 | Possession | Ticks closer to ball than opponent |
+| 0.08 | Goal kicks | Kicks directed at goal |
+| 0.07 | Near misses | Shots that barely miss |
+| 0.05 | Proximity | Staying close to ball |
+| 0.05 | Advance | Moving ball toward goal |
+| 0.05 | Frame hits | Hitting the goal post |
+| 0.04 | Saves | Defensive clearances near own goal |
+| 0.03 | Air kicks | Spectacular aerial kicks |
+| 0.03 | Stamina | Managing stamina well |
+| −0.05 | Conceded | Goals conceded penalty |
+| −0.03 | Exhaustion | Time spent frozen |
+| −0.02 | Pushed | Getting pushed penalty |
 
 ### Game Mechanics
 
 - **Stamina:** drains with speed, kicks, and pushes; auto-recovers; low stamina reduces caps
 - **Push:** NN-controlled strength; pusher loses stamina, victim loses 2×
 - **Kick accuracy:** noise proportional to power — max power = wild shot
+- **Air kick:** when kickDz output > 0.5, player jumps (height up to 2 text rows, controlled by kickDz). Wider reach than ground kicks, but only connects on airborne balls — air kicking a ground ball = whiff
 - **Headless sims:** randomize field width (600–900px) so brains generalize
 
 ### Manual Controls
@@ -188,10 +136,14 @@ The ASCII football game features neural network-controlled players trained via a
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/football/matchup?count=N` | GET | Get N brain pairs to play |
-| `/api/football/result` | POST | Report match outcome |
+| `/api/football/matchup?count=N` | GET | Get N brain pairs to play (75% self-play, 20% HoF, 5% random) |
+| `/api/football/results` | POST | Report batch of match outcomes |
+| `/api/football/showcase` | GET | Two different brains for visual match display |
 | `/api/football/best` | GET | Current best brain weights |
 | `/api/football/stats` | GET | Generation, fitness, match counts |
+| `/api/football/config` | GET/POST | Get or set evolution parameters |
+| `/api/football/history` | GET | Fitness history for graphing |
+| `/api/football/reset` | POST | Wipe all data and restart |
 
 ### Running the Backend
 

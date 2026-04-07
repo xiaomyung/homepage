@@ -248,9 +248,10 @@ def get_brains_for_gen(db, gen_id):
 
 # ── Evolution constants ──────────────────────────────────────
 STAGNATION_WINDOW = 20   # compare last 10 gens vs 10 before that
-STAGNATION_THRESH = 0.01 # min improvement to count as progress (fitness is [0,1])
-MUTATION_RATE_MAX = 0.25
-MUTATION_STD_MAX  = 0.8
+STAGNATION_THRESH = 0.02 # min improvement to count as progress
+MUTATION_RATE_MAX     = 0.25
+MUTATION_STD_MAX      = 0.8
+ADAPTIVE_MUTATION_MAX = 1.5  # max ramp factor when stagnating (was 3.0)
 GOAL_SIZE_SHRINK  = 0.02
 GOAL_SIZE_MIN     = 1.0
 HOF_INTERVAL      = 50
@@ -273,7 +274,7 @@ def _adapt_mutation(db, cfg):
     older_best = max(r["top_fitness"] for r in history[10:])
     improvement = recent_best - older_best
     if improvement < STAGNATION_THRESH:
-        factor = min(3.0, 1.0 + (STAGNATION_THRESH - improvement) * 100)
+        factor = min(ADAPTIVE_MUTATION_MAX, 1.0 + (STAGNATION_THRESH - improvement) * 50)
         cfg["mutation_rate"] = min(cfg.get("mutation_rate", 0.05) * factor, MUTATION_RATE_MAX)
         cfg["mutation_std"] = min(cfg.get("mutation_std", 0.3) * factor, MUTATION_STD_MAX)
 

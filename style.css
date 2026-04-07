@@ -363,21 +363,10 @@ footer {
 
 .fb-stats-row {
   display: flex;
-  align-items: center;
+  justify-content: flex-end;
   width: 100%;
   max-width: 900px;
   margin-top: 0.35rem;
-}
-
-.fb-stats {
-  flex: 1;
-  color: rgba(255,255,255,0.15);
-  font-size: 0.55rem;
-  text-align: center;
-  pointer-events: none;
-  font-family: var(--mono);
-  white-space: pre;
-  padding: 0.25rem 0;
 }
 
 .fb-reset-btn,
@@ -438,32 +427,67 @@ footer {
   background: rgba(255,255,255,0.02);
 }
 
-.fb-config-sliders {
+.fb-worker-control {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 1.5rem;
-}
-
-.fb-config-sliders label {
+  align-items: center;
+  gap: 0.4rem;
   font-family: var(--mono);
   font-size: 0.5rem;
   color: var(--text-dim);
+  margin-bottom: 0.3rem;
+}
+
+.fb-worker-count {
+  min-width: 2.5em;
+  text-align: center;
+  color: var(--text);
+}
+
+.fb-worker-btn {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--accent-dim);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 0.6rem;
+  cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 0.3rem;
+  justify-content: center;
+}
+
+.fb-worker-btn:hover {
+  border-color: var(--muted);
+  color: var(--text);
+}
+
+.fb-config-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.15rem 1rem;
+  font-family: var(--mono);
+  font-size: 0.5rem;
+  color: var(--text-dim);
+}
+
+.fb-stat-item {
   white-space: nowrap;
 }
 
-.fb-config-sliders input[type="range"] {
-  width: 80px;
-  height: 3px;
-  accent-color: var(--muted);
+@media (max-width: 720px) {
+  .fb-config-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
-.fb-slider-val {
-  color: var(--text);
-  min-width: 2em;
-  text-align: right;
+.fb-stat-label {
+  color: rgba(255,255,255,0.25);
+}
+
+.fb-stat-label::after {
+  content: ":";
 }
 
 /* ── Stamina bar ── */

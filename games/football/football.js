@@ -17,6 +17,10 @@ const NAME_HIDE_DIST        = 35;
 const API_BASE              = '/api/football';
 const STATS_POLL_INTERVAL   = 3000;      // ms between stats fetches
 const AI_PREDICT_FRAMES     = 20;
+const MAX_WORKERS           = navigator.hardwareConcurrency || 4;
+const STORAGE_KEY_WORKERS   = 'fb-worker-count';
+let activeWorkers = [];
+let targetWorkerCount = Math.min(parseInt(localStorage.getItem(STORAGE_KEY_WORKERS)) || MAX_WORKERS, MAX_WORKERS);
 
 /* ── Frames ─────────────────────────────────────────────── */
 
@@ -91,9 +95,8 @@ scoreboardEl.appendChild(timerEl);
 stage.appendChild(scoreboardEl);
 
 // Stats bar lives outside the game stage (below it)
-const statsEl = document.createElement('pre');
-statsEl.className = 'fb-stats';
-statsEl.setAttribute('aria-hidden', 'true');
+const statsEl = document.createElement('div');
+statsEl.className = 'fb-config-stats';
 
 // Stamina bars — always visible, positioned above goals
 const staminaL = document.createElement('div');
@@ -145,7 +148,7 @@ resetBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
 // More button — opens config panel
 const moreBtn = document.createElement('button');
 moreBtn.className = 'fb-more-btn';
-moreBtn.title = 'Evolution settings';
+moreBtn.title = 'Evolution stats';
 moreBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
 
 // Config panel (hidden by default)
@@ -156,30 +159,35 @@ configPanel.innerHTML = `
   <div class="fb-config-graph">
     <canvas class="fb-fitness-canvas"></canvas>
   </div>
-  <div class="fb-config-sliders">
-    <label title="Chance each weight mutates during breeding. Higher = more exploration.">
-      Mutation rate <span class="fb-slider-val" data-key="mutation_rate">0.05</span>
-      <input type="range" min="0.01" max="0.2" step="0.01" value="0.05" data-key="mutation_rate">
-    </label>
-    <label title="How much a mutated weight changes. Higher = bigger jumps, lower = fine-tuning.">
-      Mutation strength <span class="fb-slider-val" data-key="mutation_std">0.3</span>
-      <input type="range" min="0.1" max="1.0" step="0.05" value="0.3" data-key="mutation_std">
-    </label>
-    <label title="Headless match length in seconds. Shorter = faster training but less time to score.">
-      Match <span class="fb-slider-val" data-key="match_duration">45s</span>
-      <input type="range" min="15" max="120" step="5" value="45" data-key="match_duration">
-    </label>
+  <div class="fb-worker-control">
+    <span class="fb-stat-label">Workers</span>
+    <button class="fb-worker-btn" data-delta="-1">−</button>
+    <span class="fb-worker-count"></span>
+    <button class="fb-worker-btn" data-delta="+1">+</button>
   </div>
 `;
+configPanel.appendChild(statsEl);
 
-// Wrapper for stats + buttons
+// Worker count control
+const workerCountEl = configPanel.querySelector('.fb-worker-count');
+function updateWorkerDisplay() {
+  workerCountEl.textContent = targetWorkerCount + '/' + MAX_WORKERS;
+}
+updateWorkerDisplay();
+configPanel.querySelectorAll('.fb-worker-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    setWorkerCount(targetWorkerCount + parseInt(btn.dataset.delta));
+    updateWorkerDisplay();
+  });
+});
+
+// Wrapper for buttons
 const statsRow = document.createElement('div');
 statsRow.className = 'fb-stats-row';
 const btnGroup = document.createElement('div');
 btnGroup.className = 'fb-btn-group';
 btnGroup.appendChild(moreBtn);
 btnGroup.appendChild(resetBtn);
-statsRow.appendChild(statsEl);
 statsRow.appendChild(btnGroup);
 
 // Insert elements after stage
@@ -253,7 +261,7 @@ function buildFieldBorder() {
 function spawnParticle(x, bottom, chars, color, pvx, pvy, fadeRate, maxFrames) {
   const spark = document.createElement('span');
   spark.textContent = chars[Math.random() * chars.length | 0];
-  spark.style.cssText = 'position:absolute;pointer-events:none;font-size:0.7rem;color:' + color;
+  spark.style.cssText = `position:absolute;pointer-events:none;font-size:0.7rem;color:${color}`;
   spark.style.left = x + 'px';
   spark.style.bottom = bottom + 'px';
   stage.appendChild(spark);
@@ -701,48 +709,12 @@ moreBtn.addEventListener('click', () => {
   const open = configPanel.style.display === 'none';
   configPanel.style.display = open ? '' : 'none';
   if (open) {
-    loadConfig();
+    loadFitnessGraph();
     graphInterval = setInterval(loadFitnessGraph, STATS_POLL_INTERVAL);
   } else if (graphInterval) {
     clearInterval(graphInterval);
     graphInterval = null;
   }
-});
-
-// Config panel sliders
-async function loadConfig() {
-  try {
-    const res = await fetch(`${API_BASE}/config`);
-    if (!res.ok) return;
-    const cfg = await res.json();
-    configPanel.querySelectorAll('input[data-key]').forEach(input => {
-      const key = input.dataset.key;
-      if (cfg[key] !== undefined) {
-        input.value = cfg[key];
-        const span = configPanel.querySelector(`.fb-slider-val[data-key="${key}"]`);
-        const suffix = key === 'match_duration' ? 's' : '';
-        if (span) span.textContent = cfg[key] + suffix;
-      }
-    });
-    loadFitnessGraph();
-  } catch { /* panel stays with defaults */ }
-}
-
-configPanel.querySelectorAll('input[data-key]').forEach(input => {
-  input.addEventListener('input', () => {
-    const span = configPanel.querySelector(`.fb-slider-val[data-key="${input.dataset.key}"]`);
-    const suffix = input.dataset.key === 'match_duration' ? 's' : '';
-    if (span) span.textContent = input.value + suffix;
-  });
-  input.addEventListener('change', async () => {
-    try {
-      await fetch(`${API_BASE}/config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [input.dataset.key]: parseFloat(input.value) }),
-      });
-    } catch { /* silent */ }
-  });
 });
 
 // Fitness graph
@@ -752,6 +724,9 @@ async function loadFitnessGraph() {
     if (!res.ok) return;
     let data = await res.json();
     if (!data.length) return;
+
+    // Save raw last point before downsampling (for accurate label)
+    const rawLast = data[data.length - 1];
 
     // Downsample to fit canvas width — average buckets when too many points
     const canvas = configPanel.querySelector('.fb-fitness-canvas');
@@ -787,38 +762,34 @@ async function loadFitnessGraph() {
 
     ctx.clearRect(0, 0, w, h);
 
-    const maxF = Math.max(...data.map(d => d.top), 0.1);
-    const minF = Math.min(...data.map(d => d.avg));
+    const maxF = data.reduce((m, d) => d.top > m ? d.top : m, 0.1);
+    const minF = data.reduce((m, d) => d.avg < m ? d.avg : m, Infinity);
     const step = gw / Math.max(data.length - 1, 1);
 
-    // Avg fitness line
-    ctx.beginPath();
-    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-    ctx.lineWidth = 1;
-    data.forEach((d, i) => {
-      const x = pad.left + i * step;
-      const y = pad.top + gh - ((d.avg - minF) / (maxF - minF || 1)) * gh;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    });
-    ctx.stroke();
+    function drawLine(key, color, lw) {
+      ctx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lw;
+      data.forEach((d, i) => {
+        const x = pad.left + i * step;
+        const y = pad.top + gh - ((d[key] - minF) / (maxF - minF || 1)) * gh;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+    drawLine('avg', 'rgba(255,255,255,0.1)', 1);
+    drawLine('top', 'rgba(255,255,255,0.35)', 1.5);
 
-    // Top fitness line
-    ctx.beginPath();
-    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-    ctx.lineWidth = 1.5;
-    data.forEach((d, i) => {
-      const x = pad.left + i * step;
-      const y = pad.top + gh - ((d.top - minF) / (maxF - minF || 1)) * gh;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-
-    // Min/max labels
+    // Last-point labels — use raw (pre-downsample) values, positioned at graph edge
+    const lastX = pad.left + (data.length - 1) * step + 4;
+    const lastTopY = pad.top + gh - ((rawLast.top - minF) / (maxF - minF || 1)) * gh;
+    const lastAvgY = pad.top + gh - ((rawLast.avg - minF) / (maxF - minF || 1)) * gh;
     ctx.font = '9px monospace';
-    ctx.fillStyle = 'rgba(255,255,255,0.25)';
-    ctx.textAlign = 'right';
-    ctx.fillText(maxF.toFixed(1), w - 2, pad.top + 8);
-    ctx.fillText(minF.toFixed(1), w - 2, h - pad.bottom);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.fillText(rawLast.top.toFixed(2), lastX, lastTopY + 3);
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.fillText(rawLast.avg.toFixed(2), lastX, lastAvgY + 3);
 
     // Legend — top left
     ctx.textAlign = 'left';
@@ -848,22 +819,31 @@ window.addEventListener('resize', () => {
 
 /* ── Stats polling ──────────────────────────────────────── */
 
-let trainerSimsPerSec = 0;
-const WORKER_COUNT = navigator.hardwareConcurrency ? Math.max(1, navigator.hardwareConcurrency - 2) : 2;
-
 function updateStatsDisplay(data) {
   if (!data) {
-    statsEl.textContent = fallbackMode ? 'Evolution offline \u2014 fallback AI' : '';
+    statsEl.textContent = fallbackMode ? 'Evolution offline — fallback AI' : '';
     return;
   }
-  const parts = [
-    `Gen ${data.generation}`,
-    `Best: ${data.top_fitness}`,
-    `Matches: ${data.total_matches.toLocaleString()}`,
-    `Avg goals: ${data.avg_goals}`,
+  const t = data.trainers || {};
+  const trainingParts = [];
+  if (t.browser) trainingParts.push(`${t.browser} this`);
+  if (t.server) trainingParts.push(`${t.server} server`);
+  if (t.other) trainingParts.push(`${t.other} other`);
+
+  const items = [
+    ['Generation', data.generation],
+    ['Top fitness', data.top_fitness],
+    ['Avg fitness', data.avg_fitness ?? '—'],
+    ['Total matches', data.total_matches.toLocaleString()],
+    ['Avg goals', data.avg_goals],
+    ['HoF brains', data.hof_size ?? '—'],
+    ['Mutation', data.mutation_rate != null ? `${data.mutation_rate} / \u03c3${data.mutation_std}` : '—'],
+    ['Goal size', data.goal_size ?? '—'],
   ];
-  if (trainerSimsPerSec > 0) parts.push(`Training: ${trainerSimsPerSec} sims/s`);
-  statsEl.textContent = parts.join(' | ');
+  if (trainingParts.length) items.push(['Training', trainingParts.join(' · ') + ' sims/s']);
+  statsEl.innerHTML = items.map(([k, v]) =>
+    `<span class="fb-stat-item"><span class="fb-stat-label">${k}</span> ${v}</span>`
+  ).join('');
 }
 
 setInterval(async () => {
@@ -873,21 +853,24 @@ setInterval(async () => {
 
 /* ── Web Worker ─────────────────────────────────────────── */
 
-function startWorkers() {
-  const workerSimsPerSec = new Array(WORKER_COUNT).fill(0);
-  for (let i = 0; i < WORKER_COUNT; i++) {
+function setWorkerCount(count) {
+  count = Math.max(0, Math.min(MAX_WORKERS, count));
+  targetWorkerCount = count;
+  localStorage.setItem(STORAGE_KEY_WORKERS, count);
+
+  // Start additional workers
+  while (activeWorkers.length < count) {
     try {
-      const w = new Worker(new URL('./trainer.js', import.meta.url), { type: 'module' });
-      const idx = i;
-      w.addEventListener('message', e => {
-        if (e.data.type === 'stats') {
-          workerSimsPerSec[idx] = e.data.simsPerSecond;
-          trainerSimsPerSec = workerSimsPerSec.reduce((a, b) => a + b, 0);
-        }
-      });
-    } catch (err) {
-      // Worker failed to start — training continues with remaining workers
+      // bump ?v= when trainer.js changes to invalidate browser worker cache
+      const w = new Worker(new URL('./trainer.js?v=3', import.meta.url), { type: 'module' });
+      activeWorkers.push(w);
+    } catch {
+      break;
     }
+  }
+  // Terminate excess workers
+  while (activeWorkers.length > count) {
+    activeWorkers.pop().terminate();
   }
 }
 
@@ -907,7 +890,7 @@ function init() {
 
   // Start with fetching best brain
   nextMatch();
-  startWorkers();
+  setWorkerCount(targetWorkerCount);
 
   // Initial stats fetch
   fetchStats().then(updateStatsDisplay);

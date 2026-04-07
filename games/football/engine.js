@@ -23,6 +23,9 @@ const RESPAWN_DROP_Z = 60;
 export const MAX_PLAYER_SPEED = 10;
 const FIELD_HEIGHT   = 42;
 const STARTING_GAP   = 40;
+const PROX_RADIUS_FRAC = 0.25; // engagement radius as fraction of field width
+const PLAYER_INERTIA = 0.7;    // velocity blending (0 = instant, 1 = no response)
+const DIRECTION_CHANGE_DRAIN = 0.02; // extra stamina cost when reversing
 
 // Kick
 const KICK_REACH_X   = 1.0;   // multiplier on player width
@@ -50,6 +53,7 @@ const STAMINA_REGEN       = 0.005; // per tick (always recovers)
 const STAMINA_MOVE_BASE   = 0.006; // base drain for any movement
 const STAMINA_MOVE_SCALE  = 0.3;   // speed-proportional drain multiplier
 const STAMINA_MOVE_DRAIN  = 0.012; // additional drain at max speed
+const STAMINA_MOVE_SPEED_DRAIN = STAMINA_MOVE_DRAIN * STAMINA_MOVE_SCALE; // pre-computed
 const STAMINA_KICK_DRAIN  = 0.3;   // max cost at full power kick
 const STAMINA_AIRKICK_DRAIN = 0.1; // flat cost for air kick
 const STAMINA_EXHAUSTION_THRESHOLD = 0.5; // must recover to this before acting
@@ -59,7 +63,9 @@ const BALL_RADIUS    = 4;
 const JUMP_HEIGHT    = 18;
 const JUMP_PHASE_MS  = 400;
 const JUMP_CELEBRATE_MS = 1500; // total celebration jump duration
+const MATCHEND_PAUSE_MS = 3000; // pause before match-over after win
 const WALK_ANIM_BASE = 6;
+const WALK_ANIM_MAX  = 12;   // slowest walk animation interval (caps low-speed crawl)
 const MOVE_THRESHOLD = 0.1;
 const MIN_SPEED_STAMINA = 0.3;   // floor for linear stamina→speed scaling
 const MIN_KICK_POWER = 0.15;    // minimum kick power fraction
@@ -68,6 +74,7 @@ const MIN_PUSH_STAMINA = 0.2;   // floor for stamina→push force
 const KICK_NOISE_VERT = 0.5;    // vertical kick noise reduction
 const KICK_DIR_MIN_LEN = 0.01;  // below this, kick uses default direction
 const KICK_DEFAULT_DZ = 0.1;    // default kick lob when direction is zero
+const WASTED_KICK_SPEED = MIN_KICK_POWER * 0.1; // ball speed below this = wasted kick
 const PUSH_VEL_THRESHOLD = 0.5; // push velocity below this is zeroed
 const BOUNCE_VZ_MIN  = 1.5;     // min vz for ball to bounce on ground
 const BALL_VEL_CUTOFF = 0.1;    // velocities below this are zeroed
@@ -83,7 +90,6 @@ const REPOSITION_Y_MAX = 4;     // max Y movement speed during reposition
 const FIELD_WIDTH_REF = 900;    // reference field width for NN normalization
 
 // Pre-computed squared thresholds (avoid Math.abs/sqrt in hot loops)
-const MOVE_THRESHOLD_SQ    = MOVE_THRESHOLD * MOVE_THRESHOLD;
 const BALL_MOVE_MIN_SQ     = BALL_MOVE_MIN * BALL_MOVE_MIN;
 const BALL_VEL_CUTOFF_SQ   = BALL_VEL_CUTOFF * BALL_VEL_CUTOFF;
 const PUSH_VEL_THRESHOLD_SQ = PUSH_VEL_THRESHOLD * PUSH_VEL_THRESHOLD;
@@ -132,8 +138,8 @@ export class FieldConfig {
   constructor(fieldWidth, goalMult = 1) {
     this.fieldWidth = fieldWidth;
     this.fieldWidthSq = fieldWidth * fieldWidth;
+    this.proxRadiusSq = (fieldWidth * PROX_RADIUS_FRAC) ** 2;
     this.goalMult = goalMult; // 1=normal, 2=double-size goals (easier)
-    this.fieldHeight = FIELD_HEIGHT;
     // Approximate character metrics based on typical monospace rendering.
     // In visual mode these come from the DOM; here we estimate.
     this.charW = 6;
@@ -194,7 +200,6 @@ function createPlayerState(side, midX, playerWidth) {
   return {
     x, y: FIELD_HEIGHT / 2,
     vx: 0, vy: 0,
-    prevX: x, prevY: FIELD_HEIGHT / 2,
     stamina: 1,
     exhausted: false, // true when stamina hits 0, clears at 50%
     state: 'idle', stateTime: 0, fi: 0, ft: 0,
@@ -210,20 +215,23 @@ function createPlayerState(side, midX, playerWidth) {
 function emptyFitness() {
   return {
     ticks: 0,
-    ballProximity: 0,     // reward: staying close to ball
-    kicks: 0,             // count: each kick (not used in fitness, kept for stats)
+    ballProximity: 0,     // cumulative closeness to ball (summed per tick, tight radius)
+    kicks: 0,             // count: total kicks (used in fitness ratios + volume guard)
     ballAdvance: 0,       // reward: moving ball toward opponent goal
-    ballInAttackZone: 0,  // reward: ball near opponent's goal
-    possession: 0,        // reward: ticks closer to ball than opponent
+    ballInAttackZone: 0,  // tracked but not used in fitness (kept for potential future use)
+    possession: 0,        // tracked but not used in fitness (kept for potential future use)
     exhaustedTicks: 0,    // penalty: ticks spent frozen from exhaustion
     staminaSum: 0,        // for computing average stamina (reward managing it)
-    pushesLanded: 0,      // count: successful pushes (not used in fitness, kept for stats)
+    pushesLanded: 0,      // tracked but not used in fitness (kept for stats)
     pushedReceived: 0,    // penalty: getting pushed
-    goalKicks: 0,         // reward: kicks that advance ball toward goal
-    nearMisses: 0,        // reward: ball crossed goal line but missed opening
+    goalKicks: 0,         // used in kick accuracy ratio (goalKicks / kicks)
+    nearMisses: 0,        // reward: weighted score for near-goal misses (fractional per event)
     frameHits: 0,         // reward: ball bounced off goal frame
     saves: 0,             // reward: kicked ball away when heading toward own goal
-    airKicks: 0,          // reward: kicked ball while airborne (spectacular play)
+    airKicks: 0,          // count: kicks while airborne (denominator for air kick accuracy)
+    wastedKicks: 0,       // penalty: kicks producing negligible ball speed
+    wastedAirKicks: 0,    // penalty: air kicks producing negligible ball speed
+    goalAirKicks: 0,      // reward: air kicks aimed at opponent goal
   };
 }
 
@@ -327,14 +335,6 @@ export class FootballEngine {
     this._clampPlayer(s.p1);
     this._clampPlayer(s.p2);
 
-    // Track velocity from position delta
-    for (const p of [s.p1, s.p2]) {
-      p.vx = p.x - p.prevX;
-      p.vy = p.y - p.prevY;
-      p.prevX = p.x;
-      p.prevY = p.y;
-    }
-
     // Ball physics
     const ballXBefore = s.ball.x;
     this._updateBall(s);
@@ -369,25 +369,39 @@ export class FootballEngine {
     return p.exhausted;
   }
 
-  /** Fast path for headless training — no animations, instant kicks/pushes. */
+  /** Apply movement with inertia — shared by headless and visual paths. */
+  _applyMovement(p, moveX, moveY) {
+    const effSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina);
+    const targetVx = Math.max(-1, Math.min(1, moveX)) * effSpeed;
+    const targetVy = Math.max(-1, Math.min(1, moveY)) * effSpeed;
+
+    // Extra stamina cost for reversing direction
+    if (p.vx * targetVx < 0 || p.vy * targetVy < 0) {
+      p.stamina = Math.max(0, p.stamina - DIRECTION_CHANGE_DRAIN);
+    }
+
+    // Blend toward target velocity (inertia)
+    const blend = 1 - PLAYER_INERTIA;
+    p.vx += (targetVx - p.vx) * blend;
+    p.vy += (targetVy - p.vy) * blend;
+
+    const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+    if (speed > MOVE_THRESHOLD) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.dir = p.vx > 0 ? 1 : -1;
+      p.stamina -= STAMINA_MOVE_BASE + STAMINA_MOVE_SPEED_DRAIN * (speed / MAX_PLAYER_SPEED);
+    }
+    p.stamina = Math.max(0, p.stamina);
+    return speed;
+  }
+
   _applyOutputsHeadless(s, p, out) {
-    if (this._updateStamina(p)) return;
+    if (this._updateStamina(p)) { p.vx = 0; p.vy = 0; return; }
 
     const [moveX, moveY, kick, kickDx, kickDy, kickDz, kickPower, push, pushPower] = out;
 
-    // Movement
-    const effSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina);
-    const mx = Math.max(-1, Math.min(1, moveX)) * effSpeed;
-    const my = Math.max(-1, Math.min(1, moveY)) * effSpeed;
-    const speedSq = mx * mx + my * my;
-    if (speedSq > MOVE_THRESHOLD_SQ) {
-      p.x += mx;
-      p.y += my;
-      p.dir = mx > 0 ? 1 : -1;
-      const speed = Math.sqrt(speedSq); // only when needed for stamina drain
-      p.stamina -= STAMINA_MOVE_BASE + STAMINA_MOVE_DRAIN * STAMINA_MOVE_SCALE * (speed / MAX_PLAYER_SPEED);
-    }
-    p.stamina = Math.max(0, p.stamina);
+    this._applyMovement(p, moveX, moveY);
 
     // Push — instant (same state check as visual path)
     if (push > 0 && p.state !== 'push') {
@@ -411,6 +425,7 @@ export class FootballEngine {
     p.ft++;
 
     if (this._updateStamina(p)) {
+      p.vx = 0; p.vy = 0;
       if (p.state !== 'idle') this._setState(p, 'idle');
       p.jumpY = 0;
       return;
@@ -421,26 +436,16 @@ export class FootballEngine {
 
     const [moveX, moveY, kick, kickDx, kickDy, kickDz, kickPower, push, pushPower] = out;
 
-    // Stamina-adjusted caps
-    const effectiveMaxSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina);
-
-    // Movement
-    const mx = Math.max(-1, Math.min(1, moveX)) * effectiveMaxSpeed;
-    const my = Math.max(-1, Math.min(1, moveY)) * effectiveMaxSpeed;
-    const speed = Math.sqrt(mx * mx + my * my);
+    // Movement with inertia
+    const speed = this._applyMovement(p, moveX, moveY);
 
     if (speed > MOVE_THRESHOLD) {
-      p.x += mx;
-      p.y += my;
-      p.dir = mx > 0 ? 1 : -1;
-      p.stamina -= STAMINA_MOVE_BASE + STAMINA_MOVE_DRAIN * STAMINA_MOVE_SCALE * (speed / MAX_PLAYER_SPEED);
       if (p.state !== 'walk') this._setState(p, 'walk');
-      const walkInt = Math.max(2, Math.round(WALK_ANIM_BASE * (MAX_PLAYER_SPEED / 2) / speed));
+      const walkInt = Math.min(WALK_ANIM_MAX, Math.max(2, Math.round(WALK_ANIM_BASE * (MAX_PLAYER_SPEED / 2) / speed)));
       if (p.ft % walkInt === 0) p.fi = (p.fi + 1) % 2;
     } else {
       if (p.state !== 'idle') this._setState(p, 'idle');
     }
-    p.stamina = Math.max(0, p.stamina);
 
     // Push attempt
     if (push > 0 && p.state !== 'push') {
@@ -611,7 +616,16 @@ export class FootballEngine {
       s.fitness[which].saves++;
     }
     // Air kick (spectacular play)
-    if (s.ball.z > 1) s.fitness[which].airKicks++;
+    if (s.ball.z > 1) {
+      s.fitness[which].airKicks++;
+      if (s.ball.vx * goalDir > 0) s.fitness[which].goalAirKicks++;
+    }
+    // Wasted kick: ball barely moved
+    const ballSpeed = Math.sqrt(s.ball.vx * s.ball.vx + s.ball.vy * s.ball.vy);
+    if (ballSpeed < WASTED_KICK_SPEED) {
+      s.fitness[which].wastedKicks++;
+      if (s.ball.z > 1) s.fitness[which].wastedAirKicks++;
+    }
   }
 
   /* ── Fitness shaping ────────────────────────────────────── */
@@ -624,14 +638,12 @@ export class FootballEngine {
 
     const halfPW = this.field.playerWidth * 0.5;
     const center = p.x + halfPW;
-    const oppCenter = opp.x + halfPW;
 
-    // 1. Ball proximity (squared distance — quadratic falloff, stronger gradient near ball)
+    // 1. Ball proximity (tight engagement radius — 0 beyond PROX_RADIUS_FRAC of field)
     const dx = ball.x - center;
     const dy = ball.y - p.y;
     const distSq = dx * dx + dy * dy;
-    const maxDistSq = this.field.fieldWidthSq;
-    f.ballProximity += 1 - Math.min(distSq / maxDistSq, 1);
+    f.ballProximity += Math.max(0, 1 - distSq / this.field.proxRadiusSq);
 
     // 2. Ball advance
     const ballDx = ball.x - ballXBefore;
@@ -641,17 +653,7 @@ export class FootballEngine {
       f.ballAdvance -= ballDx;
     }
 
-    // 3. Possession (squared comparison — no sqrt needed)
-    const oppDx = ball.x - oppCenter;
-    const oppDy = ball.y - opp.y;
-    if (distSq < oppDx * oppDx + oppDy * oppDy) f.possession++;
-
-    // 4. Ball in attacking zone
-    const targetGoalX = p.side === 'left' ? this.field.goalLineR : this.field.goalLineL;
-    const bgd = ball.x - targetGoalX;
-    f.ballInAttackZone += 1 - Math.min(bgd * bgd / maxDistSq, 1);
-
-    // 5. Exhaustion penalty
+    // 3. Exhaustion penalty
     if (p.exhausted) f.exhaustedTicks++;
 
     // 6. Stamina tracking
@@ -813,6 +815,7 @@ export class FootballEngine {
   /* ── Player collision with goals ───────────────────────── */
 
   _clampPlayer(p) {
+    p.x = Math.max(0, Math.min(this.field.fieldWidth - this.field.playerWidth, p.x));
     p.y = Math.max(0, Math.min(FIELD_HEIGHT, p.y));
     const { charW, lineH, goalLLeft, goalLWidth, goalRLeft, goalRWidth, midX, playerWidth } = this.field;
     // Quick bounding box pre-check — skip goal collision if player far from goal
@@ -866,7 +869,7 @@ export class FootballEngine {
 
     if (s.scoreL >= WIN_SCORE || s.scoreR >= WIN_SCORE) {
       s.pausePhase = 'matchend';
-      s.pauseTimer = Math.ceil(3000 / TICK);
+      s.pauseTimer = Math.ceil(MATCHEND_PAUSE_MS / TICK);
       s.winner = s.scoreL >= WIN_SCORE ? 'left' : 'right';
     }
   }
@@ -933,12 +936,12 @@ export class FootballEngine {
     p.dir = p.side === 'left' ? 1 : -1;
     this._setState(p, 'idle');
     p.jumpY = 0;
+    p.vx = 0;
+    p.vy = 0;
     p.pushVx = 0;
     p.pushVy = 0;
     p.stamina = 1;
     p.exhausted = false;
-    p.prevX = x;
-    p.prevY = FIELD_HEIGHT / 2;
   }
 
   _startingX(p) {
@@ -1077,5 +1080,3 @@ export class FootballEngine {
     }
   }
 }
-
-export { FIELD_HEIGHT, STARTING_GAP };

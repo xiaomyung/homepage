@@ -13,8 +13,8 @@ TOTAL_WEIGHTS = sum(
 
 # Defaults — can be overridden by config from DB
 POPULATION_SIZE = 50
-TOURNAMENT_SIZE = 3
-ELITISM_COUNT = 2
+TOURNAMENT_SIZE = 5
+ELITISM_COUNT = 5
 MUTATION_RATE = 0.05
 MUTATION_STD = 0.3
 MIN_MATCHES_PER_BRAIN = 5
@@ -66,10 +66,12 @@ def tournament_select(brains: list[dict], k: int = TOURNAMENT_SIZE) -> dict:
 
 
 def crossover(parent_a: bytes, parent_b: bytes) -> bytes:
-    """Uniform crossover of two weight arrays."""
+    """Two-point crossover — preserves contiguous weight blocks."""
     a = weights_to_list(parent_a)
     b = weights_to_list(parent_b)
-    child = [a[i] if random.random() < 0.5 else b[i] for i in range(len(a))]
+    n = len(a)
+    p1, p2 = sorted(random.sample(range(n), 2))
+    child = a[:p1] + b[p1:p2] + a[p2:]
     return list_to_weights(child)
 
 

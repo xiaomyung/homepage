@@ -1,0 +1,15 @@
+[Unit]
+Description=Football headless trainer (Node.js)
+After=football-evolution.service
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/services/web/homepage/games/football
+ExecStart=/usr/bin/node server-trainer.js
+CPUQuota=200%
+Restart=always
+RestartSec=5
+User=apollo
+
+[Install]
+WantedBy=multi-user.target

@@ -55,7 +55,7 @@ export class NeuralNet {
     let off = 0;
     for (let i = 1; i < LAYERS.length; i++) {
       this._offsets.push(off);
-      this._buffers.push(new Float64Array(LAYERS[i]));
+      this._buffers.push(new Float32Array(LAYERS[i]));
       off += LAYERS[i - 1] * LAYERS[i] + LAYERS[i];
     }
   }

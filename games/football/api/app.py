@@ -37,18 +37,27 @@ from ga import (
 
 app = Flask(__name__)
 
-SCHEMA_PATH = Path(__file__).resolve().parent.parent / "evolution" / "schema.sql"
-PERSIST_PATH = Path(__file__).resolve().parent.parent / "evolution" / "football_persist.db"
+EVOLUTION_DIR = Path(__file__).resolve().parent.parent / "evolution"
+SCHEMA_PATH = EVOLUTION_DIR / "schema.sql"
+PERSIST_PATH = EVOLUTION_DIR / "football_persist.db"
 
 # ── In-memory DB ─────────────────────────────────────────────
 
 _mem_db = None
 _db_lock = threading.Lock()
+_trainer_stats = {}  # source_id → {"sims_per_sec": N, "last_seen": timestamp}
+TRAINER_STALE_SECONDS = 15  # drop trainers not seen within this window
 
 
 def get_db():
     """Return the shared in-memory DB connection."""
     return _mem_db
+
+
+def _apply_schema(db):
+    """Apply the evolution schema to a DB connection."""
+    with open(SCHEMA_PATH) as f:
+        db.executescript(f.read())
 
 
 def _init_mem_db():
@@ -57,16 +66,14 @@ def _init_mem_db():
     _mem_db = sqlite3.connect(":memory:", check_same_thread=False)
     _mem_db.row_factory = sqlite3.Row
     _mem_db.execute("PRAGMA foreign_keys=ON")
-    with open(SCHEMA_PATH) as f:
-        _mem_db.executescript(f.read())
+    _apply_schema(_mem_db)
     _load_persisted_state()
 
 
 def _init_persist_db():
     """Ensure the persist DB has the schema."""
     db = sqlite3.connect(str(PERSIST_PATH))
-    with open(SCHEMA_PATH) as f:
-        db.executescript(f.read())
+    _apply_schema(db)
     db.close()
 
 
@@ -140,7 +147,7 @@ def _flush_to_disk():
         try:
             with _db_lock:
                 _do_flush()
-        except Exception:
+        except (sqlite3.DatabaseError, OSError):
             pass  # best-effort
 
 
@@ -239,11 +246,25 @@ def get_brains_for_gen(db, gen_id):
     ).fetchall()
 
 
-# ── Adaptive mutation ────────────────────────────────────────
+# ── Evolution constants ──────────────────────────────────────
 STAGNATION_WINDOW = 20   # compare last 10 gens vs 10 before that
-STAGNATION_THRESH = 0.01 # min improvement to count as progress (fitness is [0,1])
-MUTATION_RATE_MAX = 0.25
-MUTATION_STD_MAX  = 0.8
+STAGNATION_THRESH = 0.02 # min improvement to count as progress
+MUTATION_RATE_MAX     = 0.25
+MUTATION_STD_MAX      = 0.8
+ADAPTIVE_MUTATION_MAX = 1.5  # max ramp factor when stagnating (was 3.0)
+GOAL_SIZE_SHRINK  = 0.02
+GOAL_SIZE_MIN     = 1.0
+HOF_INTERVAL      = 50
+KEEP_GENERATIONS  = 5
+MATCHUP_HOF_RATE  = 0.10   # fraction of training matches vs HoF opponents
+MATCHUP_RAND_RATE = 0.05   # fraction of training matches vs random brains
+MATCHUP_MAX_COUNT     = 100    # max pairs per /matchup request
+HISTORY_MAX_LIMIT     = 100000 # max rows from /history endpoint
+SHOWCASE_HOF_RATE     = 0.40   # showcase: best vs HoF champion
+SHOWCASE_MID_RATE     = 0.70   # showcase: best vs mid-ranked (cumulative)
+SHOWCASE_RAND_RATE    = 0.90   # showcase: best vs random pop (cumulative)
+SHOWCASE_MID_RANK_MIN = 20     # mid-ranked brain offset range
+SHOWCASE_MID_RANK_MAX = 40
 
 
 def _adapt_mutation(db, cfg):
@@ -258,7 +279,7 @@ def _adapt_mutation(db, cfg):
     older_best = max(r["top_fitness"] for r in history[10:])
     improvement = recent_best - older_best
     if improvement < STAGNATION_THRESH:
-        factor = min(3.0, 1.0 + (STAGNATION_THRESH - improvement) * 100)
+        factor = min(ADAPTIVE_MUTATION_MAX, 1.0 + (STAGNATION_THRESH - improvement) * 50)
         cfg["mutation_rate"] = min(cfg.get("mutation_rate", 0.05) * factor, MUTATION_RATE_MAX)
         cfg["mutation_std"] = min(cfg.get("mutation_std", 0.3) * factor, MUTATION_STD_MAX)
 
@@ -312,10 +333,6 @@ def try_breed(db, gen_id):
     _cleanup_old_data(db, new_gen_id)
 
 
-GOAL_SIZE_SHRINK = 0.02
-GOAL_SIZE_MIN    = 1.0
-
-
 def _shrink_goal_size(db, gen_id):
     """Shrink goal opening toward normal when brains score."""
     row = db.execute("SELECT value FROM config WHERE key = 'goal_size'").fetchone()
@@ -326,17 +343,13 @@ def _shrink_goal_size(db, gen_id):
         "SELECT SUM(score_a + score_b) as g FROM matches WHERE generation_id = ?",
         (gen_id,),
     ).fetchone()
-    if goals and goals["g"] and goals["g"] > 0:
+    if goals and goals["g"] > 0:
         new_size = max(GOAL_SIZE_MIN, size - GOAL_SIZE_SHRINK)
         db.execute(
             "INSERT OR REPLACE INTO config (key, value) VALUES ('goal_size', ?)",
             (new_size,),
         )
         db.commit()
-
-
-HOF_INTERVAL     = 50
-KEEP_GENERATIONS = 5
 
 
 def _cleanup_old_data(db, current_gen_id):
@@ -356,74 +369,100 @@ def weights_to_b64(blob):
 
 
 # ── Fitness weights ──────────────────────────────────────────
-# All components normalized to [0, 1] before weighting.
-# Adjust these to rebalance what brains optimise for.
+# Positive weights sum to 1.0 (perfect play = 1.0).
+# Penalty weights sum to 1.0 (worst possible play = -1.0).
+# Range: [-1.0, 1.0]. Proximity-first: strong gradient toward ball.
 
-W_GOALS       = 0.40   # goals scored / 3 (only reward scoring)
-W_CONCEDED    = 0.05   # penalty: goals conceded / 3
-W_PROXIMITY   = 0.05   # avg closeness to ball (quadratic falloff)
-W_POSSESSION  = 0.08   # fraction of ticks closer to ball than opponent
-W_ATTACK_ZONE = 0.09   # avg ball closeness to opponent goal
-W_ADVANCE     = 0.05   # ball movement toward opponent goal (clamped)
-W_GOAL_KICKS  = 0.08   # kicks directed at goal (capped at 15/match)
-W_NEAR_MISS   = 0.07   # shots that barely miss (capped at 5/match)
-W_FRAME_HIT   = 0.05   # ball hitting goal frame (capped at 3/match)
-W_SAVES       = 0.04   # defensive clearances (capped at 5/match)
-W_AIR_KICKS   = 0.03   # spectacular air kicks (capped at 5/match)
-W_STAMINA     = 0.03   # average stamina level
-W_EXHAUSTION  = 0.03   # penalty: fraction of time exhausted
-W_PUSHED      = 0.02   # penalty: times pushed (capped at 5/match)
+# POSITIVE (sum = 1.00)
+W_PROXIMITY         = 0.25  # avg closeness to ball (tight engagement radius)
+W_GOALS             = 0.20  # goals / CAP_GOALS
+W_WIN_BONUS         = 0.12  # 1.0 win / 0.5 draw / 0.0 loss
+W_STAMINA           = 0.10  # avg stamina
+W_NEAR_MISS         = 0.08  # nearMisses / CAP_NEAR_MISS
+W_KICK_ACCURACY     = 0.07  # (goalKicks / kicks) * volume_guard
+W_FRAME_HIT         = 0.06  # frameHits / CAP_FRAME_HIT
+W_SAVES             = 0.05  # saves / CAP_SAVES
+W_ADVANCE           = 0.04  # ball movement toward opponent goal
+W_AIR_KICK_ACCURACY = 0.03  # (goalAirKicks / airKicks) * volume_guard
 
-# Caps for count-based metrics (normalize raw counts to [0, 1])
-CAP_GOAL_KICKS = 15
-CAP_NEAR_MISS  = 5
-CAP_FRAME_HIT  = 3
-CAP_SAVES      = 5
-CAP_AIR_KICKS  = 5
-CAP_PUSHED     = 5
+# PENALTIES (sum = 1.00)
+W_EXHAUSTION        = 0.40  # fraction of match exhausted
+W_CONCEDED          = 0.25  # goals conceded / CAP_GOALS
+W_WASTED_KICKS      = 0.20  # wastedKicks / max(kicks, 1)
+W_WASTED_AIR_KICKS  = 0.10  # wastedAirKicks / max(airKicks, 1)
+W_PUSHED            = 0.05  # pushed / CAP_PUSHED
+
+# Caps for count-based metrics
+CAP_GOALS     = 2
+CAP_NEAR_MISS = 3
+CAP_FRAME_HIT = 3
+CAP_SAVES     = 5
+CAP_PUSHED    = 5
+
+# Volume guard — prevents gaming ratio metrics with tiny kick counts
+KICK_VOLUME_FLOOR = 10
 
 
 def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
-    """Calculate per-match fitness in [0, 1]. All components normalized first."""
-    # Goals: only reward scoring, not surviving
-    goals = min(goals_scored / 3, 1)
-    conceded = min(goals_conceded / 3, 1)
+    """Calculate per-match fitness in [-1, 1]. Positive = skill, negative = penalties."""
+    goals = min(goals_scored / CAP_GOALS, 1)
+    conceded = min(goals_conceded / CAP_GOALS, 1)
+
+    if goals_scored > goals_conceded:
+        win_bonus = 1.0
+    elif goals_scored == goals_conceded:
+        win_bonus = 0.5
+    else:
+        win_bonus = 0.0
 
     if not fitness_data or fitness_data.get("ticks", 0) == 0:
-        return goals * W_GOALS - conceded * W_CONCEDED
+        return W_GOALS * goals + W_WIN_BONUS * win_bonus - W_CONCEDED * conceded
 
     ticks = fitness_data["ticks"]
+    kicks = fitness_data.get("kicks", 0)
+    air_kicks_raw = fitness_data.get("airKicks", 0)
 
-    proximity   = fitness_data.get("ballProximity", 0) / ticks      # [0, 1]
-    possession  = fitness_data.get("possession", 0) / ticks         # [0, 1]
-    attack_zone = fitness_data.get("ballInAttackZone", 0) / ticks   # [0, 1]
-    advance     = max(0, min(fitness_data.get("ballAdvance", 0) / ticks, 1))  # [0, 1]
-    stamina     = fitness_data.get("staminaSum", 0) / ticks         # [0, 1]
-    exhaustion  = fitness_data.get("exhaustedTicks", 0) / ticks     # [0, 1]
+    # Volume guard: scales ratio metrics down when kick count is below floor
+    kick_volume = min(kicks / KICK_VOLUME_FLOOR, 1)
 
-    goal_kicks  = min(fitness_data.get("goalKicks", 0) / CAP_GOAL_KICKS, 1)
+    # Per-tick averages [0, 1]
+    proximity  = fitness_data.get("ballProximity", 0) / ticks
+    advance    = max(0, min(fitness_data.get("ballAdvance", 0) / ticks, 1))
+    stamina    = fitness_data.get("staminaSum", 0) / ticks
+    exhaustion = fitness_data.get("exhaustedTicks", 0) / ticks
+
+    # Ratio-based with volume guard
+    kick_accuracy     = (fitness_data.get("goalKicks", 0) / max(kicks, 1)) * kick_volume
+    air_kick_accuracy = (fitness_data.get("goalAirKicks", 0) / max(air_kicks_raw, 1)) * kick_volume
+    wasted_kicks      = fitness_data.get("wastedKicks", 0) / max(kicks, 1)
+    wasted_air_kicks  = fitness_data.get("wastedAirKicks", 0) / max(air_kicks_raw, 1)
+
+    # Count-based (capped to [0, 1])
     near_misses = min(fitness_data.get("nearMisses", 0) / CAP_NEAR_MISS, 1)
     frame_hits  = min(fitness_data.get("frameHits", 0) / CAP_FRAME_HIT, 1)
     saves       = min(fitness_data.get("saves", 0) / CAP_SAVES, 1)
-    air_kicks   = min(fitness_data.get("airKicks", 0) / CAP_AIR_KICKS, 1)
     pushed      = min(fitness_data.get("pushedReceived", 0) / CAP_PUSHED, 1)
 
-    return (
-        W_GOALS       * goals
-        + W_PROXIMITY   * proximity
-        + W_POSSESSION  * possession
-        + W_ATTACK_ZONE * attack_zone
-        + W_ADVANCE     * advance
-        + W_GOAL_KICKS  * goal_kicks
-        + W_NEAR_MISS   * near_misses
-        + W_FRAME_HIT   * frame_hits
-        + W_SAVES       * saves
-        + W_AIR_KICKS   * air_kicks
-        + W_STAMINA     * stamina
-        - W_CONCEDED    * conceded
-        - W_EXHAUSTION  * exhaustion
-        - W_PUSHED      * pushed
+    positive = (
+        W_PROXIMITY         * proximity
+        + W_GOALS             * goals
+        + W_WIN_BONUS         * win_bonus
+        + W_STAMINA           * stamina
+        + W_NEAR_MISS         * near_misses
+        + W_KICK_ACCURACY     * kick_accuracy
+        + W_FRAME_HIT         * frame_hits
+        + W_SAVES             * saves
+        + W_ADVANCE           * advance
+        + W_AIR_KICK_ACCURACY * air_kick_accuracy
     )
+    penalty = (
+        W_EXHAUSTION        * exhaustion
+        + W_WASTED_KICKS      * wasted_kicks
+        + W_CONCEDED          * conceded
+        + W_WASTED_AIR_KICKS  * wasted_air_kicks
+        + W_PUSHED            * pushed
+    )
+    return positive - penalty
 
 
 # ── Endpoints ────────────────────────────────────────────────
@@ -432,7 +471,10 @@ def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
 @app.route("/api/football/matchup")
 def matchup():
     """Get brain pairs to play. ?count=N, ?known=id1,id2,... to skip weights."""
-    count = min(int(request.args.get("count", 5)), 100)
+    try:
+        count = min(int(request.args.get("count", 5)), MATCHUP_MAX_COUNT)
+    except (ValueError, TypeError):
+        return jsonify({"error": "invalid count"}), 400
     with _db_lock:
         db = get_db()
         ensure_generation_zero(db)
@@ -461,15 +503,15 @@ def matchup():
             weight_cache[a["id"]] = None if a["id"] in known_ids else weights_to_b64(a["weights"])
 
         roll = random.random()
-        if roll < 0.20 and hof_rows:
-            # Hall of fame opponent (20%)
+        if roll < MATCHUP_HOF_RATE and hof_rows:
+            # Hall of fame opponent
             hof = random.choice(hof_rows)
             pairs.append({
                 "brain_a": {"id": a["id"], "weights": weight_cache[a["id"]]},
                 "brain_b": {"id": None, "weights": weights_to_b64(hof["weights"]), "type": "hof"},
                 "generation_id": gen_id,
             })
-        elif roll < 0.25:
+        elif roll < MATCHUP_HOF_RATE + MATCHUP_RAND_RATE:
             # Random opponent (5%)
             pairs.append({
                 "brain_a": {"id": a["id"], "weights": weight_cache[a["id"]]},
@@ -477,7 +519,7 @@ def matchup():
                 "generation_id": gen_id,
             })
         else:
-            # Self-play (75%, or 95% when HoF is empty)
+            # Self-play (remainder, or higher when HoF is empty)
             b = random.choice(brain_list)
             while b["id"] == a["id"] and len(brain_list) > 1:
                 b = random.choice(brain_list)
@@ -506,10 +548,15 @@ def matchup():
 def result():
     """Report a single match result."""
     data = request.get_json()
-    brain_a_id = data["brain_a_id"]
-    brain_b_id = data["brain_b_id"]
-    score_a = data["score_a"]
-    score_b = data["score_b"]
+    if not data:
+        return jsonify({"error": "invalid JSON"}), 400
+    try:
+        brain_a_id = data["brain_a_id"]
+        brain_b_id = data["brain_b_id"]
+        score_a = data["score_a"]
+        score_b = data["score_b"]
+    except KeyError:
+        return jsonify({"error": "missing required fields"}), 400
     gen_id = data.get("generation_id")
     fit_a = calc_match_fitness(data.get("fitness_a"), score_a, score_b)
     fit_b = calc_match_fitness(data.get("fitness_b"), score_b, score_a)
@@ -547,6 +594,14 @@ def result():
 def results_batch():
     """Report multiple match results in one request."""
     data = request.get_json()
+    if not data:
+        return jsonify({"error": "invalid JSON"}), 400
+
+    source = data.get("source")
+    sps = data.get("sims_per_sec")
+    if source and sps is not None:
+        _trainer_stats[source] = {"sims_per_sec": int(sps), "last_seen": time.time()}
+
     items = data.get("results", [])
     if not items:
         return jsonify({"ok": True})
@@ -573,7 +628,7 @@ def results_batch():
                 fit_b = calc_match_fitness(item.get("fitness_b"), score_b, score_a)
                 brain_updates.append((score_b, score_a, fit_b, fit_b, brain_b_id))
 
-        total_goals = sum(r[3] + r[4] for r in match_rows)
+        total_goals = sum(sa + sb for (_, _, _, sa, sb) in match_rows)
         db.execute("UPDATE stats SET value = value + ? WHERE key = 'total_matches'", (len(match_rows),))
         db.execute("UPDATE stats SET value = value + ? WHERE key = 'total_goals'", (total_goals,))
 
@@ -637,7 +692,7 @@ def showcase():
         mid = db.execute(
             "SELECT id, weights, fitness FROM brains "
             "WHERE matches_played > 0 ORDER BY fitness DESC LIMIT 1 OFFSET ?",
-            (random.randint(20, 40),),
+            (random.randint(SHOWCASE_MID_RANK_MIN, SHOWCASE_MID_RANK_MAX),),
         ).fetchone()
         rand_pop = db.execute(
             "SELECT id, weights, fitness FROM brains "
@@ -651,15 +706,15 @@ def showcase():
         return jsonify({"brewing": True})
 
     roll = random.random()
-    if roll < 0.40 and hof_rows:
+    if roll < SHOWCASE_HOF_RATE and hof_rows:
         # Best vs random HoF champion (different era/lineage)
         brain_a, brain_b = best, random.choice(hof_rows)
         matchup_type = "vs_hof"
-    elif roll < 0.70 and mid:
+    elif roll < SHOWCASE_MID_RATE and mid:
         # Best vs mid-ranked brain (different strategy niche)
         brain_a, brain_b = best, mid
         matchup_type = "vs_mid"
-    elif roll < 0.90 and rand_pop and rand_pop["id"] != best["id"]:
+    elif roll < SHOWCASE_RAND_RATE and rand_pop and rand_pop["id"] != best["id"]:
         # Best vs random population member
         brain_a, brain_b = best, rand_pop
         matchup_type = "vs_random"
@@ -691,8 +746,10 @@ def stats():
         ensure_generation_zero(db)
         gen_id = current_generation(db)
 
-        top = db.execute(
-            "SELECT MAX(fitness) as f FROM brains WHERE generation_id = ?", (gen_id,)
+        # Use fitness_history for last completed generation (current gen may be 0)
+        last_hist = db.execute(
+            "SELECT top_fitness, avg_fitness FROM fitness_history "
+            "ORDER BY generation_id DESC LIMIT 1"
         ).fetchone()
 
         total_matches = db.execute(
@@ -708,16 +765,41 @@ def stats():
             (gen_id,),
         ).fetchone()
 
+        hof_size = db.execute("SELECT COUNT(*) as c FROM hall_of_fame").fetchone()["c"]
+
+        cfg_rows = db.execute("SELECT key, value FROM config").fetchall()
+        cfg = {r["key"]: r["value"] for r in cfg_rows}
+
     tm = int(total_matches["value"]) if total_matches else 0
     tg = total_goals["value"] if total_goals else 0
+
+    # Aggregate trainer stats by category (active in last 15s)
+    now = time.time()
+    trainers = {"browser": 0, "server": 0, "other": 0}
+    for src, info in list(_trainer_stats.items()):
+        if now - info["last_seen"] > TRAINER_STALE_SECONDS:
+            del _trainer_stats[src]
+            continue
+        if src.startswith("browser-"):
+            trainers["browser"] += info["sims_per_sec"]
+        elif src.startswith("server"):
+            trainers["server"] += info["sims_per_sec"]
+        else:
+            trainers["other"] += info["sims_per_sec"]
 
     return jsonify({
         "generation": gen_id,
         "population": pop["c"],
-        "top_fitness": round(top["f"] or 0, 2),
+        "top_fitness": round(last_hist["top_fitness"], 2) if last_hist else 0,
+        "avg_fitness": round(last_hist["avg_fitness"], 2) if last_hist else 0,
         "total_matches": tm,
         "avg_goals": round(tg / tm, 1) if tm > 0 else 0,
         "min_matches_current_gen": pop["min_matches"] or 0,
+        "hof_size": hof_size,
+        "goal_size": round(cfg.get("goal_size", 2.0), 2),
+        "mutation_rate": cfg.get("mutation_rate", 0.05),
+        "mutation_std": cfg.get("mutation_std", 0.3),
+        "trainers": trainers,
     })
 
 
@@ -728,11 +810,14 @@ def config():
         db = get_db()
         if request.method == "POST":
             data = request.get_json()
-            for key, value in data.items():
-                db.execute(
-                    "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
-                    (key, float(value)),
-                )
+            try:
+                for key, value in data.items():
+                    db.execute(
+                        "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                        (key, float(value)),
+                    )
+            except (ValueError, TypeError):
+                return jsonify({"error": "invalid config value"}), 400
             db.commit()
             return jsonify({"ok": True})
         rows = db.execute("SELECT key, value FROM config").fetchall()
@@ -742,7 +827,10 @@ def config():
 @app.route("/api/football/history")
 def history():
     """Fitness history for graphing. ?limit=N (default 100)."""
-    limit = min(int(request.args.get("limit", 100)), 100000)
+    try:
+        limit = min(int(request.args.get("limit", 100)), HISTORY_MAX_LIMIT)
+    except (ValueError, TypeError):
+        return jsonify({"error": "invalid limit"}), 400
     with _db_lock:
         db = get_db()
         rows = db.execute(

@@ -27,6 +27,9 @@ const STARTING_GAP   = 40;
 // Kick
 const KICK_REACH_X   = 1.0;   // multiplier on player width
 const KICK_REACH_Y   = 16;
+const AIRKICK_REACH_X = 1.5;  // wider reach during air kicks
+const AIRKICK_REACH_Y = 24;
+const AIRKICK_MAX_H  = 2;     // max jump height in text rows
 export const MAX_KICK_POWER = 22;
 const KICK_NOISE_SCALE = 0.3; // accuracy penalty at full power
 const AIRKICK_MS     = 350;
@@ -504,8 +507,6 @@ export class FootballEngine {
 
   _canKick(s, p) {
     if (p.state === 'kick' || p.state === 'airkick') return false;
-    const { lineH } = this.field;
-    if (s.ball.z > PLAYER_HB_H * lineH) return false;
     const center = p.x + this.field.playerWidth / 2;
     const closeX = Math.abs(s.ball.x - center) < this.field.playerWidth * KICK_REACH_X;
     const closeY = Math.abs(s.ball.y - p.y) < KICK_REACH_Y;
@@ -519,8 +520,10 @@ export class FootballEngine {
     p._kickDz = Math.max(-1, Math.min(1, dz));
     p._kickPower = (Math.max(-1, Math.min(1, power)) + 1) / 2; // map [-1,1] to [0,1]
 
-    if (s.ball.z > 1) {
-      p.airKickZ = s.ball.z;
+    if (dz > 0) {
+      // Player chooses to jump — height controlled by kickDz
+      const { lineH } = this.field;
+      p.airKickZ = dz * AIRKICK_MAX_H * lineH; // max 2 text rows high
       p.airKickFired = false;
       p.stamina = Math.max(0, p.stamina - STAMINA_AIRKICK_DRAIN);
       this._setState(p, 'airkick');
@@ -530,6 +533,28 @@ export class FootballEngine {
   }
 
   _executeKick(s, p) {
+    // Air kick miss: player jumped but ball is on the ground — whiff
+    if (p.state === 'airkick' && s.ball.z <= 1) {
+      s.events.push('kick');
+      return; // stamina already drained in _startKick, no ball contact
+    }
+    // Ground kick miss: ball is too high for a ground kick
+    if (p.state === 'kick' && s.ball.z > PLAYER_HB_H * this.field.lineH) {
+      s.events.push('kick');
+      return;
+    }
+
+    // Air kick gets wider reach
+    if (p.state === 'airkick') {
+      const center = p.x + this.field.playerWidth / 2;
+      const closeX = Math.abs(s.ball.x - center) < this.field.playerWidth * AIRKICK_REACH_X;
+      const closeY = Math.abs(s.ball.y - p.y) < AIRKICK_REACH_Y;
+      if (!closeX || !closeY) {
+        s.events.push('kick');
+        return; // jumped but out of range
+      }
+    }
+
     const rawPower = Math.max(MIN_KICK_POWER, p._kickPower ?? 0.5); // minimum 15% power
     const effectiveMaxPower = MAX_KICK_POWER * Math.max(MIN_KICK_STAMINA, p.stamina);
     const force = rawPower * effectiveMaxPower;

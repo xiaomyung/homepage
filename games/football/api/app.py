@@ -630,11 +630,11 @@ def showcase():
         db = get_db()
         ensure_generation_zero(db)
         gen_id = current_generation(db)
+        # Try current gen first, fall back to any recent gen with played brains
         top2 = db.execute(
             "SELECT id, weights, fitness, matches_played FROM brains "
-            "WHERE generation_id = ? AND matches_played > 0 "
+            "WHERE matches_played > 0 "
             "ORDER BY fitness DESC LIMIT 2",
-            (gen_id,),
         ).fetchall()
         hof = db.execute(
             "SELECT weights, fitness FROM hall_of_fame ORDER BY RANDOM() LIMIT 1"

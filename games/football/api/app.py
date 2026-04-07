@@ -630,33 +630,49 @@ def showcase():
         db = get_db()
         ensure_generation_zero(db)
         gen_id = current_generation(db)
-        # Try current gen first, fall back to any recent gen with played brains
-        top2 = db.execute(
-            "SELECT id, weights, fitness, matches_played FROM brains "
-            "WHERE matches_played > 0 "
-            "ORDER BY fitness DESC LIMIT 2",
-        ).fetchall()
-        hof = db.execute(
-            "SELECT weights, fitness FROM hall_of_fame ORDER BY RANDOM() LIMIT 1"
+        best = db.execute(
+            "SELECT id, weights, fitness FROM brains "
+            "WHERE matches_played > 0 ORDER BY fitness DESC LIMIT 1",
         ).fetchone()
+        mid = db.execute(
+            "SELECT id, weights, fitness FROM brains "
+            "WHERE matches_played > 0 ORDER BY fitness DESC LIMIT 1 OFFSET ?",
+            (random.randint(20, 40),),
+        ).fetchone()
+        rand_pop = db.execute(
+            "SELECT id, weights, fitness FROM brains "
+            "WHERE matches_played > 0 ORDER BY RANDOM() LIMIT 1",
+        ).fetchone()
+        hof_rows = db.execute(
+            "SELECT weights, fitness, generation_id FROM hall_of_fame"
+        ).fetchall()
 
-    if not top2 or len(top2) < 2:
+    if not best:
         return jsonify({"brewing": True})
 
     roll = random.random()
-    if roll < 0.5:
-        # Best vs 2nd best (most competitive)
-        brain_a, brain_b = top2[0], top2[1]
-        matchup_type = "top2"
-    elif roll < 0.8 and hof:
-        # Best vs HoF champion
-        brain_a = top2[0]
-        brain_b = hof
-        matchup_type = "hof"
+    if roll < 0.40 and hof_rows:
+        # Best vs random HoF champion (different era/lineage)
+        brain_a, brain_b = best, random.choice(hof_rows)
+        matchup_type = "vs_hof"
+    elif roll < 0.70 and mid:
+        # Best vs mid-ranked brain (different strategy niche)
+        brain_a, brain_b = best, mid
+        matchup_type = "vs_mid"
+    elif roll < 0.90 and rand_pop and rand_pop["id"] != best["id"]:
+        # Best vs random population member
+        brain_a, brain_b = best, rand_pop
+        matchup_type = "vs_random"
+    elif len(hof_rows) >= 2:
+        # Two HoF brains from different eras
+        a, b = random.sample(hof_rows, 2)
+        brain_a, brain_b = a, b
+        matchup_type = "hof_vs_hof"
     else:
-        # Fallback to top 2
-        brain_a, brain_b = top2[0], top2[1]
-        matchup_type = "top2"
+        # Fallback: best vs any available
+        brain_a = best
+        brain_b = rand_pop or mid or best
+        matchup_type = "fallback"
 
     return jsonify({
         "brain_a": weights_to_b64(brain_a["weights"]),

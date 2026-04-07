@@ -365,25 +365,26 @@ def weights_to_b64(blob):
 # ── Fitness weights ──────────────────────────────────────────
 # Positive weights sum to 1.0 (perfect play = 1.0).
 # Penalty weights sum to 1.0 (worst possible play = -1.0).
-# Range: [-1.0, 1.0]. Rewards precision + outcomes, penalizes waste.
+# Range: [-1.0, 1.0]. Proximity-first: strong gradient toward ball.
 
 # POSITIVE (sum = 1.00)
-W_KICK_ACCURACY     = 0.20  # (goalKicks / kicks) * volume_guard
+W_PROXIMITY         = 0.25  # avg closeness to ball (tight engagement radius)
 W_GOALS             = 0.20  # goals / CAP_GOALS
-W_STAMINA           = 0.15  # avg stamina (per-tick avg)
-W_NEAR_MISS         = 0.12  # nearMisses / CAP_NEAR_MISS
-W_WIN_BONUS         = 0.10  # 1.0 win / 0.5 draw / 0.0 loss
-W_FRAME_HIT         = 0.08  # frameHits / CAP_FRAME_HIT
-W_SAVES             = 0.07  # saves / CAP_SAVES
-W_AIR_KICK_ACCURACY = 0.05  # (goalAirKicks / airKicks) * volume_guard
-W_PROXIMITY         = 0.03  # avg closeness to ball
+W_WIN_BONUS         = 0.12  # 1.0 win / 0.5 draw / 0.0 loss
+W_STAMINA           = 0.10  # avg stamina
+W_NEAR_MISS         = 0.08  # nearMisses / CAP_NEAR_MISS
+W_KICK_ACCURACY     = 0.07  # (goalKicks / kicks) * volume_guard
+W_FRAME_HIT         = 0.06  # frameHits / CAP_FRAME_HIT
+W_SAVES             = 0.05  # saves / CAP_SAVES
+W_ADVANCE           = 0.04  # ball movement toward opponent goal
+W_AIR_KICK_ACCURACY = 0.03  # (goalAirKicks / airKicks) * volume_guard
 
 # PENALTIES (sum = 1.00)
-W_EXHAUSTION        = 0.35  # fraction of match exhausted
-W_WASTED_KICKS      = 0.25  # wastedKicks / max(kicks, 1)
-W_CONCEDED          = 0.15  # goals conceded / CAP_GOALS
-W_WASTED_AIR_KICKS  = 0.13  # wastedAirKicks / max(airKicks, 1)
-W_PUSHED            = 0.12  # pushed / CAP_PUSHED
+W_EXHAUSTION        = 0.40  # fraction of match exhausted
+W_CONCEDED          = 0.25  # goals conceded / CAP_GOALS
+W_WASTED_KICKS      = 0.20  # wastedKicks / max(kicks, 1)
+W_WASTED_AIR_KICKS  = 0.10  # wastedAirKicks / max(airKicks, 1)
+W_PUSHED            = 0.05  # pushed / CAP_PUSHED
 
 # Caps for count-based metrics
 CAP_GOALS     = 2
@@ -420,6 +421,7 @@ def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
 
     # Per-tick averages [0, 1]
     proximity  = fitness_data.get("ballProximity", 0) / ticks
+    advance    = max(0, min(fitness_data.get("ballAdvance", 0) / ticks, 1))
     stamina    = fitness_data.get("staminaSum", 0) / ticks
     exhaustion = fitness_data.get("exhaustedTicks", 0) / ticks
 
@@ -436,15 +438,16 @@ def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
     pushed      = min(fitness_data.get("pushedReceived", 0) / CAP_PUSHED, 1)
 
     positive = (
-        W_KICK_ACCURACY     * kick_accuracy
+        W_PROXIMITY         * proximity
         + W_GOALS             * goals
+        + W_WIN_BONUS         * win_bonus
         + W_STAMINA           * stamina
         + W_NEAR_MISS         * near_misses
-        + W_WIN_BONUS         * win_bonus
+        + W_KICK_ACCURACY     * kick_accuracy
         + W_FRAME_HIT         * frame_hits
         + W_SAVES             * saves
+        + W_ADVANCE           * advance
         + W_AIR_KICK_ACCURACY * air_kick_accuracy
-        + W_PROXIMITY         * proximity
     )
     penalty = (
         W_EXHAUSTION        * exhaustion

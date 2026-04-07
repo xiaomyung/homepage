@@ -23,6 +23,7 @@ const RESPAWN_DROP_Z = 60;
 export const MAX_PLAYER_SPEED = 10;
 const FIELD_HEIGHT   = 42;
 const STARTING_GAP   = 40;
+const PROX_RADIUS_FRAC = 0.25; // engagement radius as fraction of field width
 const PLAYER_INERTIA = 0.7;    // velocity blending (0 = instant, 1 = no response)
 const DIRECTION_CHANGE_DRAIN = 0.02; // extra stamina cost when reversing
 
@@ -137,6 +138,7 @@ export class FieldConfig {
   constructor(fieldWidth, goalMult = 1) {
     this.fieldWidth = fieldWidth;
     this.fieldWidthSq = fieldWidth * fieldWidth;
+    this.proxRadiusSq = (fieldWidth * PROX_RADIUS_FRAC) ** 2;
     this.goalMult = goalMult; // 1=normal, 2=double-size goals (easier)
     // Approximate character metrics based on typical monospace rendering.
     // In visual mode these come from the DOM; here we estimate.
@@ -638,12 +640,11 @@ export class FootballEngine {
     const center = p.x + halfPW;
     const oppCenter = opp.x + halfPW;
 
-    // 1. Ball proximity (quadratic falloff)
+    // 1. Ball proximity (tight engagement radius — 0 beyond PROX_RADIUS_FRAC of field)
     const dx = ball.x - center;
     const dy = ball.y - p.y;
     const distSq = dx * dx + dy * dy;
-    const maxDistSq = this.field.fieldWidthSq;
-    f.ballProximity += 1 - Math.min(distSq / maxDistSq, 1);
+    f.ballProximity += Math.max(0, 1 - distSq / this.field.proxRadiusSq);
 
     // 2. Ball advance
     const ballDx = ball.x - ballXBefore;
@@ -661,7 +662,7 @@ export class FootballEngine {
     // 4. Ball in attacking zone
     const targetGoalX = p.side === 'left' ? this.field.goalLineR : this.field.goalLineL;
     const bgd = ball.x - targetGoalX;
-    f.ballInAttackZone += 1 - Math.min(bgd * bgd / maxDistSq, 1);
+    f.ballInAttackZone += 1 - Math.min(bgd * bgd / this.field.fieldWidthSq, 1);
 
     // 5. Exhaustion penalty
     if (p.exhausted) f.exhaustedTicks++;

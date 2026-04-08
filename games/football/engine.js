@@ -35,6 +35,11 @@ const AIRKICK_REACH_Y = 24;
 const AIRKICK_MAX_H  = 2;     // max jump height in text rows
 export const MAX_KICK_POWER = 22;
 const KICK_NOISE_SCALE = 0.3; // accuracy penalty at full power
+// Power threshold for "this is a shot, not a tap". Below this, a kick toward goal does
+// not count as a goalKick — it can still happen and it can still nudge the ball, but it
+// doesn't earn kick_accuracy reward. Stops the dribble-tap-spam fitness shortcut without
+// outright forbidding weak kicks (which are sometimes tactically correct).
+const KICK_SHOT_FORCE = MAX_KICK_POWER * 0.4;
 const AIRKICK_MS     = 350;
 const AIRKICK_PEAK   = 0.4;
 
@@ -666,9 +671,11 @@ export class FootballEngine {
 
     // Track kick for fitness
     s.fitness[which].kicks++;
-    // Did the kick advance ball toward opponent's goal?
+    // A "shot toward goal" requires both direction AND power. Without the power gate,
+    // dribble-tap spam earned full kick_accuracy reward without ever attempting a real shot.
     const goalDir = p.side === 'left' ? 1 : -1;
-    if (s.ball.vx * goalDir > 0) s.fitness[which].goalKicks++;
+    const isShot = force > KICK_SHOT_FORCE;
+    if (s.ball.vx * goalDir > 0 && isShot) s.fitness[which].goalKicks++;
     // Defensive save: kicked ball that was heading toward own goal
     const ownGoalX = p.side === 'left' ? 0 : this.field.fieldWidth;
     if (s.ball.vx * -goalDir > 0 && Math.abs(s.ball.x - ownGoalX) < this.field.fieldWidth * 0.3) {
@@ -677,7 +684,7 @@ export class FootballEngine {
     // Air kick (spectacular play)
     if (s.ball.z > 1) {
       s.fitness[which].airKicks++;
-      if (s.ball.vx * goalDir > 0) s.fitness[which].goalAirKicks++;
+      if (s.ball.vx * goalDir > 0 && isShot) s.fitness[which].goalAirKicks++;
     }
     // Wasted kick: ball barely moved
     const ballSpeed = Math.sqrt(s.ball.vx * s.ball.vx + s.ball.vy * s.ball.vy);

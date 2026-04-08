@@ -434,8 +434,12 @@ def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
     # Ratio-based with volume guard
     kick_accuracy     = (fitness_data.get("goalKicks", 0) / max(kicks, 1)) * kick_volume
     air_kick_accuracy = (fitness_data.get("goalAirKicks", 0) / max(air_kicks_raw, 1)) * kick_volume
-    wasted_kicks      = fitness_data.get("wastedKicks", 0) / max(kicks, 1)
-    wasted_air_kicks  = fitness_data.get("wastedAirKicks", 0) / max(air_kicks_raw, 1)
+    # Misses (kick action with no ball contact) are folded into wasted kicks:
+    # same penalty path, denominator includes attempts so spamming misses scales the ratio toward 1.
+    missed_kicks      = fitness_data.get("missedKicks", 0)
+    missed_air_kicks  = fitness_data.get("missedAirKicks", 0)
+    wasted_kicks      = (fitness_data.get("wastedKicks", 0) + missed_kicks) / max(kicks + missed_kicks, 1)
+    wasted_air_kicks  = (fitness_data.get("wastedAirKicks", 0) + missed_air_kicks) / max(air_kicks_raw + missed_air_kicks, 1)
 
     # Count-based (capped to [0, 1])
     near_misses = min(fitness_data.get("nearMisses", 0) / CAP_NEAR_MISS, 1)

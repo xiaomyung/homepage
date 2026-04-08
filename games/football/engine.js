@@ -231,6 +231,8 @@ function emptyFitness() {
     airKicks: 0,          // count: kicks while airborne (denominator for air kick accuracy)
     wastedKicks: 0,       // penalty: kicks producing negligible ball speed
     wastedAirKicks: 0,    // penalty: air kicks producing negligible ball speed
+    missedKicks: 0,       // penalty: kick action with no ball contact (ground+air)
+    missedAirKicks: 0,    // penalty: airkick subset of missedKicks
     goalAirKicks: 0,      // reward: air kicks aimed at opponent goal
   };
 }
@@ -558,13 +560,17 @@ export class FootballEngine {
   }
 
   _executeKick(s, p) {
+    const which = p === s.p1 ? 'p1' : 'p2';
     // Air kick miss: player jumped but ball is on the ground — whiff
     if (p.state === 'airkick' && s.ball.z <= 1) {
+      s.fitness[which].missedKicks++;
+      s.fitness[which].missedAirKicks++;
       s.events.push('kick');
       return; // stamina already drained in _startKick, no ball contact
     }
     // Ground kick miss: ball is too high for a ground kick
     if (p.state === 'kick' && s.ball.z > PLAYER_HB_H * this.field.lineH) {
+      s.fitness[which].missedKicks++;
       s.events.push('kick');
       return;
     }
@@ -575,6 +581,8 @@ export class FootballEngine {
       const closeX = Math.abs(s.ball.x - center) < this.field.playerWidth * AIRKICK_REACH_X;
       const closeY = Math.abs(s.ball.y - p.y) < AIRKICK_REACH_Y;
       if (!closeX || !closeY) {
+        s.fitness[which].missedKicks++;
+        s.fitness[which].missedAirKicks++;
         s.events.push('kick');
         return; // jumped but out of range
       }
@@ -624,7 +632,6 @@ export class FootballEngine {
     s.events.push('kick');
 
     // Track kick for fitness
-    const which = p === s.p1 ? 'p1' : 'p2';
     s.fitness[which].kicks++;
     // Did the kick advance ball toward opponent's goal?
     const goalDir = p.side === 'left' ? 1 : -1;

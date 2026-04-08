@@ -419,6 +419,9 @@ export class FootballEngine {
   _applyOutputsHeadless(s, p, out) {
     if (this._updateStamina(p)) { p.vx = 0; p.vy = 0; return; }
 
+    // Advance any in-flight kick — mid-kick players don't move or accept new actions.
+    if (this._advanceKickStateHeadless(s, p)) return;
+
     const [moveX, moveY, kick, kickDx, kickDy, kickDz, kickPower, push, pushPower] = out;
 
     this._applyMovement(p, moveX, moveY);
@@ -430,14 +433,44 @@ export class FootballEngine {
       if (p.state === 'push') this._setState(p, 'idle');
     }
 
-    // Kick — instant execution, no animation frames
+    // Kick — schedule via _startKick (sets state, drains airkick stamina, picks jump
+    // height). Resolution happens in _advanceKickStateHeadless on a later tick — same
+    // delay and miss semantics as visual play.
     if (kick > 0 && this._canKick(s, p)) {
-      p._kickDx = Math.max(-1, Math.min(1, kickDx));
-      p._kickDy = Math.max(-1, Math.min(1, kickDy));
-      p._kickDz = Math.max(-1, Math.min(1, kickDz));
-      p._kickPower = (Math.max(-1, Math.min(1, kickPower)) + 1) / 2;
-      this._executeKick(s, p);
+      this._startKick(s, p, kickDx, kickDy, kickDz, kickPower);
     }
+  }
+
+  /** Headless equivalent of the 'kick' / 'airkick' branches of _tickShared.
+   *  Returns true if the player is mid-kick and should not accept new outputs. */
+  _advanceKickStateHeadless(s, p) {
+    if (p.state === 'kick') {
+      p.stateTime += TICK;
+      // Visual fires _executeKick at fi=1 (ft = WALK_ANIM_BASE ticks); resets to idle at fi=3.
+      if (!p.airKickFired && p.stateTime >= WALK_ANIM_BASE * TICK) {
+        p.airKickFired = true;
+        this._executeKick(s, p);
+      }
+      if (p.stateTime >= 3 * WALK_ANIM_BASE * TICK) {
+        p.airKickFired = false;
+        this._setState(p, 'idle');
+      }
+      return true;
+    }
+    if (p.state === 'airkick') {
+      p.stateTime += TICK;
+      if (!p.airKickFired && p.stateTime >= AIRKICK_PEAK * AIRKICK_MS) {
+        p.airKickFired = true;
+        this._executeKick(s, p);
+      }
+      if (p.stateTime >= AIRKICK_MS) {
+        p.airKickFired = false;
+        p.airKickZ = 0;
+        this._setState(p, 'idle');
+      }
+      return true;
+    }
+    return false;
   }
 
   /** Visual path — full animations and state machine. */

@@ -22,9 +22,11 @@ ELITISM_COUNT = 5
 # a directional search at appropriate scale.
 MUTATION_RATE = 0.10
 MUTATION_STD = 0.10
-# Per-mutation weight decay — pulls weights gently toward zero each breeding step,
-# preventing the long-run drift that pushed activations into the tanh saturation zone.
-WEIGHT_DECAY = 0.999
+# Per-mutation weight decay — pulls weights toward zero each breeding step.
+# AR(1) equilibrium weight std is `MUTATION_STD * sqrt(MUTATION_RATE / (1 - WEIGHT_DECAY**2))`;
+# 0.995 places it near He init scale for the current rate/std (≈0.32 vs target 0.33).
+# 0.999 was too gentle: equilibrium drifted to ~0.71, pushing the output tanh into saturation.
+WEIGHT_DECAY = 0.995
 MIN_MATCHES_PER_BRAIN = 5
 
 

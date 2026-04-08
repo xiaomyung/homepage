@@ -855,6 +855,7 @@ def reset():
         db = get_db()
         db.execute("DELETE FROM matches")
         db.execute("DELETE FROM brains")
+        db.execute("DELETE FROM hall_of_fame")
         db.execute("DELETE FROM generations")
         db.execute("DELETE FROM fitness_history")
         db.execute("UPDATE stats SET value = 0")

@@ -5,18 +5,28 @@ import random
 import sqlite3
 import struct
 
-# Must match nn.js: Input(18) -> Hidden(20) -> Hidden(16) -> Hidden(12) -> Output(9)
-LAYERS = [18, 20, 16, 12, 9]
+# Must match nn.js LAYERS: Input(18) -> Hidden(20) -> Hidden(16) -> Hidden(18) -> Output(9)
+# Hidden layers use LeakyReLU (in nn.js); the output layer uses tanh.
+LAYERS = [18, 20, 16, 18, 9]
+OUTPUT_LAYER_INDEX = len(LAYERS) - 1
 TOTAL_WEIGHTS = sum(
     LAYERS[i - 1] * LAYERS[i] + LAYERS[i] for i in range(1, len(LAYERS))
-)  # 1037
+)
 
 # Defaults — can be overridden by config from DB
 POPULATION_SIZE = 50
 TOURNAMENT_SIZE = 5
 ELITISM_COUNT = 5
-MUTATION_RATE = 0.05
-MUTATION_STD = 0.3
+# Mutation: smaller perturbations applied to twice as many weights per child.
+# Previous 0.05 × 0.30 was a random walk relative to Xavier scale; new 0.10 × 0.10 is
+# a directional search at appropriate scale.
+MUTATION_RATE = 0.10
+MUTATION_STD = 0.10
+# Per-mutation weight decay — pulls weights toward zero each breeding step.
+# AR(1) equilibrium weight std is `MUTATION_STD * sqrt(MUTATION_RATE / (1 - WEIGHT_DECAY**2))`;
+# 0.995 places it near He init scale for the current rate/std (≈0.32 vs target 0.33).
+# 0.999 was too gentle: equilibrium drifted to ~0.71, pushing the output tanh into saturation.
+WEIGHT_DECAY = 0.995
 MIN_MATCHES_PER_BRAIN = 5
 
 
@@ -37,12 +47,17 @@ def get_config(db):
 
 
 def random_weights() -> bytes:
-    """Generate Xavier-initialized random weights as bytes."""
+    """Generate random weights as bytes. He init for LeakyReLU hidden layers,
+    Xavier for the tanh output layer. Must match nn.js NeuralNet.randomWeights()."""
     weights = []
     for i in range(1, len(LAYERS)):
         fan_in = LAYERS[i - 1]
         fan_out = LAYERS[i]
-        scale = math.sqrt(2 / (fan_in + fan_out))
+        is_output = i == OUTPUT_LAYER_INDEX
+        scale = (
+            math.sqrt(2 / (fan_in + fan_out)) if is_output  # Xavier — tanh output
+            else math.sqrt(2 / fan_in)                       # He — LeakyReLU hidden
+        )
         count = fan_in * fan_out + fan_out
         for _ in range(count):
             weights.append(random.gauss(0, scale))
@@ -76,9 +91,11 @@ def crossover(parent_a: bytes, parent_b: bytes) -> bytes:
 
 
 def mutate(weights_blob: bytes, rate=MUTATION_RATE, std=MUTATION_STD) -> bytes:
-    """Apply Gaussian mutation to weights."""
+    """Apply weight decay then Gaussian mutation to a child's weights.
+    Decay runs unconditionally; Gaussian noise is sparse (per `rate`)."""
     values = weights_to_list(weights_blob)
     for i in range(len(values)):
+        values[i] *= WEIGHT_DECAY
         if random.random() < rate:
             values[i] += random.gauss(0, std)
     return list_to_weights(values)

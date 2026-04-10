@@ -35,6 +35,11 @@ const AIRKICK_REACH_Y = 24;
 const AIRKICK_MAX_H  = 2;     // max jump height in text rows
 export const MAX_KICK_POWER = 22;
 const KICK_NOISE_SCALE = 0.3; // accuracy penalty at full power
+// Power threshold for "this is a shot, not a tap". Below this, a kick toward goal does
+// not count as a goalKick — it can still happen and it can still nudge the ball, but it
+// doesn't earn kick_accuracy reward. Stops the dribble-tap-spam fitness shortcut without
+// outright forbidding weak kicks (which are sometimes tactically correct).
+const KICK_SHOT_FORCE = MAX_KICK_POWER * 0.4;
 const AIRKICK_MS     = 350;
 const AIRKICK_PEAK   = 0.4;
 
@@ -46,11 +51,11 @@ const PUSH_DAMP      = 0.88;
 const PUSH_APPLY     = 0.12;
 const PUSH_ANIM_MS   = 300;
 const PUSH_STAMINA_COST = 0.15;  // at full push_power
-const PUSH_VICTIM_MULT = 2;     // pushed player loses 2x
+const PUSH_VICTIM_MULT = 3;     // pushed player loses 3x
 
 // Stamina
 const STAMINA_REGEN       = 0.005; // per tick (always recovers)
-const STAMINA_MOVE_BASE   = 0.006; // base drain for any movement
+const STAMINA_MOVE_BASE   = 0.003; // base drain for any movement
 const STAMINA_MOVE_SCALE  = 0.3;   // speed-proportional drain multiplier
 const STAMINA_MOVE_DRAIN  = 0.012; // additional drain at max speed
 const STAMINA_MOVE_SPEED_DRAIN = STAMINA_MOVE_DRAIN * STAMINA_MOVE_SCALE; // pre-computed
@@ -231,6 +236,8 @@ function emptyFitness() {
     airKicks: 0,          // count: kicks while airborne (denominator for air kick accuracy)
     wastedKicks: 0,       // penalty: kicks producing negligible ball speed
     wastedAirKicks: 0,    // penalty: air kicks producing negligible ball speed
+    missedKicks: 0,       // penalty: kick action with no ball contact (ground+air)
+    missedAirKicks: 0,    // penalty: airkick subset of missedKicks
     goalAirKicks: 0,      // reward: air kicks aimed at opponent goal
   };
 }
@@ -323,6 +330,10 @@ export class FootballEngine {
 
     if (s.graceFrames > 0) s.graceFrames--;
 
+    // Save positions before movement
+    const p1PreX = s.p1.x, p1PreY = s.p1.y;
+    const p2PreX = s.p2.x, p2PreY = s.p2.y;
+
     // Apply NN outputs to players
     if (p1Out) this._applyOutputs(s, s.p1, p1Out);
     if (p2Out) this._applyOutputs(s, s.p2, p2Out);
@@ -331,9 +342,16 @@ export class FootballEngine {
     this._applyPushPhysics(s.p1, s);
     this._applyPushPhysics(s.p2, s);
 
-    // Clamp players
-    this._clampPlayer(s.p1);
-    this._clampPlayer(s.p2);
+    // Clamp + stuck detection: if player didn't actually move, zero velocity
+    for (const [p, preX, preY] of [[s.p1, p1PreX, p1PreY], [s.p2, p2PreX, p2PreY]]) {
+      this._clampPlayer(p);
+      const dx = p.x - preX, dy = p.y - preY;
+      if (dx * dx + dy * dy < 1) {  // less than 1px net movement = stuck
+        p.vx = 0;
+        p.vy = 0;
+        if (p.state === 'walk') this._setState(p, 'idle');
+      }
+    }
 
     // Ball physics
     const ballXBefore = s.ball.x;
@@ -372,8 +390,12 @@ export class FootballEngine {
   /** Apply movement with inertia — shared by headless and visual paths. */
   _applyMovement(p, moveX, moveY) {
     const effSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina);
-    const targetVx = Math.max(-1, Math.min(1, moveX)) * effSpeed;
-    const targetVy = Math.max(-1, Math.min(1, moveY)) * effSpeed;
+    let targetVx = Math.max(-1, Math.min(1, moveX)) * effSpeed;
+    let targetVy = Math.max(-1, Math.min(1, moveY)) * effSpeed;
+
+    // Block movement into boundaries (prevents walk-in-place at edges)
+    if ((p.y <= 0 && targetVy < 0) || (p.y >= FIELD_HEIGHT && targetVy > 0)) { targetVy = 0; p.vy = 0; }
+    if ((p.x <= 0 && targetVx < 0) || (p.x >= this.field.fieldWidth - this.field.playerWidth && targetVx > 0)) { targetVx = 0; p.vx = 0; }
 
     // Extra stamina cost for reversing direction
     if (p.vx * targetVx < 0 || p.vy * targetVy < 0) {
@@ -391,6 +413,9 @@ export class FootballEngine {
       p.y += p.vy;
       p.dir = p.vx > 0 ? 1 : -1;
       p.stamina -= STAMINA_MOVE_BASE + STAMINA_MOVE_SPEED_DRAIN * (speed / MAX_PLAYER_SPEED);
+    } else {
+      p.vx = 0;
+      p.vy = 0;
     }
     p.stamina = Math.max(0, p.stamina);
     return speed;
@@ -399,24 +424,58 @@ export class FootballEngine {
   _applyOutputsHeadless(s, p, out) {
     if (this._updateStamina(p)) { p.vx = 0; p.vy = 0; return; }
 
+    // Advance any in-flight kick — mid-kick players don't move or accept new actions.
+    if (this._advanceKickStateHeadless(s, p)) return;
+
     const [moveX, moveY, kick, kickDx, kickDy, kickDz, kickPower, push, pushPower] = out;
 
     this._applyMovement(p, moveX, moveY);
 
-    // Push — instant (same state check as visual path)
+    // Push — instant, reset state immediately (visual path uses animation timer)
     if (push > 0 && p.state !== 'push') {
       const opp = p === s.p1 ? s.p2 : s.p1;
       this._tryPush(s, p, opp, pushPower);
+      if (p.state === 'push') this._setState(p, 'idle');
     }
 
-    // Kick — instant execution, no animation frames
+    // Kick — schedule via _startKick (sets state, drains airkick stamina, picks jump
+    // height). Resolution happens in _advanceKickStateHeadless on a later tick — same
+    // delay and miss semantics as visual play.
     if (kick > 0 && this._canKick(s, p)) {
-      p._kickDx = Math.max(-1, Math.min(1, kickDx));
-      p._kickDy = Math.max(-1, Math.min(1, kickDy));
-      p._kickDz = Math.max(-1, Math.min(1, kickDz));
-      p._kickPower = (Math.max(-1, Math.min(1, kickPower)) + 1) / 2;
-      this._executeKick(s, p);
+      this._startKick(s, p, kickDx, kickDy, kickDz, kickPower);
     }
+  }
+
+  /** Headless equivalent of the 'kick' / 'airkick' branches of _tickShared.
+   *  Returns true if the player is mid-kick and should not accept new outputs. */
+  _advanceKickStateHeadless(s, p) {
+    if (p.state === 'kick') {
+      p.stateTime += TICK;
+      // Visual fires _executeKick at fi=1 (ft = WALK_ANIM_BASE ticks); resets to idle at fi=3.
+      if (!p.airKickFired && p.stateTime >= WALK_ANIM_BASE * TICK) {
+        p.airKickFired = true;
+        this._executeKick(s, p);
+      }
+      if (p.stateTime >= 3 * WALK_ANIM_BASE * TICK) {
+        p.airKickFired = false;
+        this._setState(p, 'idle');
+      }
+      return true;
+    }
+    if (p.state === 'airkick') {
+      p.stateTime += TICK;
+      if (!p.airKickFired && p.stateTime >= AIRKICK_PEAK * AIRKICK_MS) {
+        p.airKickFired = true;
+        this._executeKick(s, p);
+      }
+      if (p.stateTime >= AIRKICK_MS) {
+        p.airKickFired = false;
+        p.airKickZ = 0;
+        this._setState(p, 'idle');
+      }
+      return true;
+    }
+    return false;
   }
 
   /** Visual path — full animations and state machine. */
@@ -539,13 +598,17 @@ export class FootballEngine {
   }
 
   _executeKick(s, p) {
+    const which = p === s.p1 ? 'p1' : 'p2';
     // Air kick miss: player jumped but ball is on the ground — whiff
     if (p.state === 'airkick' && s.ball.z <= 1) {
+      s.fitness[which].missedKicks++;
+      s.fitness[which].missedAirKicks++;
       s.events.push('kick');
       return; // stamina already drained in _startKick, no ball contact
     }
     // Ground kick miss: ball is too high for a ground kick
     if (p.state === 'kick' && s.ball.z > PLAYER_HB_H * this.field.lineH) {
+      s.fitness[which].missedKicks++;
       s.events.push('kick');
       return;
     }
@@ -556,6 +619,8 @@ export class FootballEngine {
       const closeX = Math.abs(s.ball.x - center) < this.field.playerWidth * AIRKICK_REACH_X;
       const closeY = Math.abs(s.ball.y - p.y) < AIRKICK_REACH_Y;
       if (!closeX || !closeY) {
+        s.fitness[which].missedKicks++;
+        s.fitness[which].missedAirKicks++;
         s.events.push('kick');
         return; // jumped but out of range
       }
@@ -605,11 +670,12 @@ export class FootballEngine {
     s.events.push('kick');
 
     // Track kick for fitness
-    const which = p === s.p1 ? 'p1' : 'p2';
     s.fitness[which].kicks++;
-    // Did the kick advance ball toward opponent's goal?
+    // A "shot toward goal" requires both direction AND power. Without the power gate,
+    // dribble-tap spam earned full kick_accuracy reward without ever attempting a real shot.
     const goalDir = p.side === 'left' ? 1 : -1;
-    if (s.ball.vx * goalDir > 0) s.fitness[which].goalKicks++;
+    const isShot = force > KICK_SHOT_FORCE;
+    if (s.ball.vx * goalDir > 0 && isShot) s.fitness[which].goalKicks++;
     // Defensive save: kicked ball that was heading toward own goal
     const ownGoalX = p.side === 'left' ? 0 : this.field.fieldWidth;
     if (s.ball.vx * -goalDir > 0 && Math.abs(s.ball.x - ownGoalX) < this.field.fieldWidth * 0.3) {
@@ -618,7 +684,7 @@ export class FootballEngine {
     // Air kick (spectacular play)
     if (s.ball.z > 1) {
       s.fitness[which].airKicks++;
-      if (s.ball.vx * goalDir > 0) s.fitness[which].goalAirKicks++;
+      if (s.ball.vx * goalDir > 0 && isShot) s.fitness[which].goalAirKicks++;
     }
     // Wasted kick: ball barely moved
     const ballSpeed = Math.sqrt(s.ball.vx * s.ball.vx + s.ball.vy * s.ball.vy);

@@ -1,8 +1,17 @@
 /**
  * Simple feedforward neural network for football AI.
  *
- * Architecture: Input(18) → Hidden(20) → Hidden(16) → Hidden(12) → Output(9)
- * Activation: tanh throughout
+ * Architecture: Input(18) → Hidden(20) → Hidden(16) → Hidden(18) → Output(9)
+ * Hidden layers use LeakyReLU; the output layer keeps tanh so outputs stay in [-1, 1]
+ * (the engine relies on that range — see _applyOutputs* in engine.js).
+ *
+ * Why this mix: tanh on every layer caused weights to drift into the saturating zone
+ * over many generations of unconstrained mutation, pinning outputs at ±1 regardless of
+ * inputs. LeakyReLU on hidden layers does not saturate, so selection pressure can
+ * actually steer weight changes. The 18-unit "bottleneck" widened from 12 because
+ * under ReLU roughly half the units are inactive on any input — a 12-unit layer feeding
+ * 9 outputs left only ~6 effective dimensions.
+ *
  * Weights stored as a flat Float32Array for easy serialization.
  *
  * Inputs (18, normalized to ~[-1, 1]):
@@ -18,7 +27,8 @@
  *   2 kick      5 kick_dz    8 push_power
  */
 
-const LAYERS = [18, 20, 16, 12, 9];
+const LAYERS = [18, 20, 16, 18, 9];
+const LEAKY_RELU_SLOPE = 0.1;
 
 /** Padé approximant tanh: max error ~0.003 for |x|<3, ~5x faster than Math.tanh. */
 function fastTanh(x) {
@@ -26,6 +36,10 @@ function fastTanh(x) {
   if (x < -4.9) return -1;
   const x2 = x * x;
   return x * (27 + x2) / (27 + 9 * x2);
+}
+
+function leakyRelu(x) {
+  return x > 0 ? x : LEAKY_RELU_SLOPE * x;
 }
 
 /** Total number of weights (including biases) in the network. */
@@ -37,7 +51,8 @@ function totalWeights() {
   return n;
 }
 
-const TOTAL_WEIGHTS = totalWeights(); // 1037
+const TOTAL_WEIGHTS = totalWeights();
+const OUTPUT_LAYER_INDEX = LAYERS.length - 1;
 
 export class NeuralNet {
   /**
@@ -60,14 +75,20 @@ export class NeuralNet {
     }
   }
 
-  /** Xavier-ish random initialization. */
+  /**
+   * Random init: He scaling for LeakyReLU hidden layers, Xavier for the tanh output.
+   * Matching scale must be applied in evolution/ga.py random_weights().
+   */
   static randomWeights() {
     const w = new Float32Array(TOTAL_WEIGHTS);
     let offset = 0;
     for (let i = 1; i < LAYERS.length; i++) {
       const fanIn = LAYERS[i - 1];
       const fanOut = LAYERS[i];
-      const scale = Math.sqrt(2 / (fanIn + fanOut));
+      const isOutput = i === OUTPUT_LAYER_INDEX;
+      const scale = isOutput
+        ? Math.sqrt(2 / (fanIn + fanOut))   // Xavier — tanh output
+        : Math.sqrt(2 / fanIn);             // He — LeakyReLU hidden
       const count = fanIn * fanOut + fanOut; // weights + biases
       for (let j = 0; j < count; j++) {
         // Box-Muller transform for Gaussian
@@ -90,12 +111,14 @@ export class NeuralNet {
     let current = inputs;
     const w = this.weights;
 
+    const lastLayer = this._offsets.length - 1;
     for (let layer = 0; layer < this._offsets.length; layer++) {
       const inSize = LAYERS[layer];
       const outSize = LAYERS[layer + 1];
       const next = this._buffers[layer];
       const offset = this._offsets[layer];
       const biasOffset = offset + outSize * inSize;
+      const isOutput = layer === lastLayer;
 
       for (let j = 0; j < outSize; j++) {
         let sum = w[biasOffset + j];
@@ -103,7 +126,7 @@ export class NeuralNet {
         for (let i = 0; i < inSize; i++) {
           sum += current[i] * w[wOffset + i];
         }
-        next[j] = fastTanh(sum);
+        next[j] = isOutput ? fastTanh(sum) : leakyRelu(sum);
       }
 
       current = next;

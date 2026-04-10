@@ -371,26 +371,33 @@ def weights_to_b64(blob):
 # ── Fitness weights ──────────────────────────────────────────
 # Positive weights sum to 1.0 (perfect play = 1.0).
 # Penalty weights sum to 1.0 (worst possible play = -1.0).
-# Range: [-1.0, 1.0]. Proximity-first: strong gradient toward ball.
+# Range: [-1.0, 1.0]. Goals-first: dominant signal is actually scoring.
+#
+# Why this shape: the previous "proximity-first + heavy exhaustion penalty" landscape
+# created a do-nothing local optimum (~0.21 floor) that brains converged to. Goals are
+# now the dominant positive term; exhaustion is no longer the dominant penalty; W_STAMINA
+# is dropped because it's an instrumental variable that pays brains to sit still; a small
+# ball-touch floor bonus closes the 0→1 kick credit-assignment cliff.
 
 # POSITIVE (sum = 1.00)
-W_PROXIMITY         = 0.25  # avg closeness to ball (tight engagement radius)
-W_GOALS             = 0.20  # goals / CAP_GOALS
-W_WIN_BONUS         = 0.12  # 1.0 win / 0.5 draw / 0.0 loss
-W_STAMINA           = 0.10  # avg stamina
-W_NEAR_MISS         = 0.08  # nearMisses / CAP_NEAR_MISS
-W_KICK_ACCURACY     = 0.07  # (goalKicks / kicks) * volume_guard
-W_FRAME_HIT         = 0.06  # frameHits / CAP_FRAME_HIT
-W_SAVES             = 0.05  # saves / CAP_SAVES
-W_ADVANCE           = 0.04  # ball movement toward opponent goal
-W_AIR_KICK_ACCURACY = 0.03  # (goalAirKicks / airKicks) * volume_guard
+W_PROXIMITY         = 0.05  # small attractor — was 0.25 (do-nothing reward)
+W_GOALS             = 0.40  # was 0.20 — dominant signal
+W_WIN_BONUS         = 0.10  # was 0.12
+W_STAMINA           = 0.00  # was 0.10 — DROPPED (instrumental, not terminal)
+W_NEAR_MISS         = 0.05  # was 0.08
+W_KICK_ACCURACY     = 0.20  # was 0.07 — strong reward for actually scoring
+W_FRAME_HIT         = 0.05  # was 0.06
+W_SAVES             = 0.05  # unchanged
+W_ADVANCE           = 0.02  # was 0.04
+W_AIR_KICK_ACCURACY = 0.03  # unchanged
+W_BALL_TOUCH_FLOOR  = 0.05  # NEW — closes the 0→1 kick credit-assignment cliff
 
 # PENALTIES (sum = 1.00)
-W_EXHAUSTION        = 0.40  # fraction of match exhausted
-W_CONCEDED          = 0.25  # goals conceded / CAP_GOALS
-W_WASTED_KICKS      = 0.20  # wastedKicks / max(kicks, 1)
-W_WASTED_AIR_KICKS  = 0.10  # wastedAirKicks / max(airKicks, 1)
-W_PUSHED            = 0.05  # pushed / CAP_PUSHED
+W_EXHAUSTION        = 0.10  # was 0.40 — stop punishing sustained activity
+W_CONCEDED          = 0.30  # was 0.25
+W_WASTED_KICKS      = 0.30  # was 0.20 — now reachable in headless, can punish harder
+W_WASTED_AIR_KICKS  = 0.20  # was 0.10 — same reasoning
+W_PUSHED            = 0.10  # was 0.05
 
 # Caps for count-based metrics
 CAP_GOALS     = 2
@@ -401,6 +408,10 @@ CAP_PUSHED    = 5
 
 # Volume guard — prevents gaming ratio metrics with tiny kick counts
 KICK_VOLUME_FLOOR = 10
+
+# Ball-touch floor: bonus saturates at this many successful kicks per match.
+# Provides gradient from 0 → 1 → 2 → BALL_TOUCH_SATURATION before kick_accuracy starts paying.
+BALL_TOUCH_SATURATION = 3
 
 
 def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
@@ -434,14 +445,23 @@ def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
     # Ratio-based with volume guard
     kick_accuracy     = (fitness_data.get("goalKicks", 0) / max(kicks, 1)) * kick_volume
     air_kick_accuracy = (fitness_data.get("goalAirKicks", 0) / max(air_kicks_raw, 1)) * kick_volume
-    wasted_kicks      = fitness_data.get("wastedKicks", 0) / max(kicks, 1)
-    wasted_air_kicks  = fitness_data.get("wastedAirKicks", 0) / max(air_kicks_raw, 1)
+    # Misses (kick action with no ball contact) are folded into wasted kicks:
+    # same penalty path, denominator includes attempts so spamming misses scales the ratio toward 1.
+    missed_kicks      = fitness_data.get("missedKicks", 0)
+    missed_air_kicks  = fitness_data.get("missedAirKicks", 0)
+    wasted_kicks      = (fitness_data.get("wastedKicks", 0) + missed_kicks) / max(kicks + missed_kicks, 1)
+    wasted_air_kicks  = (fitness_data.get("wastedAirKicks", 0) + missed_air_kicks) / max(air_kicks_raw + missed_air_kicks, 1)
 
     # Count-based (capped to [0, 1])
     near_misses = min(fitness_data.get("nearMisses", 0) / CAP_NEAR_MISS, 1)
     frame_hits  = min(fitness_data.get("frameHits", 0) / CAP_FRAME_HIT, 1)
     saves       = min(fitness_data.get("saves", 0) / CAP_SAVES, 1)
     pushed      = min(fitness_data.get("pushedReceived", 0) / CAP_PUSHED, 1)
+
+    # Ball-touch floor: pays a small saturating bonus on first successful kicks.
+    # The 0→1 kick cliff is the hardest credit-assignment problem for a kicking brain;
+    # this term gives gradient before kick_accuracy's volume guard kicks in.
+    ball_touch_floor = min(kicks / BALL_TOUCH_SATURATION, 1)
 
     positive = (
         W_PROXIMITY         * proximity
@@ -454,6 +474,7 @@ def calc_match_fitness(fitness_data, goals_scored, goals_conceded):
         + W_SAVES             * saves
         + W_ADVANCE           * advance
         + W_AIR_KICK_ACCURACY * air_kick_accuracy
+        + W_BALL_TOUCH_FLOOR  * ball_touch_floor
     )
     penalty = (
         W_EXHAUSTION        * exhaustion
@@ -851,6 +872,7 @@ def reset():
         db = get_db()
         db.execute("DELETE FROM matches")
         db.execute("DELETE FROM brains")
+        db.execute("DELETE FROM hall_of_fame")
         db.execute("DELETE FROM generations")
         db.execute("DELETE FROM fitness_history")
         db.execute("UPDATE stats SET value = 0")

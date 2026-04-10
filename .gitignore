@@ -1,11 +1,29 @@
-CLAUDE.md
-.env
+# Dotfiles (.env, .claude, .vscode, .idea, .DS_Store, .venv, ...)
+.*
+
+# Secrets / certs
 *.key
 *.crt
-misc
-misc/*
+*.pem
 
-# Football evolution
-games/football/api/venv/
-games/football/evolution/*.db
-games/football/**/__pycache__/
+# Local notes / scratch
+CLAUDE.md
+misc/
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs / OS junk
+*.log
+Thumbs.db

@@ -84,48 +84,51 @@ The ASCII football game features neural network-controlled players trained via a
 
 ### Neural Network
 
-- **Architecture:** Input(18) → Hidden(20) → Hidden(16) → Hidden(12) → Output(9)
+- **Architecture:** Input(18) → Hidden(20) → Hidden(16) → Hidden(18) → Output(9)
 - **Inputs:** player/opponent positions and velocities, player stamina, ball position/velocity (3D), goal positions, field width
 - **Outputs:** movement direction, kick (yes/no + 3D direction + power), push (yes/no + power)
-- **Activation:** tanh throughout, outputs scaled to capped physical values
+- **Activation:** LeakyReLU on hidden layers (prevents the tanh saturation trap that drifted weights into a constant-output equilibrium), tanh on the output layer so actions stay in [-1, 1] for the engine
+- **Initialization:** He scaling for LeakyReLU hidden layers, Xavier for the tanh output layer
 
 ### Genetic Algorithm
 
 - Population: 50 brains, tournament selection (k=5), two-point crossover
-- Mutation: 5% base rate, Gaussian noise (σ=0.3), top 5 elites preserved, ~6% random injection
-- **Adaptive mutation:** when fitness plateaus over 20 generations, mutation rate and std ramp up to 3× automatically
-- **Hall of Fame:** best brain saved every 50 generations; 10% of training matches pit current brains against historical champions
+- Mutation: 10% base rate, Gaussian noise (σ=0.10), weight decay 0.995 per mutation (keeps weights near He init scale), top 5 elites preserved, ~6% random injection
+- **Adaptive mutation:** when fitness plateaus over 20 generations, mutation rate and std ramp up to 1.5× automatically
+- **Hall of Fame:** best brain saved every 50 generations; 10% of training matches pit current brains against historical champions. HoF is wiped on `/api/football/reset`
 - New generation breeds when all brains have played ≥5 matches
 
 ### Fitness
 
 All components normalized to [0, 1] with tunable weights (`W_*` constants in `app.py`).
-Caps set to what a skilled brain achieves, so fitness reflects real play quality.
+Positive weights sum to 1.0 (perfect play = +1.0); penalty weights sum to 1.0 (worst play = −1.0). Goals are the dominant positive signal and exhaustion is no longer the dominant penalty — the previous shape had a do-nothing local optimum around 0.21 that brains converged to; the current shape makes scoring strictly more rewarding than passivity.
 
 | Weight | Component | What it rewards |
 |--------|-----------|----------------|
-| 0.25 | Goal kicks | Kicks aimed at opponent goal (/10) |
-| 0.15 | Goals | Scoring (/2) |
-| 0.10 | Near misses | Shots that barely miss (/3) |
-| 0.08 | Win bonus | 1.0 win / 0.5 draw / 0.0 loss |
-| 0.08 | Saves | Defensive clearances (/3) |
-| 0.06 | Frame hits | Hitting the goal post (/2) |
-| 0.05 | Attack zone | Ball near opponent's goal |
-| 0.04 | Possession | Ticks closer to ball than opponent |
-| 0.04 | Air kicks | Spectacular aerial kicks (/3) |
-| 0.04 | Stamina | Managing stamina well |
-| 0.03 | Advance | Moving ball toward goal |
-| 0.02 | Proximity | Staying close to ball |
-| −0.04 | Conceded | Goals conceded penalty |
-| −0.01 | Exhaustion | Time spent frozen |
-| −0.01 | Pushed | Getting pushed penalty |
+| **0.40** | Goals | Scoring (/2) — dominant signal |
+| 0.20 | Kick accuracy | `goalKicks / kicks`, volume-guarded. **Power-gated**: only kicks with force > `MAX_KICK_POWER × 0.4` count as shots, so dribble taps no longer game this reward |
+| 0.10 | Win bonus | 1.0 win / 0.5 draw / 0.0 loss |
+| 0.05 | Near misses | Shots that barely miss (/3) |
+| 0.05 | Frame hits | Hitting the goal post (/3) |
+| 0.05 | Saves | Defensive clearances (/5) |
+| 0.05 | Proximity | Staying close to ball (small attractor) |
+| 0.05 | Ball-touch floor | Saturating bonus on first 3 ball touches — closes the 0→1 kick credit-assignment cliff |
+| 0.03 | Air kick accuracy | `goalAirKicks / airKicks`, volume-guarded, power-gated |
+| 0.02 | Advance | Moving ball toward opponent goal |
+| −0.30 | Conceded | Goals conceded (/2) |
+| −0.30 | Wasted kicks | `(wastedKicks + missedKicks) / (kicks + missedKicks)` — weak contacts and whiffs |
+| −0.20 | Wasted air kicks | Same ratio for airborne kicks |
+| −0.10 | Exhaustion | Time spent frozen at zero stamina |
+| −0.10 | Pushed | Getting pushed (/5) |
+
+Whiff detection (missed kicks) is correctly reachable from the training path — before that was fixed, headless training bypassed the kick state machine and never saw misses, producing brains that spammed airkicks in the visual game but not in training. Dribble-tap spam used to earn full `kick_accuracy` reward because any tap toward goal counted as a "goal kick"; the power gate closed that loophole.
 
 ### Game Mechanics
 
 - **Stamina:** drains with speed, kicks, and pushes; auto-recovers; low stamina reduces caps
 - **Push:** NN-controlled strength; pusher loses stamina, victim loses 2×
 - **Kick accuracy:** noise proportional to power — max power = wild shot
-- **Air kick:** when kickDz output > 0.5, player jumps (height up to 2 text rows, controlled by kickDz). Wider reach than ground kicks, but only connects on airborne balls — air kicking a ground ball = whiff
+- **Air kick:** when kickDz output > 0.5, player jumps (height up to 2 text rows, controlled by kickDz). Wider reach than ground kicks, but only connects on airborne balls — air kicking a ground ball = whiff, tracked as a missed kick and penalised in fitness
 - **Headless sims:** randomize field width (600–900px) so brains generalize
 
 ### Manual Controls

@@ -25,7 +25,6 @@
   --muted:        #505050;
   --accent:       #909090;
   --accent-dim:   rgba(255, 255, 255, 0.05);
-  --cyan:         #7dcfff;
   --rule:         rgba(255, 255, 255, 0.10);
   --green:        #9ece6a;
   --green-glow:   rgba(158, 206, 106, 0.20);
@@ -34,7 +33,7 @@
   --amber:        #e0af68;
   --amber-glow:   rgba(224, 175, 104, 0.20);
   --mono: "Iosevka Term", ui-monospace, "Cascadia Code", "Fira Mono", monospace;
-  --grid-gap: 8px;
+  --grid-gap: 0px;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -144,7 +143,6 @@ header {
   overflow-y: auto;
   overscroll-behavior-y: contain;
   scrollbar-width: none;
-  border-radius: 12px;
 }
 
 .grid:has(:nth-child(3))::-webkit-scrollbar { display: none; }
@@ -152,67 +150,58 @@ header {
 /* ── Cards ── */
 
 .card {
-  position: relative;
-  overflow: hidden;
-  background: var(--surface);
-  border-radius: 12px;
-  padding: 1rem;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 0.75rem;
+  row-gap: 0.1rem;
+  padding: 0.55rem 0.75rem;
   color: inherit;
   text-decoration: none;
-  display: flex;
-  flex-direction: column;
-  flex: none;
   width: 100%;
   min-width: 0;
-  transition: background 0.2s;
+  transition: background 0.15s, color 0.15s;
   outline: none;
 }
 
+.card + .card { border-top: 1px solid var(--rule); }
+
 .card:hover,
 .card:focus,
-.card:focus-visible { outline: none; box-shadow: none; background: var(--surface-hover); }
-
-.card-icon {
-  position: absolute;
-  top: 0.875rem;
-  right: 0.875rem;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: var(--accent-dim);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--accent);
+.card:focus-visible {
+  outline: none;
+  background: var(--surface-hover);
+  color: var(--text-bright);
 }
 
-.card-icon svg { width: 16px; height: 16px; }
-
 .card-name {
-  font-size: 0.95rem;
-  font-weight: 600;
-  padding-right: 2.5rem;
+  grid-column: 2;
+  grid-row: 1;
+  font-size: 0.9rem;
+  font-weight: 500;
+  line-height: 1.2;
 }
 
 .card-url {
-  font-family: var(--mono);
+  grid-column: 2;
+  grid-row: 2;
   font-size: 0.68rem;
+  font-weight: 500;
   color: var(--muted);
-  margin-top: 0.25rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.2;
 }
 
 /* ── Status indicators ── */
 
 .status {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  align-self: center;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-top: auto;
-  padding-top: 0.75rem;
 }
+
+.status-label { display: none; }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }

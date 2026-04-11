@@ -1,14 +1,15 @@
 [Unit]
-Description=Football Evolution API
+Description=Homepage stats shim
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/srv/services/web/homepage/games/football/api
+WorkingDirectory=/srv/services/web/homepage/stats
 ExecStart=/srv/services/web/homepage/venv/bin/python app.py
 Restart=always
 RestartSec=3
 User=apollo
+SupplementaryGroups=docker
 
 [Install]
 WantedBy=multi-user.target

@@ -1,31 +1,62 @@
+@font-face {
+  font-family: "Iosevka Term";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("fonts/iosevka-term-regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Iosevka Term";
+  font-style: normal;
+  font-weight: 500;
+  font-display: block;
+  src: url("fonts/iosevka-term-medium.woff2") format("woff2");
+}
+
 :root {
   --bg:           #0a0a0a;
+  --bg-sunken:    #050505;
   --surface:      #111111;
   --surface-hover:#1a1a1a;
   --text:         #d0d0d0;
+  --text-bright:  #e8e8e8;
   --text-dim:     #707070;
   --muted:        #505050;
   --accent:       #909090;
   --accent-dim:   rgba(255, 255, 255, 0.05);
+  --cyan:         #7dcfff;
+  --rule:         rgba(255, 255, 255, 0.10);
   --green:        #9ece6a;
   --green-glow:   rgba(158, 206, 106, 0.20);
   --red:          #f7768e;
   --red-glow:     rgba(247, 118, 142, 0.20);
   --amber:        #e0af68;
   --amber-glow:   rgba(224, 175, 104, 0.20);
-  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: ui-monospace, "Cascadia Code", "Fira Mono", monospace;
+  --mono: "Iosevka Term", ui-monospace, "Cascadia Code", "Fira Mono", monospace;
   --grid-gap: 8px;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Iosevka Term thins out at very small sizes — bump small text to medium weight for legibility */
+.card-url,
+.status-label,
+.fb-scoreboard,
+.fb-name,
+.fb-timer,
+.fb-stats-row,
+.fb-config-stats,
+.fb-worker-control {
+  font-weight: 500;
+}
 
 /* ── Base ── */
 
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: var(--sans);
+  font-family: var(--mono);
   min-height: 100vh;
   display: flex;
   flex-direction: column;

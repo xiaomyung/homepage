@@ -4,14 +4,33 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>home.arpa</title>
-  <link rel="stylesheet" href="style.css?v=82">
+  <link rel="preload" href="fonts/iosevka-term-regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/iosevka-term-medium.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="style.css?v=127">
 </head>
 <body>
 
-  <header>
-    <div class="header-eyebrow">homepage</div>
-    <h1 class="header-wordmark">Xiao Myung</h1>
-    <div class="header-sub">local network services</div>
+  <pre id="bh-bg" aria-hidden="true"></pre>
+  <div id="bh-veil" aria-hidden="true"></div>
+
+  <header class="banner">
+    <div class="banner-label">~/homepage</div>
+    <div class="banner-grid">
+      <dl class="banner-col">
+        <dt>time</dt>     <dd id="hdr-time">—</dd>
+        <dt>uptime</dt>   <dd id="hdr-uptime">—</dd>
+        <dt>load</dt>     <dd id="hdr-load">—</dd>
+        <dt>cpu</dt>      <dd id="hdr-cpu-temp">—</dd>
+        <dt>ram</dt>      <dd id="hdr-ram">—</dd>
+      </dl>
+      <dl class="banner-col">
+        <dt>/</dt>         <dd id="hdr-system">—</dd>
+        <dt>/storage</dt>  <dd id="hdr-storage">—</dd>
+        <dt>/cloud</dt>    <dd id="hdr-cloud">—</dd>
+        <dt>drives</dt>    <dd id="hdr-drives">—</dd>
+        <dt>docker</dt>    <dd id="hdr-docker">—</dd>
+      </dl>
+    </div>
   </header>
 
   <div class="sections">
@@ -21,37 +40,21 @@
       <div class="grid">
 
         <a class="card" href="https://xiaomyung.com/grafana" data-check="https://grafana.home.arpa/login" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-            </svg>
-          </div>
           <div class="card-name">Grafana</div>
           <div class="card-url">xiaomyung.com/grafana</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
         <a class="card" href="https://xiaomyung.com/dns" data-check="https://dns.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-            </svg>
-          </div>
           <div class="card-name">AdGuard Home</div>
           <div class="card-url">xiaomyung.com/dns</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
         <a class="card" href="https://xiaomyung.com/vaultwarden" data-check="https://vaultwarden.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="11" width="18" height="11" rx="2"/>
-              <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-            </svg>
-          </div>
           <div class="card-name">VaultWarden</div>
           <div class="card-url">xiaomyung.com/vaultwarden</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
       </div>
@@ -62,40 +65,21 @@
       <div class="grid">
 
         <a class="card" href="https://xiaomyung.com/qbittorrent" data-check="https://qbittorrent.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/>
-              <line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-          </div>
           <div class="card-name">qBittorrent</div>
           <div class="card-url">xiaomyung.com/qbittorrent</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
         <a class="card" href="https://xiaomyung.com/prowlarr" data-check="https://prowlarr.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="11" cy="11" r="8"/>
-              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-            </svg>
-          </div>
           <div class="card-name">Prowlarr</div>
           <div class="card-url">xiaomyung.com/prowlarr</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
         <a class="card" href="https://xiaomyung.com/readarr" data-check="https://readarr.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
-              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
-            </svg>
-          </div>
           <div class="card-name">Readarr</div>
           <div class="card-url">xiaomyung.com/readarr</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
       </div>
@@ -106,40 +90,21 @@
       <div class="grid">
 
         <a class="card" href="https://xiaomyung.com/immich" data-check="https://immich.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2"/>
-              <circle cx="8.5" cy="8.5" r="1.5"/>
-              <polyline points="21 15 16 10 5 21"/>
-            </svg>
-          </div>
           <div class="card-name">Immich</div>
           <div class="card-url">xiaomyung.com/immich</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
         <a class="card" href="https://xiaomyung.com/plex" data-check="https://plex.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/>
-              <polygon points="10 8 16 12 10 16 10 8"/>
-            </svg>
-          </div>
           <div class="card-name">Plex</div>
           <div class="card-url">xiaomyung.com/plex</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
         <a class="card" href="https://xiaomyung.com/kavita" data-check="https://kavita.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
-              <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
-            </svg>
-          </div>
           <div class="card-name">Kavita</div>
           <div class="card-url">xiaomyung.com/kavita</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
       </div>
@@ -150,25 +115,15 @@
       <div class="grid">
 
         <a class="card" href="https://xiaomyung.com/llm" data-check="https://llm.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-            </svg>
-          </div>
           <div class="card-name">Open WebUI</div>
           <div class="card-url">xiaomyung.com/llm</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
         <a class="card" href="https://xiaomyung.com/nextcloud" data-check="https://nextcloud.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
-            </svg>
-          </div>
           <div class="card-name">Nextcloud</div>
           <div class="card-url">xiaomyung.com/nextcloud</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
       </div>
@@ -179,55 +134,27 @@
       <div class="grid">
 
         <a class="card" href="https://xiaomyung.com/code" data-check="https://code.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2"/>
-              <path d="M8 12l3-3-3-3"/>
-              <line x1="13" y1="12" x2="17" y2="12"/>
-            </svg>
-          </div>
           <div class="card-name">Code-server</div>
           <div class="card-url">xiaomyung.com/code</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
         <a class="card" href="https://xiaomyung.com/it-tools" data-check="https://it-tools.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="16 18 22 12 16 6"/>
-              <polyline points="8 6 2 12 8 18"/>
-            </svg>
-          </div>
           <div class="card-name">IT-Tools</div>
           <div class="card-url">xiaomyung.com/it-tools</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
         <a class="card" href="https://xiaomyung.com/pdf" data-check="https://pdf.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <polyline points="14 2 14 8 20 8"/>
-              <line x1="16" y1="13" x2="8" y2="13"/>
-              <line x1="16" y1="17" x2="8" y2="17"/>
-            </svg>
-          </div>
           <div class="card-name">Stirling PDF</div>
           <div class="card-url">xiaomyung.com/pdf</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
         <a class="card" href="https://xiaomyung.com/forgejo" data-check="https://forgejo.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="18" cy="18" r="3"/>
-              <circle cx="6" cy="6" r="3"/>
-              <path d="M6 21V9a9 9 0 0 0 9 9"/>
-            </svg>
-          </div>
           <div class="card-name">Forgejo</div>
           <div class="card-url">xiaomyung.com/forgejo</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
       </div>
@@ -238,30 +165,15 @@
       <div class="grid">
 
         <a class="card" href="https://xiaomyung.com/mc" data-check="https://mc.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="8" height="8"/>
-              <rect x="13" y="3" width="8" height="8"/>
-              <rect x="3" y="13" width="8" height="8"/>
-              <rect x="13" y="13" width="8" height="8"/>
-            </svg>
-          </div>
           <div class="card-name">Minecraft Panel</div>
           <div class="card-url">xiaomyung.com/mc</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
         <a class="card" href="https://xiaomyung.com/bluemap" data-check="https://bluemap.home.arpa" target="_blank" rel="noopener noreferrer">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/>
-              <line x1="9" y1="3" x2="9" y2="18"/>
-              <line x1="15" y1="6" x2="15" y2="21"/>
-            </svg>
-          </div>
           <div class="card-name">BlueMap</div>
           <div class="card-url">xiaomyung.com/bluemap</div>
-          <div class="status"><span class="dot"></span><span class="status-label">checking…</span></div>
+          <div class="status"><span class="dot"></span></div>
         </a>
 
       </div>
@@ -269,20 +181,8 @@
 
   </div>
 
-  <footer>
-    <div class="footer-host">
-      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="2" y="2" width="20" height="8" rx="2"/>
-        <rect x="2" y="14" width="20" height="8" rx="2"/>
-        <line x1="6" y1="6" x2="6.01" y2="6"/>
-        <line x1="6" y1="18" x2="6.01" y2="18"/>
-      </svg>
-      deb-lenovo-m720q-0
-    </div>
-    <div>checked <span id="last-checked">—</span></div>
-  </footer>
-
-  <script src="app.js"></script>
+  <script src="app.js?v=8"></script>
   <script type="module" src="games/football/football.js"></script>
+  <script type="module" src="games/blackhole/blackhole.js"></script>
 </body>
 </html>

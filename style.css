@@ -1,31 +1,58 @@
+@font-face {
+  font-family: "Iosevka Term";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("fonts/iosevka-term-regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Iosevka Term";
+  font-style: normal;
+  font-weight: 500;
+  font-display: block;
+  src: url("fonts/iosevka-term-medium.woff2") format("woff2");
+}
+
 :root {
   --bg:           #0a0a0a;
   --surface:      #111111;
   --surface-hover:#1a1a1a;
   --text:         #d0d0d0;
+  --text-bright:  #e8e8e8;
   --text-dim:     #707070;
   --muted:        #505050;
-  --accent:       #909090;
   --accent-dim:   rgba(255, 255, 255, 0.05);
+  --rule:         rgba(255, 255, 255, 0.10);
   --green:        #9ece6a;
   --green-glow:   rgba(158, 206, 106, 0.20);
   --red:          #f7768e;
   --red-glow:     rgba(247, 118, 142, 0.20);
   --amber:        #e0af68;
   --amber-glow:   rgba(224, 175, 104, 0.20);
-  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: ui-monospace, "Cascadia Code", "Fira Mono", monospace;
-  --grid-gap: 8px;
+  --mono: "Iosevka Term", ui-monospace, "Cascadia Code", "Fira Mono", monospace;
+  --grid-gap: 0px;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Iosevka Term thins out at very small sizes — bump small text to medium weight for legibility */
+.card-url,
+.fb-scoreboard,
+.fb-name,
+.fb-timer,
+.fb-stats-row,
+.fb-config-stats,
+.fb-worker-control {
+  font-weight: 500;
+}
 
 /* ── Base ── */
 
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: var(--sans);
+  font-family: var(--mono);
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -33,39 +60,58 @@ body {
   padding: 2.5rem 1.5rem;
 }
 
-/* ── Header ── */
+/* ── Header banner ── */
 
-header {
-  margin-bottom: 1.5rem;
-  text-align: center;
+.banner {
+  position: relative;
+  width: 100%;
+  max-width: 900px;
+  border: 1px solid var(--rule);
+  padding: 0.7rem 0.9rem 0.6rem;
+  margin-bottom: 2rem;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: var(--text-dim);
 }
 
-.header-eyebrow {
-  font-family: var(--mono);
+.banner-label {
+  position: absolute;
+  top: -0.55em;
+  left: 0.85rem;
+  padding: 0 0.5em;
+  background: var(--bg);
   font-size: 0.6rem;
-  color: var(--accent);
-  letter-spacing: 0.25em;
+  color: var(--text-dim);
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  margin-bottom: 0.5rem;
+  font-weight: 500;
 }
 
-.header-wordmark {
-  font-size: 1.8rem;
-  font-weight: 300;
-  letter-spacing: -0.01em;
-  line-height: 1;
-  margin-bottom: 0.5rem;
+.banner-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 2rem;
 }
 
-.header-sub {
-  font-family: var(--mono);
-  font-size: 0.62rem;
+.banner-col {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.9rem;
+  row-gap: 0.05rem;
+}
+
+.banner-col dt {
   color: var(--muted);
-  letter-spacing: 0.08em;
+  text-transform: lowercase;
 }
 
-@media (max-width: 400px) {
-  .header-wordmark { font-size: 1.4rem; }
+.banner-col dd {
+  color: var(--text);
+  font-weight: 500;
+}
+
+@media (max-width: 720px) {
+  .banner-grid { grid-template-columns: 1fr; row-gap: 0.6rem; }
 }
 
 /* ── Section layout ── */
@@ -80,10 +126,13 @@ header {
 }
 
 .section {
+  position: relative;
   flex: 0 0 calc(33.333% - 0.84rem);
   display: flex;
   flex-direction: column;
   min-width: 0;
+  border: 1px solid var(--rule);
+  padding: 0.6rem 0.4rem 0.4rem;
 }
 
 /* 1 section column on small screens */
@@ -93,13 +142,16 @@ header {
 }
 
 .section-label {
-  font-family: var(--mono);
+  position: absolute;
+  top: -0.55em;
+  left: 0.85rem;
+  padding: 0 0.5em;
+  background: var(--bg);
   font-size: 0.6rem;
   color: var(--text-dim);
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  text-align: center;
-  margin-bottom: 0.5rem;
+  font-weight: 500;
 }
 
 .grid {
@@ -113,7 +165,6 @@ header {
   overflow-y: auto;
   overscroll-behavior-y: contain;
   scrollbar-width: none;
-  border-radius: 12px;
 }
 
 .grid:has(:nth-child(3))::-webkit-scrollbar { display: none; }
@@ -121,66 +172,55 @@ header {
 /* ── Cards ── */
 
 .card {
-  position: relative;
-  overflow: hidden;
-  background: var(--surface);
-  border-radius: 12px;
-  padding: 1rem;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 0.75rem;
+  row-gap: 0.1rem;
+  padding: 0.55rem 0.75rem;
   color: inherit;
   text-decoration: none;
-  display: flex;
-  flex-direction: column;
-  flex: none;
   width: 100%;
   min-width: 0;
-  transition: background 0.2s;
+  transition: background 0.15s, color 0.15s;
   outline: none;
 }
 
+.card + .card { border-top: 1px solid var(--rule); }
+
 .card:hover,
 .card:focus,
-.card:focus-visible { outline: none; box-shadow: none; background: var(--surface-hover); }
-
-.card-icon {
-  position: absolute;
-  top: 0.875rem;
-  right: 0.875rem;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: var(--accent-dim);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--accent);
+.card:focus-visible {
+  outline: none;
+  background: var(--surface-hover);
+  color: var(--text-bright);
 }
 
-.card-icon svg { width: 16px; height: 16px; }
-
 .card-name {
-  font-size: 0.95rem;
-  font-weight: 600;
-  padding-right: 2.5rem;
+  grid-column: 2;
+  grid-row: 1;
+  font-size: 0.9rem;
+  font-weight: 500;
+  line-height: 1.2;
 }
 
 .card-url {
-  font-family: var(--mono);
+  grid-column: 2;
+  grid-row: 2;
   font-size: 0.68rem;
+  font-weight: 500;
   color: var(--muted);
-  margin-top: 0.25rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.2;
 }
 
 /* ── Status indicators ── */
 
 .status {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  align-self: center;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-top: auto;
-  padding-top: 0.75rem;
 }
 
 @keyframes pulse {
@@ -211,16 +251,6 @@ header {
   animation: none;
 }
 
-.status-label {
-  font-family: var(--mono);
-  font-size: 0.68rem;
-  color: var(--muted);
-  transition: color 0.3s;
-}
-
-.dot.up   + .status-label { color: var(--green); }
-.dot.down + .status-label { color: var(--red); }
-
 /* ── Card entrance animation ── */
 
 @media (prefers-reduced-motion: no-preference) {
@@ -235,27 +265,34 @@ header {
   }
 }
 
-/* ── Footer ── */
 
-footer {
-  margin-top: 1.25rem;
+/* ── Background black hole ── */
+
+#bh-bg {
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  z-index: -2;
   font-family: var(--mono);
-  font-size: 0.62rem;
-  color: var(--muted);
-  text-align: center;
-  line-height: 2;
-  letter-spacing: 0.04em;
+  font-size: clamp(0.85rem, 1vw, 1.1rem);
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.13);
+  white-space: pre;
+  user-select: none;
+  pointer-events: none;
+  overflow: hidden;
 }
 
-.footer-host {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  color: var(--text-dim);
+/* Darkening veil sandwiched between #bh-bg and the page content. Mutes the
+ * black hole from the foreground's POV without dimming it everywhere. */
+#bh-veil {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: rgba(10, 10, 10, 0.55);
+  pointer-events: none;
 }
-
-.footer-host svg { flex-shrink: 0; }
 
 /* ── Game stage (shared by all mini-games) ── */
 

@@ -63,39 +63,58 @@ body {
   padding: 2.5rem 1.5rem;
 }
 
-/* ── Header ── */
+/* ── Header banner ── */
 
-header {
-  margin-bottom: 1.5rem;
-  text-align: center;
+.banner {
+  position: relative;
+  width: 100%;
+  max-width: 900px;
+  border: 1px solid var(--rule);
+  padding: 0.7rem 0.9rem 0.6rem;
+  margin-bottom: 2rem;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: var(--text-dim);
 }
 
-.header-eyebrow {
-  font-family: var(--mono);
+.banner-label {
+  position: absolute;
+  top: -0.55em;
+  left: 0.85rem;
+  padding: 0 0.5em;
+  background: var(--bg);
   font-size: 0.6rem;
-  color: var(--accent);
-  letter-spacing: 0.25em;
+  color: var(--text-dim);
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  margin-bottom: 0.5rem;
+  font-weight: 500;
 }
 
-.header-wordmark {
-  font-size: 1.8rem;
-  font-weight: 300;
-  letter-spacing: -0.01em;
-  line-height: 1;
-  margin-bottom: 0.5rem;
+.banner-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 2rem;
 }
 
-.header-sub {
-  font-family: var(--mono);
-  font-size: 0.62rem;
+.banner-col {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.9rem;
+  row-gap: 0.05rem;
+}
+
+.banner-col dt {
   color: var(--muted);
-  letter-spacing: 0.08em;
+  text-transform: lowercase;
 }
 
-@media (max-width: 400px) {
-  .header-wordmark { font-size: 1.4rem; }
+.banner-col dd {
+  color: var(--text);
+  font-weight: 500;
+}
+
+@media (max-width: 720px) {
+  .banner-grid { grid-template-columns: 1fr; row-gap: 0.6rem; }
 }
 
 /* ── Section layout ── */
@@ -261,27 +280,6 @@ header {
   }
 }
 
-/* ── Footer ── */
-
-footer {
-  margin-top: 1.25rem;
-  font-family: var(--mono);
-  font-size: 0.62rem;
-  color: var(--muted);
-  text-align: center;
-  line-height: 2;
-  letter-spacing: 0.04em;
-}
-
-.footer-host {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  color: var(--text-dim);
-}
-
-.footer-host svg { flex-shrink: 0; }
 
 /* ── Game stage (shared by all mini-games) ── */
 

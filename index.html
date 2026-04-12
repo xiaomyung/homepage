@@ -6,14 +6,28 @@
   <title>home.arpa</title>
   <link rel="preload" href="fonts/iosevka-term-regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/iosevka-term-medium.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="style.css?v=88">
+  <link rel="stylesheet" href="style.css?v=92">
 </head>
 <body>
 
-  <header>
-    <div class="header-eyebrow">homepage</div>
-    <h1 class="header-wordmark">Xiao Myung</h1>
-    <div class="header-sub">local network services</div>
+  <header class="banner">
+    <div class="banner-label">~/homepage</div>
+    <div class="banner-grid">
+      <dl class="banner-col">
+        <dt>time</dt>     <dd id="hdr-time">—</dd>
+        <dt>uptime</dt>   <dd id="hdr-uptime">—</dd>
+        <dt>load</dt>     <dd id="hdr-load">—</dd>
+        <dt>cpu</dt>      <dd id="hdr-cpu-temp">—</dd>
+        <dt>ram</dt>      <dd id="hdr-ram">—</dd>
+      </dl>
+      <dl class="banner-col">
+        <dt>/</dt>         <dd id="hdr-system">—</dd>
+        <dt>/storage</dt>  <dd id="hdr-storage">—</dd>
+        <dt>/cloud</dt>    <dd id="hdr-cloud">—</dd>
+        <dt>drives</dt>    <dd id="hdr-drives">—</dd>
+        <dt>docker</dt>    <dd id="hdr-docker">—</dd>
+      </dl>
+    </div>
   </header>
 
   <div class="sections">
@@ -164,20 +178,7 @@
 
   </div>
 
-  <footer>
-    <div class="footer-host">
-      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="2" y="2" width="20" height="8" rx="2"/>
-        <rect x="2" y="14" width="20" height="8" rx="2"/>
-        <line x1="6" y1="6" x2="6.01" y2="6"/>
-        <line x1="6" y1="18" x2="6.01" y2="18"/>
-      </svg>
-      deb-lenovo-m720q-0
-    </div>
-    <div>checked <span id="last-checked">—</span></div>
-  </footer>
-
-  <script src="app.js"></script>
+  <script src="app.js?v=7"></script>
   <script type="module" src="games/football/football.js"></script>
 </body>
 </html>

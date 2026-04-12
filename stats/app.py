@@ -78,12 +78,19 @@ def docker_counts():
             capture_output=True, text=True, timeout=5,
         )
     except (FileNotFoundError, subprocess.SubprocessError):
-        return {'running': None, 'unhealthy': None, 'total': None}
+        return {'total': None, 'running': None, 'unhealthy': None,
+                'stopped': None, 'other': None}
     statuses = [s for s in result.stdout.splitlines() if s.strip()]
+    running = sum(1 for s in statuses if s.startswith('Up'))
+    unhealthy = sum(1 for s in statuses if 'unhealthy' in s)
+    stopped = sum(1 for s in statuses if s.startswith('Exited'))
+    other = len(statuses) - running - stopped
     return {
-        'running': sum(1 for s in statuses if s.startswith('Up')),
-        'unhealthy': sum(1 for s in statuses if 'unhealthy' in s),
         'total': len(statuses),
+        'running': running,
+        'unhealthy': unhealthy,
+        'stopped': stopped,
+        'other': other,
     }
 
 
@@ -110,27 +117,61 @@ def stats():
         {'chip': 'platform_coretemp_0', 'sensor': 'temp1'},
     )
 
+    # RAM — use the procps `free` formula so the number matches `htop` and `free -h`:
+    #   used = total - free - buffers - cached - SReclaimable + Shmem
     mem_total, _ = find_one(metrics, 'node_memory_MemTotal_bytes')
-    mem_avail, _ = find_one(metrics, 'node_memory_MemAvailable_bytes')
+    mem_free, _ = find_one(metrics, 'node_memory_MemFree_bytes')
+    mem_buffers, _ = find_one(metrics, 'node_memory_Buffers_bytes')
+    mem_cached, _ = find_one(metrics, 'node_memory_Cached_bytes')
+    mem_sreclaim, _ = find_one(metrics, 'node_memory_SReclaimable_bytes')
+    mem_shmem, _ = find_one(metrics, 'node_memory_Shmem_bytes')
+    if None not in (mem_total, mem_free, mem_buffers, mem_cached, mem_sreclaim, mem_shmem):
+        ram_used_bytes = mem_total - mem_free - mem_buffers - mem_cached - mem_sreclaim + mem_shmem
+        ram_used_gb = round(ram_used_bytes / 1e9, 1)
+        ram_total_gb = round(mem_total / 1e9, 1)
+    else:
+        ram_used_gb = ram_total_gb = None
 
-    smart = []
-    for lbls, v in find_all(metrics, 'smart_device_temperature_celsius'):
+    # Drive temperatures:
+    #   - NVMe via kernel hwmon (always awake, not exposed by smartmontools)
+    #   - Spinning disks via smart-prom.sh textfile collector, which also exposes
+    #     smart_device_active{device="..."} = 0 when the drive is parked so we
+    #     can render "idle" instead of dropping the row.
+    drives = []
+    nvme_temp, _ = find_one(
+        metrics, 'node_hwmon_temp_celsius',
+        {'chip': 'nvme_nvme0', 'sensor': 'temp1'},
+    )
+    if nvme_temp is not None:
+        drives.append({'dev': 'nvme0', 'temp_c': int(nvme_temp), 'idle': False})
+
+    temps_by_dev = {
+        lbls.get('device', '').replace('/dev/', ''): v
+        for lbls, v in find_all(metrics, 'smart_device_temperature_celsius')
+    }
+    for lbls, v in find_all(metrics, 'smart_device_active'):
         dev = lbls.get('device', '').replace('/dev/', '')
-        if dev:
-            smart.append({'dev': dev, 'temp_c': int(v)})
+        if not dev:
+            continue
+        if v == 0:
+            drives.append({'dev': dev, 'temp_c': None, 'idle': True})
+        else:
+            t = temps_by_dev.get(dev)
+            drives.append({'dev': dev, 'temp_c': int(t) if t is not None else None, 'idle': False})
 
     body = {
         'host': socket.gethostname(),
         'uptime_seconds': uptime,
         'load': [load1, load5, load15],
         'cpu_temp_c': int(cpu_temp) if cpu_temp is not None else None,
-        'ram_used_gb': round((mem_total - mem_avail) / 1e9, 1) if mem_total and mem_avail else None,
-        'ram_total_gb': round(mem_total / 1e9, 1) if mem_total else None,
+        'ram_used_gb': ram_used_gb,
+        'ram_total_gb': ram_total_gb,
         'disk': {
+            'system':  disk_for(metrics, '/'),
             'storage': disk_for(metrics, '/mnt/storage'),
-            'cloud': disk_for(metrics, '/mnt/cloud'),
+            'cloud':   disk_for(metrics, '/mnt/cloud'),
         },
-        'smart': smart,
+        'drives': drives,
         'docker': docker_counts(),
     }
     response = jsonify(body)

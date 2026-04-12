@@ -1,6 +1,5 @@
 async function checkService(card) {
   const dot = card.querySelector('.dot');
-  const label = card.querySelector('.status-label');
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 5000);
   try {
@@ -11,11 +10,9 @@ async function checkService(card) {
     clearTimeout(timeout);
     if (res.status >= 500) throw new Error(res.status);
     dot.className = 'dot up';
-    label.textContent = 'online';
   } catch {
     clearTimeout(timeout);
     dot.className = 'dot down';
-    label.textContent = 'offline';
   }
 }
 

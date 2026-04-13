@@ -17,30 +17,29 @@ The site is Tailscale/LAN-only: AdGuard rewrites `xiaomyung.com` → `100.68.202
 - **Grid overflow cap** — sections with 3+ cards are capped at ~2.2 visible cards by `capGrids()`; the partial card peek signals scrollability. Scrollbars are hidden.
 - **ASCII Schwarzschild lens background** — `games/blackhole/blackhole.js` renders a black hole with a tilted accretion disk and a Keplerian star cluster into a viewport-filling `<pre id="bh-bg">` behind the page.
 
-## Running locally (no Caddy)
+## Quickstart (local dev)
 
-Requires **Python 3.10+**. One shared venv at the repo root is used by every Python service.
+Requires **Python 3.10+**. On Debian/Ubuntu you may need `sudo apt install python3-venv` first. One shared venv at the repo root is used by every Python service.
 
 ```sh
-# From repo root
+git clone https://github.com/xiaomyung/homepage.git
+cd homepage
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-**Terminal 1 — evolution API (Flask, 127.0.0.1:5050):**
+Then run two processes in parallel:
 
 ```sh
+# Terminal 1 — evolution API (Flask, 127.0.0.1:5050)
 python games/football/api/app.py
-```
 
-**Terminal 2 — dev server (static files + `/api/football` reverse proxy, 8000):**
-
-```sh
+# Terminal 2 — dev server (static files + /api/football proxy, :8000)
 python dev-server.py
 ```
 
-Open **http://localhost:8000**. Service dots show "offline" (no homelab services to probe) and the top banner shows `—` for every field (dev-server doesn't proxy `/api/stats`), but the football game and AI training work fully.
+Open **http://localhost:8000**. The SQLite population auto-seeds on first launch — no migrations, no fixtures. Service dots show "offline" (no homelab services to probe) and the banner shows `—` for every field (`dev-server.py` doesn't proxy `/api/stats`), but the football game and AI training work fully. The Node.js `server-trainer.js` is optional and only used in production.
 
 ## Deployment (production)
 

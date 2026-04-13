@@ -25,9 +25,11 @@ Requires **Python 3.10+**. On Debian/Ubuntu you may need `sudo apt install pytho
 git clone https://github.com/xiaomyung/homepage.git
 cd homepage
 python3 -m venv venv
-source venv/bin/activate          # Windows: venv\Scripts\activate
+source venv/bin/activate
 pip install -r requirements.txt
 ```
+
+**Windows notes:** use `py -3` instead of `python3` (the `python3` command doesn't exist on default Windows installs). Activate the venv with `.\venv\Scripts\Activate.ps1` in PowerShell or `venv\Scripts\activate.bat` in `cmd.exe`. PowerShell may need `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once before activation scripts can run.
 
 Then run two processes in parallel:
 

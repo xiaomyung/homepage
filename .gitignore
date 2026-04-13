@@ -24,6 +24,12 @@ node_modules/
 *.sqlite
 *.sqlite3
 
+# Backups / snapshots
+*.bak
+*.bak-*
+*.db.bak*
+*.sqlite.bak*
+
 # Logs / OS junk
 *.log
 Thumbs.db

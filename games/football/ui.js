@@ -290,6 +290,103 @@ export function createFitnessGraph({ apiBase, pollIntervalMs = 5000 }) {
   return { refresh: poll };
 }
 
+/* ── Config sliders + reset button ──────────────────────── */
+
+/**
+ * Binds the three config sliders (match duration, worker count, mutation
+ * rate) to the Flask broker's /config endpoint. Changes debounce-POST on
+ * input, then update the value labels inline.
+ *
+ * Returns a handle with `getWorkerCount()` so main.js can spawn workers
+ * to match the slider without a separate state source.
+ */
+export function createConfigControls({ apiBase }) {
+  const controls = {
+    duration: { input: document.getElementById('cfg-duration'), val: document.getElementById('cfg-duration-val'), key: 'match_duration_ms' },
+    workers: { input: document.getElementById('cfg-workers'), val: document.getElementById('cfg-workers-val'), key: null },
+    mutrate: { input: document.getElementById('cfg-mutrate'), val: document.getElementById('cfg-mutrate-val'), key: 'mutation_rate' },
+  };
+
+  // Workers is a client-side setting, not persisted in /config
+  const hardwareMax = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 8));
+  const defaultWorkers = Math.max(1, Math.floor(hardwareMax / 2));
+  controls.workers.input.max = hardwareMax;
+  controls.workers.input.value = defaultWorkers;
+  controls.workers.val.textContent = defaultWorkers;
+
+  // Initialize from /config
+  fetch(`${apiBase}/config`)
+    .then((r) => (r.ok ? r.json() : null))
+    .then((cfg) => {
+      if (!cfg) return;
+      controls.duration.input.value = cfg.match_duration_ms;
+      controls.duration.val.textContent = (cfg.match_duration_ms / 1000).toFixed(0) + 's';
+      controls.mutrate.input.value = cfg.mutation_rate;
+      controls.mutrate.val.textContent = cfg.mutation_rate.toFixed(2);
+    })
+    .catch(() => {});
+
+  let debounceTimer = null;
+  const debouncedSend = (payload) => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(async () => {
+      try {
+        await fetch(`${apiBase}/config`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      } catch {
+        /* ignore */
+      }
+    }, 200);
+  };
+
+  // Duration slider — server-side
+  controls.duration.input.addEventListener('input', () => {
+    const ms = parseInt(controls.duration.input.value, 10);
+    controls.duration.val.textContent = (ms / 1000).toFixed(0) + 's';
+    debouncedSend({ match_duration_ms: ms });
+  });
+
+  // Mutation rate slider — server-side
+  controls.mutrate.input.addEventListener('input', () => {
+    const rate = parseFloat(controls.mutrate.input.value);
+    controls.mutrate.val.textContent = rate.toFixed(2);
+    debouncedSend({ mutation_rate: rate });
+  });
+
+  // Worker count slider — client-side only
+  const workerChangeListeners = [];
+  controls.workers.input.addEventListener('input', () => {
+    const n = parseInt(controls.workers.input.value, 10);
+    controls.workers.val.textContent = n;
+    for (const fn of workerChangeListeners) fn(n);
+  });
+
+  return {
+    getWorkerCount: () => parseInt(controls.workers.input.value, 10),
+    onWorkerCountChange: (fn) => workerChangeListeners.push(fn),
+  };
+}
+
+/**
+ * Wires the reset button to POST /reset after a confirmation dialog.
+ * On success, calls the provided callback (usually to refresh local state).
+ */
+export function createResetButton({ apiBase, onReset }) {
+  const btn = document.getElementById('game-reset-btn');
+  btn.addEventListener('click', async () => {
+    if (!confirm('Reset the population and start over from the warm-start seed?')) return;
+    try {
+      const res = await fetch(`${apiBase}/reset`, { method: 'POST' });
+      if (res.ok) onReset?.();
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
 /* ── Auto-pause gate ────────────────────────────────────── */
 
 /**

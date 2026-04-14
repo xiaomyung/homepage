@@ -34,7 +34,7 @@ def client(tmp_path):
 
 
 def test_stats_after_init(client):
-    resp = client.get("/stats")
+    resp = client.get("/api/football/stats")
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["generation"] == 1
@@ -45,7 +45,7 @@ def test_stats_after_init(client):
 
 
 def test_config_get_has_expected_keys(client):
-    resp = client.get("/config")
+    resp = client.get("/api/football/config")
     data = resp.get_json()
     assert "population_size" in data
     assert "fitness_w_pop" in data
@@ -55,15 +55,15 @@ def test_config_get_has_expected_keys(client):
 
 
 def test_config_post_updates_state(client):
-    resp = client.post("/config", json={"mutation_rate": 0.15})
+    resp = client.post("/api/football/config", json={"mutation_rate": 0.15})
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["mutation_rate"] == 0.15
-    assert client.get("/config").get_json()["mutation_rate"] == 0.15
+    assert client.get("/api/football/config").get_json()["mutation_rate"] == 0.15
 
 
 def test_matchup_returns_valid_shape(client):
-    resp = client.get("/matchup")
+    resp = client.get("/api/football/matchup")
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["type"] in ("pop", "fallback")
@@ -80,7 +80,7 @@ def test_matchup_returns_valid_shape(client):
 
 
 def test_showcase_returns_valid_shape(client):
-    resp = client.get("/showcase")
+    resp = client.get("/api/football/showcase")
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["mode"] in ("recent", "vs_fallback")
@@ -93,14 +93,14 @@ def test_showcase_returns_valid_shape(client):
 
 def test_showcase_rotation_hits_fallback_mode_within_5_calls(client):
     """4:1 rotation — fallback mode should appear at least once per 5 calls."""
-    modes = [client.get("/showcase").get_json()["mode"] for _ in range(10)]
+    modes = [client.get("/api/football/showcase").get_json()["mode"] for _ in range(10)]
     assert "vs_fallback" in modes
     assert "recent" in modes
 
 
 def test_results_post_updates_stats(client):
     # Get a matchup, simulate a result
-    matchup = client.get("/matchup").get_json()
+    matchup = client.get("/api/football/matchup").get_json()
     if matchup["type"] == "fallback":
         result = {
             "p1_id": matchup["p1"]["id"],
@@ -115,41 +115,41 @@ def test_results_post_updates_stats(client):
             "goals_p1": 3,
             "goals_p2": 1,
         }
-    resp = client.post("/results", json=result)
+    resp = client.post("/api/football/results", json=result)
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["recorded"] == 1
     assert data["bred"] is False  # single result won't trigger breeding
 
-    stats = client.get("/stats").get_json()
+    stats = client.get("/api/football/stats").get_json()
     assert stats["total_matches"] == 1
 
 
 def test_reset_reinitializes_population(client):
     # Submit a bunch of results to mutate state
     for _ in range(10):
-        matchup = client.get("/matchup").get_json()
+        matchup = client.get("/api/football/matchup").get_json()
         result = {
             "p1_id": matchup["p1"]["id"],
             "p2_id": matchup["p2"]["id"] if matchup["p2"] else None,
             "goals_p1": 1,
             "goals_p2": 1,
         }
-        client.post("/results", json=result)
+        client.post("/api/football/results", json=result)
 
-    pre_reset_matches = client.get("/stats").get_json()["total_matches"]
+    pre_reset_matches = client.get("/api/football/stats").get_json()["total_matches"]
     assert pre_reset_matches == 10
 
-    resp = client.post("/reset")
+    resp = client.post("/api/football/reset")
     assert resp.status_code == 200
     assert resp.get_json()["ok"] is True
 
-    stats = client.get("/stats").get_json()
+    stats = client.get("/api/football/stats").get_json()
     assert stats["total_matches"] == 0
     assert stats["population"] == 50
 
 
 def test_history_empty_initially(client):
-    resp = client.get("/history")
+    resp = client.get("/api/football/history")
     assert resp.status_code == 200
     assert resp.get_json() == []

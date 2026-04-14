@@ -428,15 +428,21 @@ def _record_result(result: dict) -> None:
 
 
 # ── Routes ───────────────────────────────────────────────────
+#
+# Caddy proxies /api/football/* directly to this app without stripping
+# the prefix, so every route declares it explicitly.
 
-@app.route("/matchup", methods=["GET"])
+ROUTE_PREFIX = "/api/football"
+
+
+@app.route(f"{ROUTE_PREFIX}/matchup", methods=["GET"])
 def route_matchup():
     with _lock:
         matchup = _pick_matchup(_state["config"])
     return jsonify(matchup)
 
 
-@app.route("/results", methods=["POST"])
+@app.route(f"{ROUTE_PREFIX}/results", methods=["POST"])
 def route_results():
     data = request.get_json(silent=True)
     if data is None:
@@ -454,14 +460,14 @@ def route_results():
     return jsonify({"recorded": len(results), "bred": bred})
 
 
-@app.route("/showcase", methods=["GET"])
+@app.route(f"{ROUTE_PREFIX}/showcase", methods=["GET"])
 def route_showcase():
     with _lock:
         showcase = _pick_showcase()
     return jsonify(showcase)
 
 
-@app.route("/stats", methods=["GET"])
+@app.route(f"{ROUTE_PREFIX}/stats", methods=["GET"])
 def route_stats():
     with _lock:
         pop = _state["population"]
@@ -481,7 +487,7 @@ def route_stats():
         })
 
 
-@app.route("/history", methods=["GET"])
+@app.route(f"{ROUTE_PREFIX}/history", methods=["GET"])
 def route_history():
     with _lock:
         conn = _db_connect()
@@ -498,13 +504,13 @@ def route_history():
     ])
 
 
-@app.route("/config", methods=["GET"])
+@app.route(f"{ROUTE_PREFIX}/config", methods=["GET"])
 def route_config_get():
     with _lock:
         return jsonify(_state["config"])
 
 
-@app.route("/config", methods=["POST"])
+@app.route(f"{ROUTE_PREFIX}/config", methods=["POST"])
 def route_config_post():
     data = request.get_json(silent=True)
     if data is None:
@@ -525,7 +531,7 @@ def route_config_post():
         return jsonify(_state["config"])
 
 
-@app.route("/reset", methods=["POST"])
+@app.route(f"{ROUTE_PREFIX}/reset", methods=["POST"])
 def route_reset():
     with _lock:
         conn = _db_connect()

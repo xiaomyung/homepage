@@ -24,8 +24,13 @@ const MAX_INSTANCES = 512;
 // different width; the camera adapts via renderer.resize().
 const DEFAULT_FIELD_WIDTH = 900;
 
-// Default glyph world size. Each stickman is a few of these tall.
-const GLYPH_WORLD_SIZE = 2.4;
+// Per-element world sizes in physics units. These were empirically tuned:
+// on a 900-wide field with a 60° FOV camera, STICKMAN_SIZE=14 gives a
+// ~30-40px tall stickman on a 900×225 canvas. Field borders are smaller
+// so they don't compete visually with the players.
+const FIELD_GLYPH_SIZE = 8;
+const STICKMAN_GLYPH_SIZE = 14;
+const BALL_GLYPH_SIZE = 11;
 
 const VERTEX_SHADER = /* glsl */ `
   precision mediump float;
@@ -162,9 +167,10 @@ export class Renderer {
     this._addStickman(state.p1, staminaColor(state.p1.stamina));
     this._addStickman(state.p2, staminaColor(state.p2.stamina));
 
-    // Ball
-    const ballY = (state.ball.z || 0) + 1.2;
-    this._pushGlyph('o', state.ball.x, ballY, state.ball.y, 1.1, COLOR_TEXT);
+    // Ball — vertical offset scales with physics-space z (height) so it
+    // visibly lifts off the ground on a lob kick
+    const ballY = (state.ball.z || 0) * 0.6 + BALL_GLYPH_SIZE * 0.3;
+    this._pushGlyph('o', state.ball.x, ballY, state.ball.y, BALL_GLYPH_SIZE, COLOR_TEXT);
 
     this._commitInstances();
     this.renderer.render(this.scene, this.camera);
@@ -274,42 +280,43 @@ export class Renderer {
     const w = this.fieldWidth;
     const h = FIELD_HEIGHT;
     const c = COLOR_DIM;
+    const s = FIELD_GLYPH_SIZE;
 
-    // Long edges (horizontal lines at z=0 and z=h)
-    const stepX = 12;
-    for (let x = 0; x <= w; x += stepX) {
-      this._fieldGlyphs.push({ char: '─', x, y: 0, z: 0, scale: GLYPH_WORLD_SIZE, color: c });
-      this._fieldGlyphs.push({ char: '─', x, y: 0, z: h, scale: GLYPH_WORLD_SIZE, color: c });
+    // Long edges (horizontal lines at z=0 and z=h). Step spacing keeps
+    // borders continuous without visible overlap at this scale.
+    const stepX = 20;
+    for (let x = stepX; x < w; x += stepX) {
+      this._fieldGlyphs.push({ char: '─', x, y: 0, z: 0, scale: s, color: c });
+      this._fieldGlyphs.push({ char: '─', x, y: 0, z: h, scale: s, color: c });
     }
     // Short edges (vertical lines at x=0 and x=w)
-    const stepZ = 6;
-    for (let z = 0; z <= h; z += stepZ) {
-      this._fieldGlyphs.push({ char: '│', x: 0, y: 0, z, scale: GLYPH_WORLD_SIZE, color: c });
-      this._fieldGlyphs.push({ char: '│', x: w, y: 0, z, scale: GLYPH_WORLD_SIZE, color: c });
+    const stepZ = 10;
+    for (let z = stepZ; z < h; z += stepZ) {
+      this._fieldGlyphs.push({ char: '│', x: 0, y: 0, z, scale: s, color: c });
+      this._fieldGlyphs.push({ char: '│', x: w, y: 0, z, scale: s, color: c });
     }
     // Corner markers
-    this._fieldGlyphs.push({ char: '┌', x: 0, y: 0, z: 0, scale: GLYPH_WORLD_SIZE, color: c });
-    this._fieldGlyphs.push({ char: '┐', x: w, y: 0, z: 0, scale: GLYPH_WORLD_SIZE, color: c });
-    this._fieldGlyphs.push({ char: '└', x: 0, y: 0, z: h, scale: GLYPH_WORLD_SIZE, color: c });
-    this._fieldGlyphs.push({ char: '┘', x: w, y: 0, z: h, scale: GLYPH_WORLD_SIZE, color: c });
-    // Midfield divider
-    for (let z = 0; z <= h; z += stepZ) {
-      this._fieldGlyphs.push({ char: '┊', x: w / 2, y: 0, z, scale: GLYPH_WORLD_SIZE, color: COLOR_MUTED });
+    this._fieldGlyphs.push({ char: '┌', x: 0, y: 0, z: 0, scale: s, color: c });
+    this._fieldGlyphs.push({ char: '┐', x: w, y: 0, z: 0, scale: s, color: c });
+    this._fieldGlyphs.push({ char: '└', x: 0, y: 0, z: h, scale: s, color: c });
+    this._fieldGlyphs.push({ char: '┘', x: w, y: 0, z: h, scale: s, color: c });
+    // Midfield divider (uses '│' dimmed; '┊' wasn't in the atlas glyph set)
+    for (let z = stepZ; z < h; z += stepZ) {
+      this._fieldGlyphs.push({ char: '│', x: w / 2, y: 0, z, scale: s, color: COLOR_MUTED });
     }
   }
 
   _addStickman(player, color) {
-    // A simple 3-row stickman centered on the player's (x, y) in physics
-    // coords. Physics y = field depth = three.js z. Physics stamina affects
-    // color, not shape.
+    // A 3-row stickman rendered as billboarded quads: head, body, legs.
+    // Stacked vertically in three.js y (which is screen-up because quads
+    // billboard to the camera). Physics x is field horizontal, physics y
+    // is field depth (three.js z).
     const x = player.x + 9; // +playerWidth/2 to center on player anchor
     const z = player.y;
-    const scale = GLYPH_WORLD_SIZE;
-    const y0 = 0;
-    // Head / body / legs, stacked vertically in three.js y
-    this._pushGlyph('o', x, y0 + scale * 2.2, z, scale, color);
-    this._pushGlyph('|', x, y0 + scale * 1.2, z, scale, color);
-    this._pushGlyph('A', x, y0 + scale * 0.2, z, scale, color);
+    const s = STICKMAN_GLYPH_SIZE;
+    this._pushGlyph('o', x, s * 2.0, z, s, color); // head
+    this._pushGlyph('|', x, s * 1.0, z, s, color); // body
+    this._pushGlyph('A', x, s * 0.0, z, s, color); // legs
   }
 
   _resetInstances() {

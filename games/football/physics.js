@@ -681,10 +681,28 @@ function checkBallScoreOrOut(state) {
 
   if (withinY && belowCrossbar) {
     scoreGoal(state, crossedL ? 'left' : 'right');
-  } else {
-    // Past the goal line but not a valid goal — out of bounds. Freeze the
-    // ball so it can't cause a phantom goal next tick.
-    ballOut(state);
+    return;
+  }
+
+  // Past the goal line but not a valid goal — the ball has hit the goal
+  // frame. Bounce it back into the field instead of marking it OOB. The
+  // ball can only pass through the mouth (low z, within mouth Y range).
+  //
+  //   - If ball is outside the mouth Y range: hit a goal post / side wall
+  //   - If ball is above the crossbar: hit the crossbar from below
+  // In both cases, reverse the x velocity and push the ball back past
+  // the line so it can't re-trigger the check next tick.
+  const line = crossedL ? f.goalLineL : f.goalLineR;
+  const sign = crossedL ? 1 : -1; // +1 = push ball to +x (right), -1 = push to -x
+  ball.x = line + sign * (BALL_RADIUS + 1);
+  if (ball.vx * sign < 0) {
+    ball.vx = -ball.vx * BOUNCE_RETAIN;
+  }
+
+  // If the ball is above the crossbar, give it a downward kick too, so
+  // crossbar-hits send the ball back down into the field
+  if (!belowCrossbar && ball.vz > 0) {
+    ball.vz = -ball.vz * BOUNCE_RETAIN;
   }
 }
 

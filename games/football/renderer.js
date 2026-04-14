@@ -14,21 +14,31 @@
  *   Physics z (ball height) → three.js y (up)
  *   Physics y (field depth)  → three.js z
  *
- * Camera: perspective, ~22° tilt above midfield, framed to fit the whole
- * field width for the current canvas aspect ratio.
+ * Camera: perspective, ~55° tilt from vertical above midfield, framed to
+ * fit the whole field width for the current canvas aspect ratio. The field
+ * depth (world z) is stretched by Z_STRETCH so the genuinely-very-wide
+ * 21:1 physics field fills more of the canvas vertically.
  */
 
 import * as THREE from './vendor/three.module.js';
-import { FIELD_HEIGHT } from './physics.js';
+import { createField, FIELD_HEIGHT } from './physics.js';
 
 const DEFAULT_FIELD_WIDTH = 900;
 const POOL_SIZE = 400;
 
-// Per-element world sizes in physics units. Tuned so a ~30px tall
-// stickman appears on a 900×225 canvas with the default camera.
-const FIELD_GLYPH_SIZE = 8;
-const STICKMAN_GLYPH_SIZE = 14;
-const BALL_GLYPH_SIZE = 11;
+// Physics field depth (42) is ~21× narrower than its width (900), so a
+// straight 1:1 projection renders the field as a thin horizontal strip.
+// Multiply z by this in render space so the field fills more of the
+// canvas vertically. Physics stays unchanged; only visuals are stretched.
+const Z_STRETCH = 4.7;
+
+// Small margin so the field edges don't touch the canvas boundary
+const HORIZONTAL_MARGIN = 1.15;
+
+// Per-element view-space sizes. The shader applies scale in view space,
+// so these are effectively "world units at the projected distance".
+const STICKMAN_GLYPH_SIZE = 22;
+const BALL_GLYPH_SIZE = 16;
 
 /* ── Shaders ─────────────────────────────────────────────── */
 
@@ -94,6 +104,7 @@ export class Renderer {
   constructor(canvas, atlas, { fieldWidth = DEFAULT_FIELD_WIDTH } = {}) {
     this.atlas = atlas;
     this.fieldWidth = fieldWidth;
+    this._field = createField(fieldWidth);
 
     this.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio || 1);
@@ -144,9 +155,9 @@ export class Renderer {
     }
     this._poolCursor = 0;
 
-    // Pre-compute static field glyphs once; re-pushed each frame via pool
-    this._fieldGlyphs = [];
-    this._buildFieldGlyphs();
+    // Static field lines (rectangle outline, midfield divider, goal frames)
+    // — added to the scene once at init, never updated per frame
+    this._buildFieldLines();
 
     this._resizeObserver = null;
   }
@@ -184,11 +195,6 @@ export class Renderer {
   renderState(state) {
     this._resetPool();
 
-    // Static field borders
-    for (const g of this._fieldGlyphs) {
-      this._placeGlyph(g.char, g.x, 0, g.z, g.scale, g.color, 0, 0);
-    }
-
     // Stickmen (walk-anim driven by tick + movement)
     const tick = state.tick || 0;
     this._addStickman(state.p1, staminaColor(state.p1.stamina), tick);
@@ -214,20 +220,27 @@ export class Renderer {
   /* ── Internals ──────────────────────────────────── */
 
   _placeCamera() {
-    // Adaptive camera — frames the full field width for the current aspect
-    // ratio with a ~22° tilt from vertical.
+    // Adaptive camera — frames the full field width edge-to-edge for
+    // the current canvas aspect ratio, with a ~22° tilt from vertical.
+    // Render-space z is stretched by Z_STRETCH so the field's apparent
+    // depth matches the canvas aspect better.
     const midX = this.fieldWidth / 2;
-    const midZ = FIELD_HEIGHT / 2;
+    const midZ = (FIELD_HEIGHT * Z_STRETCH) / 2;
     const aspect = this.camera.aspect || 4;
 
     const fovDeg = 60;
     const halfFovVert = (fovDeg / 2) * Math.PI / 180;
     const tanHalfHoriz = Math.tan(halfFovVert) * aspect;
 
-    const halfFieldWidth = (this.fieldWidth / 2) * 1.08;
+    // Small horizontal margin so the field doesn't sit flush against
+    // the canvas edge (which clips 1px lines at the boundary)
+    const halfFieldWidth = (this.fieldWidth / 2) * HORIZONTAL_MARGIN;
     const distance = halfFieldWidth / tanHalfHoriz;
 
-    const tiltRad = 22 * Math.PI / 180;
+    // Tilt 55° from vertical — each +5° brings the camera closer to a
+    // side view. Cos(55°) ≈ 0.574 vs cos(50°) ≈ 0.643, so height drops
+    // another ~11% at constant Euclidean distance.
+    const tiltRad = 55 * Math.PI / 180;
     const height = distance * Math.cos(tiltRad);
     const backOff = distance * Math.sin(tiltRad);
 
@@ -277,31 +290,107 @@ export class Renderer {
     return g;
   }
 
-  _buildFieldGlyphs() {
+  _buildFieldLines() {
+    // Draw the field outline, midfield divider, and goal frames as
+    // three.js Line primitives in world space. Lines are NOT billboarded
+    // so the camera's perspective projection naturally makes far edges
+    // appear smaller than near edges — the perspective "does its job"
+    // automatically.
     const w = this.fieldWidth;
-    const h = FIELD_HEIGHT;
-    const c = COLOR_DIM;
-    const s = FIELD_GLYPH_SIZE;
+    const zFar = 0;                         // far edge (away from camera)
+    const zNear = FIELD_HEIGHT * Z_STRETCH; // near edge (closer to camera)
+    const f = this._field;
 
-    const stepX = 24;
-    for (let x = stepX; x < w; x += stepX) {
-      this._fieldGlyphs.push({ char: '─', x, y: 0, z: 0, scale: s, color: c });
-      this._fieldGlyphs.push({ char: '─', x, y: 0, z: h, scale: s, color: c });
-    }
-    const stepZ = 10;
-    for (let z = stepZ; z < h; z += stepZ) {
-      this._fieldGlyphs.push({ char: '│', x: 0, y: 0, z, scale: s, color: c });
-      this._fieldGlyphs.push({ char: '│', x: w, y: 0, z, scale: s, color: c });
-    }
-    // Corners
-    this._fieldGlyphs.push({ char: '┌', x: 0, y: 0, z: 0, scale: s, color: c });
-    this._fieldGlyphs.push({ char: '┐', x: w, y: 0, z: 0, scale: s, color: c });
-    this._fieldGlyphs.push({ char: '└', x: 0, y: 0, z: h, scale: s, color: c });
-    this._fieldGlyphs.push({ char: '┘', x: w, y: 0, z: h, scale: s, color: c });
-    // Midfield divider (vertical bars at low intensity)
-    for (let z = stepZ; z < h; z += stepZ) {
-      this._fieldGlyphs.push({ char: '│', x: w / 2, y: 0, z, scale: s * 0.85, color: COLOR_MUTED });
-    }
+    const dimColor = new THREE.Color('#707070');
+    const mutedColor = new THREE.Color('#505050');
+
+    const lineMat = new THREE.LineBasicMaterial({
+      color: dimColor,
+      transparent: true,
+      opacity: 0.8,
+    });
+    const mutedMat = new THREE.LineBasicMaterial({
+      color: mutedColor,
+      transparent: true,
+      opacity: 0.5,
+    });
+
+    // Main field outline — closed rectangle on the ground plane
+    const fieldOutline = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, zFar),
+        new THREE.Vector3(w, 0, zFar),
+        new THREE.Vector3(w, 0, zNear),
+        new THREE.Vector3(0, 0, zNear),
+      ]),
+      lineMat
+    );
+    this.scene.add(fieldOutline);
+
+    // Midfield divider
+    const midDivider = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(w / 2, 0, zFar),
+        new THREE.Vector3(w / 2, 0, zNear),
+      ]),
+      mutedMat
+    );
+    this.scene.add(midDivider);
+
+    // Unified goal geometry — built once, reused as two LineSegments
+    // instances positioned at each end of the field. The second instance
+    // is rotated 180° around y so its front faces the opposite direction.
+    //
+    // Local coordinate system (origin at the center of the goal's base):
+    //   +x = FRONT (mouth side)
+    //   -x = BACK
+    //   +y = UP
+    //   ±z = the two sides (goal width along field depth)
+    //
+    // Shape (side profile, z fixed):
+    //
+    //            ┌───────┐   ← top rectangle (depth/2)
+    //           ╱        │
+    //          ╱         │
+    //         ╱          │   ← front post (vertical, full height)
+    //        ╱           │
+    //       ╱            │
+    //      ╱_____________│
+    //    back          front
+    //  (-depth/2)    (+depth/2)
+    //
+    //  • Bottom rectangle: full depth × full width at y=0
+    //  • Top rectangle: half depth × full width at y=h
+    //    (sits over the front half, from x=0 to x=+depth/2)
+    //  • Front posts: vertical at x=+depth/2
+    //  • Back stays: inclined from (-depth/2, 0) to (0, h)
+    const goalDepth = f.goalLRight - f.goalLLeft;
+    const goalWidth = (f.goalMouthYMax - f.goalMouthYMin) * Z_STRETCH;
+    const goalHeight = f.goalMouthZMax * 2.25; // 1.5× × 1.5× the physics crossbar
+
+    const goalGeom = buildGoalGeometry(goalDepth, goalWidth, goalHeight);
+
+    // Left goal: rotated 180° so the geometry's local +x direction (where
+    // the vertical front posts live) points AWAY from midfield, and the
+    // inclined part faces midfield.
+    const leftGoal = new THREE.LineSegments(goalGeom, lineMat);
+    leftGoal.position.set(
+      (f.goalLLeft + f.goalLRight) / 2,
+      0,
+      ((f.goalMouthYMin + f.goalMouthYMax) / 2) * Z_STRETCH
+    );
+    leftGoal.rotation.y = Math.PI;
+    this.scene.add(leftGoal);
+
+    // Right goal: no rotation — its local +x faces world +x (away from
+    // midfield), inclined part faces -x (toward midfield).
+    const rightGoal = new THREE.LineSegments(goalGeom, lineMat);
+    rightGoal.position.set(
+      (f.goalRLeft + f.goalRRight) / 2,
+      0,
+      ((f.goalMouthYMin + f.goalMouthYMax) / 2) * Z_STRETCH
+    );
+    this.scene.add(rightGoal);
   }
 
   _addStickman(player, color, tick) {
@@ -318,12 +407,12 @@ export class Renderer {
     const s = STICKMAN_GLYPH_SIZE;
 
     // Head
-    this._placeGlyph('o', x, 0, z, s, color, 0, s * 1.0);
+    this._placeGlyph('o', x, 0, z, s, color, 0, s * 1.4);
 
     // Arms + body row
-    this._placeGlyph('/', x, 0, z, s, color, -s * 0.45, s * 0.5);
-    this._placeGlyph('|', x, 0, z, s, color, 0, s * 0.5);
-    this._placeGlyph('\\', x, 0, z, s, color, s * 0.45, s * 0.5);
+    this._placeGlyph('/', x, 0, z, s, color, -s * 0.55, s * 0.6);
+    this._placeGlyph('|', x, 0, z, s, color, 0, s * 0.6);
+    this._placeGlyph('\\', x, 0, z, s, color, s * 0.55, s * 0.6);
 
     // Legs row — walking animation when player is moving
     const speed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
@@ -331,12 +420,12 @@ export class Renderer {
     const walkFrame = moving ? Math.floor(tick / 6) % 2 : 0;
     if (walkFrame === 0) {
       // Legs spread
-      this._placeGlyph('/', x, 0, z, s, color, -s * 0.22, 0);
-      this._placeGlyph('\\', x, 0, z, s, color, s * 0.22, 0);
+      this._placeGlyph('/', x, 0, z, s, color, -s * 0.28, -s * 0.25);
+      this._placeGlyph('\\', x, 0, z, s, color, s * 0.28, -s * 0.25);
     } else {
-      // Legs straight / mid-stride
-      this._placeGlyph('|', x, 0, z, s, color, -s * 0.14, 0);
-      this._placeGlyph('|', x, 0, z, s, color, s * 0.14, 0);
+      // Legs mid-stride (vertical)
+      this._placeGlyph('|', x, 0, z, s, color, -s * 0.16, -s * 0.25);
+      this._placeGlyph('|', x, 0, z, s, color, s * 0.16, -s * 0.25);
     }
   }
 
@@ -354,13 +443,83 @@ export class Renderer {
     if (this._poolCursor >= this._pool.length) return;
     const mesh = this._pool[this._poolCursor++];
     mesh.geometry = geom;
-    mesh.position.set(x, y, z);
+    // Apply Z_STRETCH so stickmen/ball positions match the stretched
+    // field geometry drawn by _buildFieldLines.
+    mesh.position.set(x, y, z * Z_STRETCH);
     mesh.scale.set(scale, scale, 1);
     const col = mesh.material.uniforms.uColor.value;
     col.set(color[0], color[1], color[2]);
     mesh.material.uniforms.uViewOffset.value.set(viewOffsetX, viewOffsetY);
     mesh.visible = true;
   }
+}
+
+/* ── Goal geometry builder ─────────────────────────────── */
+
+/**
+ * Build a unified goal-frame BufferGeometry centered at origin.
+ *
+ * Local coordinates:
+ *   +x = FRONT (mouth, facing the field)
+ *   -x = BACK
+ *   +y = up
+ *   ±z = the two sides (goal width along field depth)
+ *
+ * Shape (side profile, front on the right):
+ *
+ *                  ___________        ← back top rail (half-depth top)
+ *                  \            ╲      top at y=h, spans from back
+ *                   \            ╲     of goal box to midpoint
+ *                    \            ╲
+ *                     \            |
+ *                      \           |   front post — vertical
+ *                       \          |   at +halfD, from ground to
+ *                        \         |   y=h (the front edge of the top)
+ *                         \________|
+ *                   -halfD         +halfD
+ *                    back          front
+ *
+ * • Front posts: vertical bars at +halfD
+ * • Top rectangle: depth = halfD (half of bottom depth), spans from
+ *   x=0 (back edge) to x=+halfD (front edge — where the front posts meet it)
+ * • Back stays: inclined bars from the back-bottom corners at -halfD
+ *   up and forward to the top rectangle's back edge at x=0
+ * • Bottom: full-depth rectangle on the ground
+ */
+function buildGoalGeometry(depth, width, height) {
+  const halfD = depth / 2;
+  const halfW = width / 2;
+  const h = height;
+
+  // Top rectangle back edge = midpoint between front and back (x=0)
+  const xTopBack = 0;
+
+  const P = (x, y, z) => new THREE.Vector3(x, y, z);
+
+  const points = [
+    // Bottom rectangle (full depth, y=0)
+    P(-halfD, 0, -halfW), P(+halfD, 0, -halfW),
+    P(+halfD, 0, -halfW), P(+halfD, 0, +halfW),
+    P(+halfD, 0, +halfW), P(-halfD, 0, +halfW),
+    P(-halfD, 0, +halfW), P(-halfD, 0, -halfW),
+
+    // Top rectangle (half depth, y=h, from x=0 to x=+halfD)
+    P(+halfD, h, -halfW), P(+halfD, h, +halfW),  // front crossbar
+    P(+halfD, h, +halfW), P(xTopBack, h, +halfW), // top rail, +z side
+    P(xTopBack, h, +halfW), P(xTopBack, h, -halfW), // back-top rail
+    P(xTopBack, h, -halfW), P(+halfD, h, -halfW), // top rail, -z side
+
+    // Front posts (vertical at +halfD)
+    P(+halfD, 0, -halfW), P(+halfD, h, -halfW),
+    P(+halfD, 0, +halfW), P(+halfD, h, +halfW),
+
+    // Back stays (inclined: from back-bottom (-halfD, 0) up-and-forward
+    // to the back-top-rail at (0, h))
+    P(-halfD, 0, -halfW), P(xTopBack, h, -halfW),
+    P(-halfD, 0, +halfW), P(xTopBack, h, +halfW),
+  ];
+
+  return new THREE.BufferGeometry().setFromPoints(points);
 }
 
 /* ── Color helpers ─────────────────────────────────────── */

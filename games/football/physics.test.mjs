@@ -204,15 +204,15 @@ test('ball past the OOB margin triggers out, not goal', () => {
   assert.equal(state.scoreR, 0);
 });
 
-test('ball above crossbar crossing goal line does not score', () => {
+test('ball above crossbar crossing goal line bounces off the crossbar', () => {
   const state = freshState();
   const f = state.field;
   // Place ball just past the right goal line, inside the mouth Y range,
-  // but above the crossbar z.
+  // but above the crossbar z, moving +x (into the goal from the field)
   state.ball.x = f.goalLineR + 5;
   state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
   state.ball.z = f.goalMouthZMax + 10;
-  state.ball.vx = 0.5;
+  state.ball.vx = 3;
   state.ball.vy = 0;
   state.ball.vz = 0;
 
@@ -224,11 +224,25 @@ test('ball above crossbar crossing goal line does not score', () => {
     !state.events.some(e => e.type === 'goal'),
     'no goal event when above crossbar'
   );
-  // It should be treated as OOB
-  assert.ok(
-    state.events.some(e => e.type === 'out'),
-    'ball above crossbar past the line should be out'
-  );
+  // Ball should bounce back (velocity reversed, position pushed back past line)
+  assert.ok(state.ball.vx < 0, `expected vx to be reversed, got ${state.ball.vx}`);
+  assert.ok(state.ball.x <= f.goalLineR, `expected ball pushed back, got x=${state.ball.x}`);
+});
+
+test('ball crossing goal line outside mouth Y range bounces off the post', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = f.goalLineR + 2;
+  state.ball.y = f.goalMouthYMin - 3; // outside mouth Y range
+  state.ball.z = 0;
+  state.ball.vx = 4;
+  state.ball.vy = 0;
+  state.ball.vz = 0;
+
+  tick(state, NOOP, NOOP);
+
+  assert.equal(state.scoreL, 0, 'post-bounce must not score');
+  assert.ok(state.ball.vx < 0, `expected vx reversed, got ${state.ball.vx}`);
 });
 
 /* ── Test 5: a valid goal scores ────────────────────────────── */

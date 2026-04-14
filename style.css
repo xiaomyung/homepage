@@ -356,7 +356,7 @@ body {
 .game-stage {
   display: block;
   width: 100%;
-  aspect-ratio: 4 / 1;
+  aspect-ratio: 5 / 2;
   background: transparent;
   border: 1px solid var(--accent-dim);
   border-radius: 4px;

@@ -658,8 +658,16 @@ def _check_ball_score_or_out(state: dict) -> None:
 
     if within_y and below_crossbar:
         _score_goal(state, "left" if crossed_l else "right")
-    else:
-        _ball_out(state)
+        return
+
+    # Past the goal line but not a valid goal — bounce off post/crossbar
+    line = f["goalLineL"] if crossed_l else f["goalLineR"]
+    sign = 1 if crossed_l else -1
+    ball["x"] = line + sign * (BALL_RADIUS + 1)
+    if ball["vx"] * sign < 0:
+        ball["vx"] = -ball["vx"] * BOUNCE_RETAIN
+    if not below_crossbar and ball["vz"] > 0:
+        ball["vz"] = -ball["vz"] * BOUNCE_RETAIN
 
 
 def _score_goal(state: dict, side: str) -> None:

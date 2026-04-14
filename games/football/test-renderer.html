@@ -5,7 +5,7 @@
 <title>renderer smoke test</title>
 <style>
   body { font-family: monospace; background: #0a0a0a; color: #d0d0d0; padding: 2rem; }
-  canvas { display: block; margin-top: 1rem; border: 1px solid #333; background: #111; width: 100%; max-width: 900px; aspect-ratio: 4 / 1; }
+  canvas { display: block; margin-top: 1rem; border: 1px solid #333; background: #111; width: 100%; max-width: 900px; aspect-ratio: 5 / 2; }
   .ok { color: #9ece6a; }
   .fail { color: #f7768e; }
   pre { font-size: 0.7rem; color: #909090; }
@@ -27,9 +27,9 @@
   <canvas id="stage-full"></canvas>
 
 <script type="module">
-  import { buildAtlas } from './atlas.js';
-  import { Renderer } from './renderer.js';
-  import { createField, createState, createSeededRng, FIELD_HEIGHT } from './physics.js';
+  import { buildAtlas } from './atlas.js?v=17';
+  import { Renderer } from './renderer.js?v=17';
+  import { createField, createState, createSeededRng, FIELD_HEIGHT } from './physics.js?v=17';
 
   const log = document.getElementById('log');
   function write(cls, msg) {

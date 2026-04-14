@@ -39,7 +39,7 @@ const WALL_BOUNCE_DAMP = 0.5;
 const BOUNCE_VZ_MIN = 1.5;
 const BALL_VEL_CUTOFF = 0.1;
 const BALL_VEL_CUTOFF_SQ = BALL_VEL_CUTOFF * BALL_VEL_CUTOFF;
-const BALL_RADIUS = 4;
+export const BALL_RADIUS = 6;
 const RESPAWN_DROP_Z = 60;
 const OUT_OF_BOUNDS_MARGIN = 50;
 
@@ -319,8 +319,8 @@ function applyMovement(state, p, moveX, moveY) {
   let targetVx = clamp(moveX, -1, 1) * effSpeed;
   let targetVy = clamp(moveY, -1, 1) * effSpeed;
 
-  // Block movement into boundaries
-  if ((p.y <= 0 && targetVy < 0) || (p.y >= FIELD_HEIGHT && targetVy > 0)) {
+  // Block movement into boundaries (player body must stay fully inside the field)
+  if ((p.y <= 0 && targetVy < 0) || (p.y >= FIELD_HEIGHT - PLAYER_HEIGHT && targetVy > 0)) {
     targetVy = 0; p.vy = 0;
   }
   if ((p.x <= 0 && targetVx < 0) || (p.x >= state.field.width - state.field.playerWidth && targetVx > 0)) {
@@ -382,11 +382,11 @@ function chargeStaminaFromDisplacement(p, preX, preY) {
 function clampAndCollide(state, p) {
   const f = state.field;
   const pw = f.playerWidth;
-  // Field bounds
+  // Field bounds — player body (p.y..p.y+PLAYER_HEIGHT) must stay fully inside.
   if (p.x < 0) p.x = 0;
   if (p.x > f.width - pw) p.x = f.width - pw;
   if (p.y < 0) p.y = 0;
-  if (p.y > FIELD_HEIGHT) p.y = FIELD_HEIGHT;
+  if (p.y > FIELD_HEIGHT - PLAYER_HEIGHT) p.y = FIELD_HEIGHT - PLAYER_HEIGHT;
 
   // Goal-frame collision — players cannot enter either goal box, from any
   // direction. AABB overlap test + axis-of-least-penetration resolution.
@@ -634,9 +634,15 @@ function updateBall(state) {
     }
   }
 
-  // Field Y bounds (walls on the long sides)
-  if (ball.y < 0) { ball.y = 0; ball.vy = Math.abs(ball.vy) * WALL_BOUNCE_DAMP; }
-  if (ball.y > FIELD_HEIGHT) { ball.y = FIELD_HEIGHT; ball.vy = -Math.abs(ball.vy) * WALL_BOUNCE_DAMP; }
+  // Field Y bounds — ball body stays fully inside the top/bottom walls.
+  if (ball.y < BALL_RADIUS) {
+    ball.y = BALL_RADIUS;
+    ball.vy = Math.abs(ball.vy) * WALL_BOUNCE_DAMP;
+  }
+  if (ball.y > FIELD_HEIGHT - BALL_RADIUS) {
+    ball.y = FIELD_HEIGHT - BALL_RADIUS;
+    ball.vy = -Math.abs(ball.vy) * WALL_BOUNCE_DAMP;
+  }
 
   // Ceiling
   if (ball.z > CEILING) {
@@ -667,31 +673,38 @@ function checkBallScoreOrOut(state) {
   // STEP 2: Grace frames after respawn block scoring (prevents insta-goals)
   if (state.graceFrames > 0) return;
 
-  // STEP 3: Goal-line check. Only runs if ball is inside the playable area
-  // AND hasn't been frozen by OOB in step 1. Goal requires:
-  //  (a) ball crosses the goal line (past goalLineL or goalLineR)
-  //  (b) ball is inside the goal mouth Y range
-  //  (c) ball is below the crossbar (z)
+  // STEP 3: Goal-line check. Goal requires the whole ball past the goal
+  // line AND the ball fully inside the goal frame on all axes (between
+  // posts, below crossbar, not past the back wall).
   const crossedL = ball.x < f.goalLineL;
   const crossedR = ball.x > f.goalLineR;
   if (!crossedL && !crossedR) return;
 
-  const withinY = ball.y >= f.goalMouthYMin && ball.y <= f.goalMouthYMax;
-  const belowCrossbar = ball.z <= f.goalMouthZMax;
+  const fullyPastLineL = ball.x + BALL_RADIUS <= f.goalLineL;
+  const fullyPastLineR = ball.x - BALL_RADIUS >= f.goalLineR;
+  const withinBoxLX = ball.x >= f.goalLLeft;
+  const withinBoxRX = ball.x <= f.goalRRight;
+  const withinMouthY = ball.y - BALL_RADIUS >= f.goalMouthYMin
+                    && ball.y + BALL_RADIUS <= f.goalMouthYMax;
+  const belowCrossbar = ball.z + BALL_RADIUS <= f.goalMouthZMax;
 
-  if (withinY && belowCrossbar) {
-    scoreGoal(state, crossedL ? 'left' : 'right');
+  const goalL = crossedL && fullyPastLineL && withinBoxLX && withinMouthY && belowCrossbar;
+  const goalR = crossedR && fullyPastLineR && withinBoxRX && withinMouthY && belowCrossbar;
+
+  if (goalL || goalR) {
+    scoreGoal(state, goalL ? 'left' : 'right');
     return;
   }
 
-  // Past the goal line but not a valid goal — the ball has hit the goal
-  // frame. Bounce it back into the field instead of marking it OOB. The
-  // ball can only pass through the mouth (low z, within mouth Y range).
-  //
-  //   - If ball is outside the mouth Y range: hit a goal post / side wall
-  //   - If ball is above the crossbar: hit the crossbar from below
-  // In both cases, reverse the x velocity and push the ball back past
-  // the line so it can't re-trigger the check next tick.
+  // Past the goal line but not a valid goal — hit the frame. Three sub-cases:
+  //   (a) Ball is in the mouth (y/z) and still straddling the line:
+  //       let it continue — it hasn't fully crossed yet, so it's not a
+  //       goal and not a frame hit.
+  //   (b) Ball is outside the mouth Y range or above the crossbar:
+  //       it hit a post / side wall / crossbar. Bounce back.
+  //   (c) Ball center past the back wall: treat as frame hit and bounce.
+  if (withinMouthY && belowCrossbar) return;
+
   const line = crossedL ? f.goalLineL : f.goalLineR;
   const sign = crossedL ? 1 : -1; // +1 = push ball to +x (right), -1 = push to -x
   ball.x = line + sign * (BALL_RADIUS + 1);

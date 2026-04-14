@@ -41,7 +41,7 @@ WALL_BOUNCE_DAMP = 0.5
 BOUNCE_VZ_MIN = 1.5
 BALL_VEL_CUTOFF = 0.1
 BALL_VEL_CUTOFF_SQ = BALL_VEL_CUTOFF * BALL_VEL_CUTOFF
-BALL_RADIUS = 4
+BALL_RADIUS = 6
 RESPAWN_DROP_Z = 60
 OUT_OF_BOUNDS_MARGIN = 50
 
@@ -314,7 +314,7 @@ def _apply_movement(state: dict, p: dict, move_x: float, move_y: float) -> None:
     target_vx = _clamp(move_x, -1, 1) * eff_speed
     target_vy = _clamp(move_y, -1, 1) * eff_speed
 
-    if (p["y"] <= 0 and target_vy < 0) or (p["y"] >= FIELD_HEIGHT and target_vy > 0):
+    if (p["y"] <= 0 and target_vy < 0) or (p["y"] >= FIELD_HEIGHT - PLAYER_HEIGHT and target_vy > 0):
         target_vy = 0
         p["vy"] = 0
     if (p["x"] <= 0 and target_vx < 0) or (
@@ -379,8 +379,8 @@ def _clamp_and_collide(state: dict, p: dict) -> None:
         p["x"] = f["width"] - pw
     if p["y"] < 0:
         p["y"] = 0
-    if p["y"] > FIELD_HEIGHT:
-        p["y"] = FIELD_HEIGHT
+    if p["y"] > FIELD_HEIGHT - PLAYER_HEIGHT:
+        p["y"] = FIELD_HEIGHT - PLAYER_HEIGHT
 
     _resolve_goal_collision(p, pw, f["goalLLeft"], f["goalLRight"], f)
     _resolve_goal_collision(p, pw, f["goalRLeft"], f["goalRRight"], f)
@@ -618,11 +618,11 @@ def _update_ball(state: dict) -> None:
             else:
                 ball["vz"] = 0
 
-    if ball["y"] < 0:
-        ball["y"] = 0
+    if ball["y"] < BALL_RADIUS:
+        ball["y"] = BALL_RADIUS
         ball["vy"] = abs(ball["vy"]) * WALL_BOUNCE_DAMP
-    if ball["y"] > FIELD_HEIGHT:
-        ball["y"] = FIELD_HEIGHT
+    if ball["y"] > FIELD_HEIGHT - BALL_RADIUS:
+        ball["y"] = FIELD_HEIGHT - BALL_RADIUS
         ball["vy"] = -abs(ball["vy"]) * WALL_BOUNCE_DAMP
 
     if ball["z"] > CEILING:
@@ -653,14 +653,28 @@ def _check_ball_score_or_out(state: dict) -> None:
     if not crossed_l and not crossed_r:
         return
 
-    within_y = f["goalMouthYMin"] <= ball["y"] <= f["goalMouthYMax"]
-    below_crossbar = ball["z"] <= f["goalMouthZMax"]
+    fully_past_line_l = ball["x"] + BALL_RADIUS <= f["goalLineL"]
+    fully_past_line_r = ball["x"] - BALL_RADIUS >= f["goalLineR"]
+    within_box_l_x = ball["x"] >= f["goalLLeft"]
+    within_box_r_x = ball["x"] <= f["goalRRight"]
+    within_mouth_y = (
+        ball["y"] - BALL_RADIUS >= f["goalMouthYMin"]
+        and ball["y"] + BALL_RADIUS <= f["goalMouthYMax"]
+    )
+    below_crossbar = ball["z"] + BALL_RADIUS <= f["goalMouthZMax"]
 
-    if within_y and below_crossbar:
-        _score_goal(state, "left" if crossed_l else "right")
+    goal_l = crossed_l and fully_past_line_l and within_box_l_x and within_mouth_y and below_crossbar
+    goal_r = crossed_r and fully_past_line_r and within_box_r_x and within_mouth_y and below_crossbar
+
+    if goal_l or goal_r:
+        _score_goal(state, "left" if goal_l else "right")
         return
 
-    # Past the goal line but not a valid goal — bounce off post/crossbar
+    # Past the line but not a valid goal. If ball is still in the mouth (y/z)
+    # it may be mid-cross — let it continue. Otherwise bounce off post/crossbar.
+    if within_mouth_y and below_crossbar:
+        return
+
     line = f["goalLineL"] if crossed_l else f["goalLineR"]
     sign = 1 if crossed_l else -1
     ball["x"] = line + sign * (BALL_RADIUS + 1)

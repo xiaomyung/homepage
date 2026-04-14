@@ -7,8 +7,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createField, createState, createSeededRng, FIELD_HEIGHT } from './physics.js';
-import { fallbackAction } from './fallback.js';
+import { createField, createState, createSeededRng, FIELD_HEIGHT } from '../physics.js';
+import { fallbackAction } from '../fallback.js';
 
 function freshState(seed = 42) {
   return createState(createField(), createSeededRng(seed));

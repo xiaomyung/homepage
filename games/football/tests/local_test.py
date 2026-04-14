@@ -22,7 +22,7 @@ that case and fitness weights / selection pressure / warm start must be
 tuned until it does.
 
 Run from the repo root:
-    ./venv/bin/python games/football/evolution/local_test.py
+    ./venv/bin/python games/football/tests/local_test.py
 """
 from __future__ import annotations
 
@@ -33,10 +33,15 @@ import sys
 import time
 from typing import Optional
 
-import numpy as np
+HERE = os.path.dirname(os.path.abspath(__file__))
+# Run as a standalone script, so wire up sys.path directly rather than
+# depending on conftest.py (which only runs under pytest).
+sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..", "evolution")))
 
-from fallback_py import fallback_action
-from ga import (
+import numpy as np  # noqa: E402
+
+from fallback_py import fallback_action  # noqa: E402
+from ga import (  # noqa: E402
     FitnessWeights,
     WEIGHT_COUNT,
     breed_next_generation,
@@ -45,7 +50,7 @@ from ga import (
     he_init_weights,
     nn_forward,
 )
-from physics_py import (
+from physics_py import (  # noqa: E402
     build_inputs,
     create_field,
     create_seeded_rng,
@@ -53,8 +58,7 @@ from physics_py import (
     tick,
 )
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-WARM_START_PATH = os.path.join(HERE, "..", "warm_start_weights.json")
+WARM_START_PATH = os.path.abspath(os.path.join(HERE, "..", "warm_start_weights.json"))
 
 # Smoke-test scale — small enough to run in a few minutes, large enough
 # to show meaningful fitness signal.

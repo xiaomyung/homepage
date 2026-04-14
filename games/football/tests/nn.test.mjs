@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { NeuralNet, WEIGHT_COUNT, ARCH } from './nn.js';
+import { NeuralNet, WEIGHT_COUNT, ARCH } from '../nn.js';
 
 /* ── Shape + constants ─────────────────────────────────────── */
 

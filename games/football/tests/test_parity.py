@@ -33,7 +33,7 @@ from physics_py import (
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
-RUNNER = os.path.join(HERE, "physics_runner.mjs")
+RUNNER = os.path.abspath(os.path.join(HERE, "..", "evolution", "physics_runner.mjs"))
 
 # Float tolerance for bit-sensitive comparisons. Pure integer/float math
 # on IEEE 754 is identical; transcendentals may drift one ULP.

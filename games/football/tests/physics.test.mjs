@@ -1,6 +1,6 @@
 /**
  * Phase 2 unit tests for physics.js — covers all 4 bug fixes plus determinism.
- * Run with: node --test games/football/physics.test.mjs
+ * Run with: node --test games/football/tests/physics.test.mjs
  *
  * All tests inject a seeded PRNG so match outcomes are reproducible.
  */
@@ -15,7 +15,8 @@ import {
   buildInputs,
   FIELD_HEIGHT,
   MAX_PLAYER_SPEED,
-} from './physics.js';
+  BALL_RADIUS,
+} from '../physics.js';
 
 /* ── Test helpers ────────────────────────────────────────────── */
 
@@ -135,6 +136,56 @@ test('player cannot penetrate right goal frame', () => {
   );
 });
 
+/* ── Test 2b: field-edge containment ─────────────────────────── */
+
+test('player cannot cross the top field border', () => {
+  const state = freshState();
+  state.p1.y = 2;
+  state.p1.x = 200;
+  for (let i = 0; i < 30; i++) {
+    tick(state, moveAction(0, -1), NOOP);
+  }
+  assert.ok(state.p1.y >= 0, `p1 top edge escaped field: y=${state.p1.y}`);
+});
+
+test('player cannot cross the bottom field border (body fully inside)', () => {
+  const state = freshState();
+  state.p1.y = FIELD_HEIGHT - 10;
+  state.p1.x = 200;
+  for (let i = 0; i < 30; i++) {
+    tick(state, moveAction(0, 1), NOOP);
+  }
+  // p1.y is the top of the player body; bottom is p1.y + PLAYER_HEIGHT.
+  // Bottom must stay inside the field.
+  const PLAYER_HEIGHT = 6;
+  assert.ok(
+    state.p1.y + PLAYER_HEIGHT <= FIELD_HEIGHT + 0.01,
+    `p1 bottom escaped field: y=${state.p1.y}, bottom=${state.p1.y + PLAYER_HEIGHT}`
+  );
+});
+
+test('ball bounces off top and bottom walls, never leaves via those borders', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = f.width / 2;
+  state.ball.y = FIELD_HEIGHT / 2;
+  state.ball.z = 0;
+  state.ball.vx = 0;
+  state.ball.vy = 30;  // strong push toward bottom wall
+  state.ball.vz = 0;
+
+  for (let i = 0; i < 200; i++) {
+    tick(state, NOOP, NOOP);
+    assert.ok(
+      state.ball.y - BALL_RADIUS >= -0.01 && state.ball.y + BALL_RADIUS <= FIELD_HEIGHT + 0.01,
+      `ball escaped top/bottom at tick ${i}: y=${state.ball.y}`
+    );
+  }
+  // Ball must still be in play (top/bottom never cause OOB)
+  assert.ok(!state.ball.frozen || !state.events.some(e => e.type === 'out'),
+    'ball should not be OOB from top/bottom borders');
+});
+
 /* ── Test 3: push always lands when in range (fix #3) ──────── */
 
 test('push lands when players are in contact range', () => {
@@ -247,11 +298,35 @@ test('ball crossing goal line outside mouth Y range bounces off the post', () =>
 
 /* ── Test 5: a valid goal scores ────────────────────────────── */
 
-test('ball in mouth, below crossbar, crossing line scores for the other side', () => {
+test('ball straddling the goal line (center past, edge not past) does NOT score', () => {
   const state = freshState();
   const f = state.field;
-  // Place ball just past the right goal line, inside the mouth, on the ground
+  // Center is past the line by 1, but the near edge is still on the field
+  // side (ball.x - BALL_RADIUS < goalLineR). This is the "partial cross"
+  // case the new stricter rule rejects.
   state.ball.x = f.goalLineR + 1;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = 0;
+  state.ball.vy = 0;
+  state.ball.vz = 0;
+
+  tick(state, NOOP, NOOP);
+
+  assert.equal(state.scoreL, 0, 'no goal on partial cross');
+  assert.equal(state.scoreR, 0);
+  assert.ok(
+    !state.events.some(e => e.type === 'goal'),
+    'no goal event on partial cross'
+  );
+});
+
+test('ball in mouth, below crossbar, fully past goal line scores for the other side', () => {
+  const state = freshState();
+  const f = state.field;
+  // Place ball fully past the right goal line (ball edge past the line, not
+  // just the center), inside the mouth, on the ground.
+  state.ball.x = f.goalLineR + BALL_RADIUS + 2;
   state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
   state.ball.z = 0;
   state.ball.vx = 0.5;

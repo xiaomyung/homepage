@@ -12,15 +12,11 @@ proves the HTTP surface works and state transitions correctly.
 from __future__ import annotations
 
 import json
-import os
-import sys
 import tempfile
 
 import pytest
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-
+# sys.path for ../api is wired up by conftest.py in this dir.
 import app as broker  # noqa: E402
 
 

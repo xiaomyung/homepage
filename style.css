@@ -38,12 +38,8 @@
 
 /* Iosevka Term thins out at very small sizes — bump small text to medium weight for legibility */
 .card-url,
-.fb-scoreboard,
-.fb-name,
-.fb-timer,
-.fb-stats-row,
-.fb-config-stats,
-.fb-worker-control {
+.game-label,
+.game-placeholder {
   font-weight: 500;
 }
 
@@ -294,328 +290,37 @@ body {
   pointer-events: none;
 }
 
-/* ── Game stage (shared by all mini-games) ── */
+/* ── Football game (v2) ── */
 
-#game-stage {
+.game {
   position: relative;
   width: 100%;
   max-width: 900px;
-  height: 120px;
-  overflow: visible;
+  border: 1px solid var(--rule);
+  padding: 1.5rem 0.9rem 0.9rem;
   margin-top: 2.5rem;
+  color: var(--text-dim);
 }
 
-#game-stage pre {
+.game-label {
   position: absolute;
-  bottom: 0;
-  left: 0;
-  font-family: var(--mono);
-  font-size: 0.7rem;
-  line-height: 1.3;
-  color: rgba(255,255,255,0.3);
-  white-space: pre;
-  user-select: none;
-  transform-origin: 0 0;
+  top: -0.55em;
+  left: 0.85rem;
+  padding: 0 0.5em;
+  background: var(--bg);
+  font-size: 0.6rem;
+  color: var(--text-dim);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
 }
 
-/* ── Football game ── */
-
-#game-stage .fb-field-border {
-  color: rgba(255,255,255,0.12);
-  pointer-events: none;
-  left: 0 !important;
-  width: 100%;
-}
-
-#game-stage .fb-player,
-#game-stage .fb-ball {
-  bottom: 10px;
-}
-
-#game-stage .fb-goalline {
-  color: rgba(255,255,255,0.12);
-  pointer-events: none;
-  bottom: 10px;
-}
-
-#game-stage .fb-goal { color: rgba(255,255,255,0.3); pointer-events: none; bottom: 10px; }
-#game-stage .fb-goal-l { left: 30px; }
-#game-stage .fb-goal-r { left: auto !important; right: 30px; }
-
-#game-stage .fb-scoreboard {
-  position: absolute;
-  bottom: auto;
-  top: -20px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  justify-content: center;
+.game-placeholder {
   font-family: var(--mono);
   font-size: 0.6rem;
-  color: rgba(255,255,255,0.2);
-  pointer-events: none;
-  white-space: nowrap;
-}
-
-#game-stage .fb-sb-left {
-  text-align: right;
-  min-width: 60px;
-}
-
-#game-stage .fb-sb-sep {
-  flex: 0 0 auto;
-  padding: 0 4px;
-}
-
-#game-stage .fb-sb-right {
-  text-align: left;
-  min-width: 60px;
-}
-
-#game-stage .fb-name {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  font-family: var(--mono);
-  font-size: 0.5rem;
-  color: rgba(255,255,255,0.2);
-  white-space: nowrap;
-  pointer-events: none;
-  transition: opacity 0.2s;
-  transform-origin: 0 0;
-  margin-bottom: 52px;
-}
-
-#game-stage .fb-timer {
-  width: 100%;
-  text-align: center;
-  color: rgba(255,255,255,0.2);
-  font-size: 0.5rem;
-  line-height: 1;
-  margin-top: 4px;
-}
-
-
-.fb-stats-row {
-  display: flex;
-  justify-content: flex-end;
-  width: 100%;
-  max-width: 900px;
-  margin-top: 0.35rem;
-}
-
-.fb-reset-btn,
-.fb-more-btn {
-  width: 24px;
-  height: 24px;
-  padding: 4px;
-  border: 1px solid var(--accent-dim);
-  border-radius: 8px;
-  background: var(--surface);
   color: var(--muted);
-  cursor: pointer;
-  transition: color 0.2s, border-color 0.2s, background 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.fb-reset-btn svg,
-.fb-more-btn svg {
-  width: 14px;
-  height: 14px;
-}
-
-.fb-reset-btn:hover,
-.fb-more-btn:hover {
-  color: var(--text-dim);
-  border-color: rgba(255,255,255,0.12);
-  background: var(--surface-hover);
-}
-
-.fb-btn-group {
-  display: flex;
-  gap: 4px;
-  flex: 0 0 auto;
-}
-
-/* ── Config panel ── */
-
-.fb-config-panel {
-  max-width: 900px;
-  width: 100%;
-  background: var(--surface);
-  border: 1px solid var(--accent-dim);
-  border-radius: 8px;
-  padding: 0.5rem 0.75rem;
-  margin-top: 0.25rem;
-}
-
-.fb-config-graph {
-  margin-bottom: 0.4rem;
-}
-
-.fb-fitness-canvas {
-  width: 100%;
-  height: 60px;
-  border-radius: 4px;
-  background: rgba(255,255,255,0.02);
-}
-
-.fb-worker-control {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-family: var(--mono);
-  font-size: 0.5rem;
-  color: var(--text-dim);
-  margin-bottom: 0.3rem;
-}
-
-.fb-worker-count {
-  min-width: 2.5em;
   text-align: center;
-  color: var(--text);
+  padding: 1rem 0;
+  letter-spacing: 0.1em;
+  text-transform: lowercase;
 }
 
-.fb-worker-btn {
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 1px solid var(--accent-dim);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-dim);
-  font-size: 0.6rem;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.fb-worker-btn:hover {
-  border-color: var(--muted);
-  color: var(--text);
-}
-
-.fb-config-stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.15rem 1rem;
-  font-family: var(--mono);
-  font-size: 0.5rem;
-  color: var(--text-dim);
-}
-
-.fb-stat-item {
-  white-space: nowrap;
-}
-
-@media (max-width: 720px) {
-  .fb-config-stats {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-.fb-stat-label {
-  color: rgba(255,255,255,0.25);
-}
-
-.fb-stat-label::after {
-  content: ":";
-}
-
-/* ── Stamina bar ── */
-
-#game-stage .fb-stamina {
-  position: absolute;
-  top: -8px;
-  width: 50px;
-  height: 3px;
-  background: rgba(255,255,255,0.06);
-  border-radius: 1.5px;
-  overflow: hidden;
-}
-
-#game-stage .fb-stamina-l { left: 32px; }
-#game-stage .fb-stamina-r { right: 32px; }
-
-#game-stage .fb-stamina .fb-stamina-fill {
-  height: 100%;
-  width: 100%;
-  background: rgba(255,255,255,0.25);
-  transition: width 0.1s linear;
-  border-radius: 1.5px;
-}
-
-/* ── Mobile touch controls ── */
-
-.fb-touch-controls {
-  display: none;
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding: 1rem;
-  z-index: 100;
-  justify-content: space-between;
-  align-items: flex-end;
-  pointer-events: none;
-}
-
-.fb-touch-controls > * {
-  pointer-events: auto;
-}
-
-.fb-joystick-area {
-  flex: 0 0 auto;
-}
-
-.fb-joystick-base {
-  width: 80px;
-  height: 80px;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.08);
-  border: 1px solid rgba(255,255,255,0.15);
-  position: relative;
-  touch-action: none;
-}
-
-.fb-joystick-thumb {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.2);
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  margin: -16px 0 0 -16px;
-  transition: transform 0.05s;
-}
-
-.fb-touch-buttons {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.fb-btn-kick,
-.fb-btn-push {
-  font-family: var(--mono);
-  font-size: 0.65rem;
-  padding: 0.8rem 1.2rem;
-  border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 8px;
-  background: rgba(255,255,255,0.06);
-  color: rgba(255,255,255,0.4);
-  touch-action: manipulation;
-  user-select: none;
-}
-
-@media (max-width: 720px) {
-  .fb-touch-controls {
-    display: flex;
-  }
-}

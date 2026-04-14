@@ -1,93 +1,85 @@
 /**
- * Football v2 — three.js renderer.
+ * Football v2 — three.js renderer (non-instanced, pooled-mesh version).
  *
- * Single-pass instanced glyph renderer. All drawable characters (field
- * borders, stickmen, ball) share one InstancedBufferGeometry + one
- * RawShaderMaterial that samples the SDF atlas. Each frame the main loop
- * calls renderer.renderState(state), which clears the instance list and
- * re-packs glyphs based on current positions.
+ * Design: one Mesh per visible glyph. Each character in the atlas has
+ * its own pre-built unit-quad geometry with UVs baked into the atlas
+ * cell. At runtime a fixed pool of Meshes is reused — each frame we hide
+ * them all, then assign geometry, position, scale, and color on the ones
+ * we need. No instanced attributes, no custom binding logic, no shader
+ * attribute surprises. 130 draw calls per frame is well within three.js's
+ * capacity.
  *
- * Coordinate system (three.js world = physics world):
- *   x: field horizontal, [0 .. field.width]
- *   y: ball height (z in physics), 0 = ground
- *   z: field depth, [0 .. FIELD_HEIGHT]
- * Physics uses (x, y, z) where y is depth and z is height; this module
- * swaps them for three.js's y-up convention.
+ * Coordinate system:
+ *   Physics x → three.js x (field horizontal)
+ *   Physics z (ball height) → three.js y (up)
+ *   Physics y (field depth)  → three.js z
+ *
+ * Camera: perspective, ~22° tilt above midfield, framed to fit the whole
+ * field width for the current canvas aspect ratio.
  */
 
 import * as THREE from './vendor/three.module.js';
 import { FIELD_HEIGHT } from './physics.js';
 
-const MAX_INSTANCES = 512;
-
-// Physics width that the camera is framed around. Real matches may use a
-// different width; the camera adapts via renderer.resize().
 const DEFAULT_FIELD_WIDTH = 900;
+const POOL_SIZE = 400;
 
-// Per-element world sizes in physics units. These were empirically tuned:
-// on a 900-wide field with a 60° FOV camera, STICKMAN_SIZE=14 gives a
-// ~30-40px tall stickman on a 900×225 canvas. Field borders are smaller
-// so they don't compete visually with the players.
+// Per-element world sizes in physics units. Tuned so a ~30px tall
+// stickman appears on a 900×225 canvas with the default camera.
 const FIELD_GLYPH_SIZE = 8;
 const STICKMAN_GLYPH_SIZE = 14;
 const BALL_GLYPH_SIZE = 11;
 
+/* ── Shaders ─────────────────────────────────────────────── */
+
 const VERTEX_SHADER = /* glsl */ `
-  precision mediump float;
+  // Built-in uniforms auto-injected by ShaderMaterial:
+  //   mat4 modelMatrix, modelViewMatrix, viewMatrix, projectionMatrix
+  // Built-in attributes: vec3 position, vec2 uv
 
-  attribute vec3 position;
-  attribute vec2 uv;
+  uniform vec2 uViewOffset;
 
-  // Per-instance attributes
-  attribute vec3 instancePosition;
-  attribute float instanceScale;
-  attribute vec3 instanceColor;
-  attribute vec4 instanceGlyphUV; // u, v, w, h in atlas space
-
-  uniform mat4 projectionMatrix;
-  uniform mat4 modelViewMatrix;
-
-  varying vec2 vAtlasUV;
-  varying vec3 vColor;
+  varying vec2 vUv;
 
   void main() {
-    // Billboard: transform the instance position to view space, then add
-    // the quad corner in view-space XY (screen-aligned right/up). The quad
-    // always faces the camera regardless of camera tilt/rotation.
-    vec4 viewPos = modelViewMatrix * vec4(instancePosition, 1.0);
-    viewPos.xy += position.xy * instanceScale;
-    gl_Position = projectionMatrix * viewPos;
+    // Billboarded quad: take the mesh's world-space translation, transform
+    // to view space, then add (a) a per-mesh VIEW-SPACE offset and (b) the
+    // vertex's (x, y) scaled by the mesh's uniform scale. Both (a) and (b)
+    // are in view XY (screen-aligned), so they're not affected by camera
+    // pitch — this lets us stack stickman parts in screen space rather
+    // than world space.
+    vec3 worldCenter = vec3(modelMatrix[3][0], modelMatrix[3][1], modelMatrix[3][2]);
+    vec4 viewCenter = viewMatrix * vec4(worldCenter, 1.0);
 
-    vAtlasUV = instanceGlyphUV.xy + instanceGlyphUV.zw * uv;
-    vColor = instanceColor;
+    float sx = length(vec3(modelMatrix[0][0], modelMatrix[0][1], modelMatrix[0][2]));
+
+    viewCenter.xy += uViewOffset + position.xy * sx;
+    gl_Position = projectionMatrix * viewCenter;
+    vUv = uv;
   }
 `;
 
 const FRAGMENT_SHADER = /* glsl */ `
-  precision mediump float;
-
   uniform sampler2D sdfTexture;
+  uniform vec3 uColor;
 
-  varying vec2 vAtlasUV;
-  varying vec3 vColor;
+  varying vec2 vUv;
 
-  // tiny-sdf encodes:
-  //   data = round(255 * (1 - cutoff) - (255 / radius) * signed_distance)
-  // With default cutoff=0.25, the glyph edge is at value 255 * 0.75 ≈ 191,
-  // which is ~0.75 in normalized [0, 1]. Values > 0.75 are inside the
-  // glyph, < 0.75 are outside.
+  // tiny-sdf encoding: glyph edge at 255 * (1 - cutoff) = 255 * 0.75 ≈ 191,
+  // which is ~0.75 in normalized [0, 1]. Values above = inside the glyph,
+  // below = outside.
   const float EDGE = 0.75;
-  const float AA = 0.02; // antialias half-width (thinner = crisper)
+  const float AA = 0.02;
 
   void main() {
-    float dist = texture2D(sdfTexture, vAtlasUV).g;
+    float dist = texture2D(sdfTexture, vUv).g;
     float alpha = smoothstep(EDGE - AA, EDGE + AA, dist);
     if (alpha < 0.01) discard;
-    gl_FragColor = vec4(vColor, alpha);
+    gl_FragColor = vec4(uColor, alpha);
   }
 `;
 
-/* ── Glyph palette colors (match style.css tokens) ─────────── */
+/* ── Palette (matches style.css design tokens) ─────────── */
 
 const COLOR_TEXT = rgb('#d0d0d0');
 const COLOR_DIM = rgb('#707070');
@@ -96,36 +88,69 @@ const COLOR_GREEN = rgb('#9ece6a');
 const COLOR_AMBER = rgb('#e0af68');
 const COLOR_RED = rgb('#f7768e');
 
-/* ── Renderer ──────────────────────────────────────────────── */
+/* ── Renderer ──────────────────────────────────────────── */
 
 export class Renderer {
   constructor(canvas, atlas, { fieldWidth = DEFAULT_FIELD_WIDTH } = {}) {
     this.atlas = atlas;
     this.fieldWidth = fieldWidth;
 
-    // three.js plumbing
     this.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio || 1);
     this.renderer.setClearColor(0x000000, 0);
 
     this.scene = new THREE.Scene();
-
-    // Perspective camera with a ~25° tilt above midfield
-    this.camera = new THREE.PerspectiveCamera(42, 2, 0.1, 2000);
+    this.camera = new THREE.PerspectiveCamera(60, 2, 0.1, 4000);
     this._placeCamera();
 
-    // Instanced geometry shared by all glyphs
-    this._buildInstancedMesh();
+    // Base (shared) material — we clone it per pool mesh so each has its
+    // own uColor / uViewOffset uniforms.
+    this._baseMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        sdfTexture: { value: atlas.texture },
+        uColor: { value: new THREE.Vector3(1, 1, 1) },
+        uViewOffset: { value: new THREE.Vector2(0, 0) },
+      },
+      vertexShader: VERTEX_SHADER,
+      fragmentShader: FRAGMENT_SHADER,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
 
-    // Static field geometry built once and cached so we don't re-add it
-    // every frame. The render loop just re-adds stickmen and ball on top.
+    // Pre-build one BufferGeometry per character in the atlas. All
+    // geometries are unit quads; only the UVs differ.
+    this._glyphGeometries = new Map();
+    for (const [ch, g] of atlas.glyphs) {
+      this._glyphGeometries.set(ch, this._buildGlyphGeometry(g));
+    }
+
+    // Pool of Meshes. Each has its own cloned material with fresh uniforms
+    // so changes to one mesh don't bleed into others.
+    this._pool = [];
+    const defaultGeom = this._glyphGeometries.values().next().value;
+    for (let i = 0; i < POOL_SIZE; i++) {
+      const material = this._baseMaterial.clone();
+      material.uniforms = {
+        sdfTexture: { value: atlas.texture },
+        uColor: { value: new THREE.Vector3(1, 1, 1) },
+        uViewOffset: { value: new THREE.Vector2(0, 0) },
+      };
+      const mesh = new THREE.Mesh(defaultGeom, material);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      this.scene.add(mesh);
+      this._pool.push(mesh);
+    }
+    this._poolCursor = 0;
+
+    // Pre-compute static field glyphs once; re-pushed each frame via pool
     this._fieldGlyphs = [];
-    this._buildField();
+    this._buildFieldGlyphs();
 
     this._resizeObserver = null;
   }
 
-  /** Attach a ResizeObserver to auto-resize when the canvas changes. */
   autoResize() {
     const canvas = this.renderer.domElement;
     const observer = new ResizeObserver(() => this.resize());
@@ -146,42 +171,51 @@ export class Renderer {
 
   dispose() {
     if (this._resizeObserver) this._resizeObserver.disconnect();
-    this.glyphMesh.geometry.dispose();
-    this.glyphMesh.material.dispose();
+    for (const mesh of this._pool) {
+      mesh.material.dispose();
+    }
+    for (const geom of this._glyphGeometries.values()) {
+      geom.dispose();
+    }
+    this._baseMaterial.dispose();
     this.renderer.dispose();
   }
 
-  /**
-   * Render one frame for the given physics state. Mutates the instance
-   * buffer and draws.
-   */
   renderState(state) {
-    this._resetInstances();
+    this._resetPool();
 
-    // Static field (pre-built glyph list)
+    // Static field borders
     for (const g of this._fieldGlyphs) {
-      this._pushGlyph(g.char, g.x, g.y, g.z, g.scale, g.color);
+      this._placeGlyph(g.char, g.x, 0, g.z, g.scale, g.color, 0, 0);
     }
 
-    // Stickmen
-    this._addStickman(state.p1, staminaColor(state.p1.stamina));
-    this._addStickman(state.p2, staminaColor(state.p2.stamina));
+    // Stickmen (walk-anim driven by tick + movement)
+    const tick = state.tick || 0;
+    this._addStickman(state.p1, staminaColor(state.p1.stamina), tick);
+    this._addStickman(state.p2, staminaColor(state.p2.stamina), tick);
 
-    // Ball — vertical offset scales with physics-space z (height) so it
-    // visibly lifts off the ground on a lob kick
-    const ballY = (state.ball.z || 0) * 0.6 + BALL_GLYPH_SIZE * 0.3;
-    this._pushGlyph('o', state.ball.x, ballY, state.ball.y, BALL_GLYPH_SIZE, COLOR_TEXT);
+    // Ball — bounce height translates to a view-space y offset so the
+    // bounce is visible on screen regardless of camera tilt
+    const bounceViewY = (state.ball.z || 0) * 0.5;
+    this._placeGlyph(
+      'o',
+      state.ball.x,
+      0,
+      state.ball.y,
+      BALL_GLYPH_SIZE,
+      COLOR_TEXT,
+      0,
+      bounceViewY
+    );
 
-    this._commitInstances();
     this.renderer.render(this.scene, this.camera);
   }
 
-  /* ── Internals ───────────────────────────────────────── */
+  /* ── Internals ──────────────────────────────────── */
 
   _placeCamera() {
-    // Adaptive camera: tilts ~22° from straight down over the midfield and
-    // sits far enough back that the whole field fits horizontally for the
-    // current canvas aspect ratio.
+    // Adaptive camera — frames the full field width for the current aspect
+    // ratio with a ~22° tilt from vertical.
     const midX = this.fieldWidth / 2;
     const midZ = FIELD_HEIGHT / 2;
     const aspect = this.camera.aspect || 4;
@@ -190,7 +224,6 @@ export class Renderer {
     const halfFovVert = (fovDeg / 2) * Math.PI / 180;
     const tanHalfHoriz = Math.tan(halfFovVert) * aspect;
 
-    // Distance so half the field width fits horizontally with a small margin
     const halfFieldWidth = (this.fieldWidth / 2) * 1.08;
     const distance = halfFieldWidth / tanHalfHoriz;
 
@@ -204,10 +237,11 @@ export class Renderer {
     this.camera.updateProjectionMatrix();
   }
 
-  _buildInstancedMesh() {
-    // Base quad: XY plane, centered on origin, unit size
-    const baseGeom = new THREE.BufferGeometry();
-    baseGeom.setAttribute(
+  /** Build a unit-quad BufferGeometry with UVs baked into the atlas cell. */
+  _buildGlyphGeometry(glyph) {
+    const g = new THREE.BufferGeometry();
+    // Vertices: unit quad in xy plane, centered on origin
+    g.setAttribute(
       'position',
       new THREE.BufferAttribute(
         new Float32Array([
@@ -219,144 +253,119 @@ export class Renderer {
         3
       )
     );
-    baseGeom.setAttribute(
+    // UVs: rectangle pointing at the glyph's atlas cell. Using three.js
+    // convention (UV origin bottom-left, v=1 = top of original image with
+    // flipY=true), the TOP vertices of the quad should sample the TOP of
+    // the cell in the canvas image, which corresponds to the higher v.
+    const u0 = glyph.u;
+    const u1 = glyph.u + glyph.w;
+    const vTop = 1 - glyph.v;                  // top of cell in canvas = high v in UV
+    const vBot = 1 - (glyph.v + glyph.h);      // bottom of cell in canvas = low v in UV
+    g.setAttribute(
       'uv',
       new THREE.BufferAttribute(
         new Float32Array([
-          0, 1,  1, 1,  1, 0,  0, 0,
+          u0, vBot,  // bottom-left vertex → bottom of glyph cell
+          u1, vBot,  // bottom-right
+          u1, vTop,  // top-right
+          u0, vTop,  // top-left
         ]),
         2
       )
     );
-    baseGeom.setIndex([0, 1, 2, 0, 2, 3]);
-
-    const instGeom = new THREE.InstancedBufferGeometry();
-    instGeom.index = baseGeom.index;
-    instGeom.setAttribute('position', baseGeom.getAttribute('position'));
-    instGeom.setAttribute('uv', baseGeom.getAttribute('uv'));
-
-    this._positions = new Float32Array(MAX_INSTANCES * 3);
-    this._scales = new Float32Array(MAX_INSTANCES);
-    this._colors = new Float32Array(MAX_INSTANCES * 3);
-    this._glyphUVs = new Float32Array(MAX_INSTANCES * 4);
-
-    instGeom.setAttribute(
-      'instancePosition',
-      new THREE.InstancedBufferAttribute(this._positions, 3)
-    );
-    instGeom.setAttribute(
-      'instanceScale',
-      new THREE.InstancedBufferAttribute(this._scales, 1)
-    );
-    instGeom.setAttribute(
-      'instanceColor',
-      new THREE.InstancedBufferAttribute(this._colors, 3)
-    );
-    instGeom.setAttribute(
-      'instanceGlyphUV',
-      new THREE.InstancedBufferAttribute(this._glyphUVs, 4)
-    );
-
-    const material = new THREE.RawShaderMaterial({
-      uniforms: {
-        sdfTexture: { value: this.atlas.texture },
-      },
-      vertexShader: VERTEX_SHADER,
-      fragmentShader: FRAGMENT_SHADER,
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-    });
-
-    this.glyphMesh = new THREE.Mesh(instGeom, material);
-    this.glyphMesh.frustumCulled = false;
-    this.scene.add(this.glyphMesh);
-
-    this._instGeom = instGeom;
-    this._count = 0;
+    g.setIndex([0, 1, 2, 0, 2, 3]);
+    return g;
   }
 
-  _buildField() {
+  _buildFieldGlyphs() {
     const w = this.fieldWidth;
     const h = FIELD_HEIGHT;
     const c = COLOR_DIM;
     const s = FIELD_GLYPH_SIZE;
 
-    // Long edges (horizontal lines at z=0 and z=h). Step spacing keeps
-    // borders continuous without visible overlap at this scale.
-    const stepX = 20;
+    const stepX = 24;
     for (let x = stepX; x < w; x += stepX) {
       this._fieldGlyphs.push({ char: '─', x, y: 0, z: 0, scale: s, color: c });
       this._fieldGlyphs.push({ char: '─', x, y: 0, z: h, scale: s, color: c });
     }
-    // Short edges (vertical lines at x=0 and x=w)
     const stepZ = 10;
     for (let z = stepZ; z < h; z += stepZ) {
       this._fieldGlyphs.push({ char: '│', x: 0, y: 0, z, scale: s, color: c });
       this._fieldGlyphs.push({ char: '│', x: w, y: 0, z, scale: s, color: c });
     }
-    // Corner markers
+    // Corners
     this._fieldGlyphs.push({ char: '┌', x: 0, y: 0, z: 0, scale: s, color: c });
     this._fieldGlyphs.push({ char: '┐', x: w, y: 0, z: 0, scale: s, color: c });
     this._fieldGlyphs.push({ char: '└', x: 0, y: 0, z: h, scale: s, color: c });
     this._fieldGlyphs.push({ char: '┘', x: w, y: 0, z: h, scale: s, color: c });
-    // Midfield divider (uses '│' dimmed; '┊' wasn't in the atlas glyph set)
+    // Midfield divider (vertical bars at low intensity)
     for (let z = stepZ; z < h; z += stepZ) {
-      this._fieldGlyphs.push({ char: '│', x: w / 2, y: 0, z, scale: s, color: COLOR_MUTED });
+      this._fieldGlyphs.push({ char: '│', x: w / 2, y: 0, z, scale: s * 0.85, color: COLOR_MUTED });
     }
   }
 
-  _addStickman(player, color) {
-    // A 3-row stickman rendered as billboarded quads: head, body, legs.
-    // Stacked vertically in three.js y (which is screen-up because quads
-    // billboard to the camera). Physics x is field horizontal, physics y
-    // is field depth (three.js z).
-    const x = player.x + 9; // +playerWidth/2 to center on player anchor
+  _addStickman(player, color, tick) {
+    // 6-glyph stickman billboarded so the parts always stack on-screen
+    // regardless of camera tilt. All parts share the same world anchor;
+    // their relative positions come from per-mesh view-space offsets:
+    //
+    //     o           head
+    //    /|\          arm-L, body, arm-R
+    //    / \          leg-L, leg-R   (walking anim alternates)
+    //
+    const x = player.x + 9; // center on player anchor
     const z = player.y;
     const s = STICKMAN_GLYPH_SIZE;
-    this._pushGlyph('o', x, s * 2.0, z, s, color); // head
-    this._pushGlyph('|', x, s * 1.0, z, s, color); // body
-    this._pushGlyph('A', x, s * 0.0, z, s, color); // legs
+
+    // Head
+    this._placeGlyph('o', x, 0, z, s, color, 0, s * 1.0);
+
+    // Arms + body row
+    this._placeGlyph('/', x, 0, z, s, color, -s * 0.45, s * 0.5);
+    this._placeGlyph('|', x, 0, z, s, color, 0, s * 0.5);
+    this._placeGlyph('\\', x, 0, z, s, color, s * 0.45, s * 0.5);
+
+    // Legs row — walking animation when player is moving
+    const speed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
+    const moving = speed > 0.3;
+    const walkFrame = moving ? Math.floor(tick / 6) % 2 : 0;
+    if (walkFrame === 0) {
+      // Legs spread
+      this._placeGlyph('/', x, 0, z, s, color, -s * 0.22, 0);
+      this._placeGlyph('\\', x, 0, z, s, color, s * 0.22, 0);
+    } else {
+      // Legs straight / mid-stride
+      this._placeGlyph('|', x, 0, z, s, color, -s * 0.14, 0);
+      this._placeGlyph('|', x, 0, z, s, color, s * 0.14, 0);
+    }
   }
 
-  _resetInstances() {
-    this._count = 0;
+  _resetPool() {
+    // Hide every mesh — any we want active will be re-shown in _placeGlyph
+    for (let i = 0; i < this._poolCursor; i++) {
+      this._pool[i].visible = false;
+    }
+    this._poolCursor = 0;
   }
 
-  _pushGlyph(ch, x, y, z, scale, color) {
-    if (this._count >= MAX_INSTANCES) return;
-    const g = this.atlas.glyphs.get(ch);
-    if (!g) return; // glyph not in atlas — silently drop
-
-    const i = this._count;
-    this._positions[i * 3 + 0] = x;
-    this._positions[i * 3 + 1] = y;
-    this._positions[i * 3 + 2] = z;
-    this._scales[i] = scale;
-    this._colors[i * 3 + 0] = color[0];
-    this._colors[i * 3 + 1] = color[1];
-    this._colors[i * 3 + 2] = color[2];
-    this._glyphUVs[i * 4 + 0] = g.u;
-    this._glyphUVs[i * 4 + 1] = g.v;
-    this._glyphUVs[i * 4 + 2] = g.w;
-    this._glyphUVs[i * 4 + 3] = g.h;
-
-    this._count++;
-  }
-
-  _commitInstances() {
-    this._instGeom.getAttribute('instancePosition').needsUpdate = true;
-    this._instGeom.getAttribute('instanceScale').needsUpdate = true;
-    this._instGeom.getAttribute('instanceColor').needsUpdate = true;
-    this._instGeom.getAttribute('instanceGlyphUV').needsUpdate = true;
-    this._instGeom.instanceCount = this._count;
+  _placeGlyph(char, x, y, z, scale, color, viewOffsetX = 0, viewOffsetY = 0) {
+    const geom = this._glyphGeometries.get(char);
+    if (!geom) return;
+    if (this._poolCursor >= this._pool.length) return;
+    const mesh = this._pool[this._poolCursor++];
+    mesh.geometry = geom;
+    mesh.position.set(x, y, z);
+    mesh.scale.set(scale, scale, 1);
+    const col = mesh.material.uniforms.uColor.value;
+    col.set(color[0], color[1], color[2]);
+    mesh.material.uniforms.uViewOffset.value.set(viewOffsetX, viewOffsetY);
+    mesh.visible = true;
   }
 }
 
-/* ── Color helpers ───────────────────────────────────────── */
+/* ── Color helpers ─────────────────────────────────────── */
 
 function rgb(hex) {
-  // '#rrggbb' → [r, g, b] in [0, 1]
   const h = hex.replace('#', '');
   return [
     parseInt(h.slice(0, 2), 16) / 255,
@@ -365,16 +374,14 @@ function rgb(hex) {
   ];
 }
 
-/** Stamina-to-color gradient: green (full) → amber (tired) → red (exhausted). */
 function staminaColor(stamina) {
   const s = Math.max(0, Math.min(1, stamina));
   if (s >= 0.5) {
-    const t = (s - 0.5) * 2; // [0, 1]
+    const t = (s - 0.5) * 2;
     return lerp(COLOR_AMBER, COLOR_GREEN, t);
-  } else {
-    const t = s * 2; // [0, 1]
-    return lerp(COLOR_RED, COLOR_AMBER, t);
   }
+  const t = s * 2;
+  return lerp(COLOR_RED, COLOR_AMBER, t);
 }
 
 function lerp(a, b, t) {

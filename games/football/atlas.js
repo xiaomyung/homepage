@@ -20,7 +20,7 @@ import * as THREE from './vendor/three.module.js';
 import TinySDF from './vendor/tiny-sdf.js';
 
 /** Bump whenever the glyph set, font size, or SDF params change. */
-const ATLAS_VERSION = 1;
+const ATLAS_VERSION = 4;
 
 const FONT_FAMILY = 'Iosevka Term';
 const FONT_WEIGHT = 'normal';
@@ -100,6 +100,10 @@ function renderAtlas() {
   const atlas = new Uint8ClampedArray(atlasSize * atlasSize * 4);
   const glyphMap = new Map();
 
+  // Inset the stored UVs by half a texel on each side to prevent linear
+  // filtering from bleeding into adjacent cells at cell boundaries.
+  const HALF_TEXEL = 0.5 / atlasSize;
+
   for (let i = 0; i < numGlyphs; i++) {
     const ch = GLYPHS[i];
     const col = i % gridSide;
@@ -125,10 +129,10 @@ function renderAtlas() {
     }
 
     glyphMap.set(ch, {
-      u: px / atlasSize,
-      v: py / atlasSize,
-      w: glyphSize / atlasSize,
-      h: glyphSize / atlasSize,
+      u: px / atlasSize + HALF_TEXEL,
+      v: py / atlasSize + HALF_TEXEL,
+      w: glyphSize / atlasSize - 2 * HALF_TEXEL,
+      h: glyphSize / atlasSize - 2 * HALF_TEXEL,
       glyphWidth,
       glyphHeight,
       advance: glyphAdvance,

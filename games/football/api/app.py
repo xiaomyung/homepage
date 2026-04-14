@@ -554,4 +554,6 @@ def create_app(db_path: Optional[str] = None) -> Flask:
 if __name__ == "__main__":
     with _lock:
         _init_state()
-    app.run(host="127.0.0.1", port=5099, threaded=True)
+    # Port 5050 is the one Caddy proxies /api/football/* to; don't change
+    # without updating /etc/caddy/Caddyfile in lockstep.
+    app.run(host="127.0.0.1", port=5050, threaded=True)

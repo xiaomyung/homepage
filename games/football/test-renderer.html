@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>renderer smoke test</title>
+<style>
+  body { font-family: monospace; background: #0a0a0a; color: #d0d0d0; padding: 2rem; }
+  canvas { display: block; margin-top: 1rem; border: 1px solid #333; background: #111; width: 100%; max-width: 900px; aspect-ratio: 4 / 1; }
+  .ok { color: #9ece6a; }
+  .fail { color: #f7768e; }
+</style>
+<link rel="preload" href="../../fonts/iosevka-term-regular.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+  @font-face {
+    font-family: "Iosevka Term";
+    src: url("../../fonts/iosevka-term-regular.woff2") format("woff2");
+    font-display: block;
+  }
+</style>
+</head>
+<body>
+  <h1>renderer smoke test</h1>
+  <div id="log"></div>
+  <canvas id="stage"></canvas>
+
+<script type="module">
+  import { buildAtlas } from './atlas.js';
+  import { Renderer } from './renderer.js';
+  import { createField, createState, createSeededRng, FIELD_HEIGHT } from './physics.js';
+
+  const log = document.getElementById('log');
+  function write(cls, msg) {
+    const div = document.createElement('div');
+    div.className = cls;
+    div.textContent = msg;
+    log.appendChild(div);
+  }
+
+  (async () => {
+    try {
+      const atlas = await buildAtlas();
+      write('ok', `atlas loaded: ${atlas.glyphs.size} glyphs, ${atlas.atlasSize}px`);
+
+      const canvas = document.getElementById('stage');
+      const renderer = new Renderer(canvas, atlas);
+      renderer.autoResize();
+      write('ok', 'renderer initialized');
+
+      // Build a static state with two stickmen at different positions
+      // and different stamina values (so they have different colors).
+      const field = createField();
+      const state = createState(field, createSeededRng(1));
+      state.p1.x = 200;
+      state.p1.y = FIELD_HEIGHT / 2;
+      state.p1.stamina = 1.0;   // full → green
+
+      state.p2.x = 600;
+      state.p2.y = FIELD_HEIGHT / 2 - 8;
+      state.p2.stamina = 0.25;  // low → red-ish
+
+      state.ball.x = 420;
+      state.ball.y = FIELD_HEIGHT / 2;
+      state.ball.z = 0;
+
+      renderer.renderState(state);
+      write('ok', 'first frame rendered');
+
+      // Animate the ball left/right to verify per-frame updates
+      let t = 0;
+      function frame() {
+        t += 0.02;
+        state.ball.x = 450 + Math.sin(t) * 200;
+        state.ball.z = Math.max(0, Math.sin(t * 2) * 15);
+        state.p1.x = 250 + Math.sin(t * 0.7) * 80;
+        state.p2.x = 600 + Math.cos(t * 0.5) * 80;
+        state.p1.stamina = 0.5 + Math.sin(t * 0.3) * 0.5;
+        state.p2.stamina = 0.5 + Math.cos(t * 0.3) * 0.5;
+        renderer.renderState(state);
+        requestAnimationFrame(frame);
+      }
+      frame();
+      write('ok', 'animation loop running');
+    } catch (err) {
+      write('fail', `ERROR: ${err.message}`);
+      console.error(err);
+    }
+  })();
+</script>
+</body>
+</html>

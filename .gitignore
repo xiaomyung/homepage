@@ -33,3 +33,6 @@ node_modules/
 # Logs / OS junk
 *.log
 Thumbs.db
+
+# Dev scratch output
+games/football/debug/*.png

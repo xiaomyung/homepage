@@ -46,16 +46,12 @@ const VERTEX_SHADER = /* glsl */ `
   varying vec3 vColor;
 
   void main() {
-    // Billboard the quad so glyphs always face the camera, independent of
-    // camera tilt. Extract the camera right and up vectors from the
-    // modelViewMatrix columns.
-    vec3 camRight = vec3(modelViewMatrix[0][0], modelViewMatrix[1][0], modelViewMatrix[2][0]);
-    vec3 camUp = vec3(modelViewMatrix[0][1], modelViewMatrix[1][1], modelViewMatrix[2][1]);
-
-    vec3 worldPos = instancePosition +
-      (camRight * position.x + camUp * position.y) * instanceScale;
-
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(worldPos, 1.0);
+    // Billboard: transform the instance position to view space, then add
+    // the quad corner in view-space XY (screen-aligned right/up). The quad
+    // always faces the camera regardless of camera tilt/rotation.
+    vec4 viewPos = modelViewMatrix * vec4(instancePosition, 1.0);
+    viewPos.xy += position.xy * instanceScale;
+    gl_Position = projectionMatrix * viewPos;
 
     vAtlasUV = instanceGlyphUV.xy + instanceGlyphUV.zw * uv;
     vColor = instanceColor;
@@ -70,12 +66,17 @@ const FRAGMENT_SHADER = /* glsl */ `
   varying vec2 vAtlasUV;
   varying vec3 vColor;
 
+  // tiny-sdf encodes:
+  //   data = round(255 * (1 - cutoff) - (255 / radius) * signed_distance)
+  // With default cutoff=0.25, the glyph edge is at value 255 * 0.75 ≈ 191,
+  // which is ~0.75 in normalized [0, 1]. Values > 0.75 are inside the
+  // glyph, < 0.75 are outside.
+  const float EDGE = 0.75;
+  const float AA = 0.02; // antialias half-width (thinner = crisper)
+
   void main() {
-    // tiny-sdf encodes the signed distance with ~128 as the boundary.
-    // Sample the green channel (R=G=B in the atlas) and threshold with
-    // a smoothstep for antialiasing.
     float dist = texture2D(sdfTexture, vAtlasUV).g;
-    float alpha = smoothstep(0.48, 0.56, dist);
+    float alpha = smoothstep(EDGE - AA, EDGE + AA, dist);
     if (alpha < 0.01) discard;
     gl_FragColor = vec4(vColor, alpha);
   }
@@ -172,15 +173,29 @@ export class Renderer {
   /* ── Internals ───────────────────────────────────────── */
 
   _placeCamera() {
-    // Camera sits above midfield, tilted ~25° from straight down. The
-    // "lookAt" point is at the center of the field; the camera height and
-    // forward offset control the apparent tilt.
+    // Adaptive camera: tilts ~22° from straight down over the midfield and
+    // sits far enough back that the whole field fits horizontally for the
+    // current canvas aspect ratio.
     const midX = this.fieldWidth / 2;
     const midZ = FIELD_HEIGHT / 2;
-    const height = Math.max(90, this.fieldWidth * 0.18);
-    const backOff = height * 0.5; // controls tilt angle (larger = steeper)
+    const aspect = this.camera.aspect || 4;
+
+    const fovDeg = 60;
+    const halfFovVert = (fovDeg / 2) * Math.PI / 180;
+    const tanHalfHoriz = Math.tan(halfFovVert) * aspect;
+
+    // Distance so half the field width fits horizontally with a small margin
+    const halfFieldWidth = (this.fieldWidth / 2) * 1.08;
+    const distance = halfFieldWidth / tanHalfHoriz;
+
+    const tiltRad = 22 * Math.PI / 180;
+    const height = distance * Math.cos(tiltRad);
+    const backOff = distance * Math.sin(tiltRad);
+
+    this.camera.fov = fovDeg;
     this.camera.position.set(midX, height, midZ + backOff);
     this.camera.lookAt(midX, 0, midZ);
+    this.camera.updateProjectionMatrix();
   }
 
   _buildInstancedMesh() {

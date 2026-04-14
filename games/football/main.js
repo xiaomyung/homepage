@@ -18,14 +18,14 @@
  */
 
 import { buildAtlas } from './atlas.js';
-import { Renderer } from './renderer.js';
+import { Renderer } from './renderer.js?v=31';
 import {
   createField,
   createState,
   createSeededRng,
   tick as physicsTick,
   buildInputs,
-} from './physics.js';
+} from './physics.js?v=31';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import {

@@ -21,7 +21,7 @@
  */
 
 import * as THREE from './vendor/three.module.js';
-import { createField, FIELD_HEIGHT } from './physics.js';
+import { createField, FIELD_HEIGHT } from './physics.js?v=31';
 
 const DEFAULT_FIELD_WIDTH = 900;
 const POOL_SIZE = 400;
@@ -38,7 +38,7 @@ const HORIZONTAL_MARGIN = 1.15;
 // Per-element view-space sizes. The shader applies scale in view space,
 // so these are effectively "world units at the projected distance".
 const STICKMAN_GLYPH_SIZE = 22;
-const BALL_GLYPH_SIZE = 16;
+const BALL_GLYPH_SIZE = 24;
 
 /* ── Shaders ─────────────────────────────────────────────── */
 
@@ -92,8 +92,6 @@ const FRAGMENT_SHADER = /* glsl */ `
 /* ── Palette (matches style.css design tokens) ─────────── */
 
 const COLOR_TEXT = rgb('#d0d0d0');
-const COLOR_DIM = rgb('#707070');
-const COLOR_MUTED = rgb('#505050');
 const COLOR_GREEN = rgb('#9ece6a');
 const COLOR_AMBER = rgb('#e0af68');
 const COLOR_RED = rgb('#f7768e');
@@ -303,6 +301,7 @@ export class Renderer {
 
     const dimColor = new THREE.Color('#707070');
     const mutedColor = new THREE.Color('#505050');
+    const netColor = new THREE.Color('#404040');
 
     const lineMat = new THREE.LineBasicMaterial({
       color: dimColor,
@@ -313,6 +312,16 @@ export class Renderer {
       color: mutedColor,
       transparent: true,
       opacity: 0.5,
+    });
+    const netMat = new THREE.LineBasicMaterial({
+      color: netColor,
+      transparent: true,
+      opacity: 0.45,
+    });
+    const goalLineMat = new THREE.LineBasicMaterial({
+      color: dimColor,
+      transparent: true,
+      opacity: 0.75,
     });
 
     // Main field outline — closed rectangle on the ground plane
@@ -337,60 +346,179 @@ export class Renderer {
     );
     this.scene.add(midDivider);
 
-    // Unified goal geometry — built once, reused as two LineSegments
-    // instances positioned at each end of the field. The second instance
-    // is rotated 180° around y so its front faces the opposite direction.
-    //
-    // Local coordinate system (origin at the center of the goal's base):
-    //   +x = FRONT (mouth side)
-    //   -x = BACK
-    //   +y = UP
-    //   ±z = the two sides (goal width along field depth)
-    //
-    // Shape (side profile, z fixed):
-    //
-    //            ┌───────┐   ← top rectangle (depth/2)
-    //           ╱        │
-    //          ╱         │
-    //         ╱          │   ← front post (vertical, full height)
-    //        ╱           │
-    //       ╱            │
-    //      ╱_____________│
-    //    back          front
-    //  (-depth/2)    (+depth/2)
-    //
-    //  • Bottom rectangle: full depth × full width at y=0
-    //  • Top rectangle: half depth × full width at y=h
-    //    (sits over the front half, from x=0 to x=+depth/2)
-    //  • Front posts: vertical at x=+depth/2
-    //  • Back stays: inclined from (-depth/2, 0) to (0, h)
+    // Goal frames
     const goalDepth = f.goalLRight - f.goalLLeft;
     const goalWidth = (f.goalMouthYMax - f.goalMouthYMin) * Z_STRETCH;
-    const goalHeight = f.goalMouthZMax * 2.25; // 1.5× × 1.5× the physics crossbar
+    const goalHeight = f.goalMouthZMax * 2.25;
+    const goalCenterZ = ((f.goalMouthYMin + f.goalMouthYMax) / 2) * Z_STRETCH;
 
-    const goalGeom = buildGoalGeometry(goalDepth, goalWidth, goalHeight);
+    // Left goal: outer edge on -x, so vertical back wall at centerX - halfD → dir = -1.
+    const leftCenterX = (f.goalLLeft + f.goalLRight) / 2;
+    this._addGoal(leftCenterX, goalCenterZ, goalDepth, goalWidth, goalHeight, -1, lineMat, netMat, goalLineMat);
 
-    // Left goal: rotated 180° so the geometry's local +x direction (where
-    // the vertical front posts live) points AWAY from midfield, and the
-    // inclined part faces midfield.
-    const leftGoal = new THREE.LineSegments(goalGeom, lineMat);
-    leftGoal.position.set(
-      (f.goalLLeft + f.goalLRight) / 2,
-      0,
-      ((f.goalMouthYMin + f.goalMouthYMax) / 2) * Z_STRETCH
+    // Right goal: mirror.
+    const rightCenterX = (f.goalRLeft + f.goalRRight) / 2;
+    this._addGoal(rightCenterX, goalCenterZ, goalDepth, goalWidth, goalHeight, +1, lineMat, netMat, goalLineMat);
+  }
+
+  _addGoal(centerX, centerZ, depth, width, height, dir, mat, netMat, goalLineMat) {
+    // Both the vertical wall AND the slanted wall are drawn as proper
+    // closed 4-edge faces in 3D:
+    //
+    //   VERTICAL face (outer edge of field)
+    //     - 2 vertical posts, 1 crossbar at y=h, 1 bottom at y=0
+    //
+    //   SLANTED face (midfield side)
+    //     - 2 diagonal posts going from (backBotX, 0) to (backTopX, h)
+    //     - 1 slant bottom rail at y=0 at x=backBotX
+    //     - 1 slant top rail at y=h at x=backTopX
+    //
+    //   Top and bottom connecting rails between the two faces (the roof
+    //   slab and the ground slab of the prism) — drawn grey.
+    const halfD = depth / 2;
+    const halfW = width / 2;
+    const h = height;
+    // dir = +1: vertical face on +x side (goal's outer edge for RIGHT goal)
+    // dir = -1: vertical face on -x side (goal's outer edge for LEFT goal)
+    const vertX = centerX + dir * halfD;          // vertical wall x
+    const slantBotX = centerX - dir * halfD;       // slant's bottom edge x
+    const zMin = centerZ - halfW;
+    const zMax = centerZ + halfW;
+    const P = (x, y, z) => new THREE.Vector3(x, y, z);
+
+    // Back wall (slanted): full diagonals from (vertX, 0) at the outer-edge
+    // ground up to (backTopX, h), plus top crossbar and bottom rail.
+    const backTopX = slantBotX;
+    const backGeom = new THREE.BufferGeometry().setFromPoints([
+      P(vertX, 0, zMin), P(backTopX, h, zMin),
+      P(vertX, 0, zMax), P(backTopX, h, zMax),
+      P(backTopX, h, zMin), P(backTopX, h, zMax),
+      P(vertX, 0, zMin), P(vertX, 0, zMax),
+    ]);
+    this.scene.add(new THREE.LineSegments(backGeom, mat));
+
+    // Front mouth: posts offset from vertX along the goal depth axis by
+    // 58/52 — empirical values that make the wall look perpendicular in
+    // screen space under the current camera tilt.
+    const frontWallX = slantBotX - dir * halfD;
+    const postABotX = vertX - dir * 58;
+    const postBBotX = vertX - dir * 52;
+    const frontGeom = new THREE.BufferGeometry().setFromPoints([
+      P(postABotX, 0, zMin), P(frontWallX, h, zMin),
+      P(postBBotX, 0, zMax), P(frontWallX, h, zMax),
+      P(frontWallX, h, zMin), P(frontWallX, h, zMax),
+    ]);
+    this.scene.add(new THREE.LineSegments(frontGeom, mat));
+
+    // Connecting rails: top (frontWallX → slantBotX) and bottom
+    // (vertX → post-bottom on each side).
+    const railGeom = new THREE.BufferGeometry().setFromPoints([
+      P(frontWallX, h, zMin), P(slantBotX, h, zMin),
+      P(frontWallX, h, zMax), P(slantBotX, h, zMax),
+      P(vertX, 0, zMin), P(postABotX, 0, zMin),
+      P(vertX, 0, zMax), P(postBBotX, 0, zMax),
+    ]);
+    this.scene.add(new THREE.LineSegments(railGeom, mat));
+
+    // Net: a dull grid overlay on the 4 closed surfaces (back, top, both
+    // sides) signalling "ball stops here". Front mouth is intentionally
+    // left open.
+    const netPoints = [];
+    const pushNet = (A, B, C, D, nU, nV) => {
+      // A=bottom-start, B=bottom-end, C=top-end, D=top-start. Bilinear
+      // grid: nU lines along A→B/D→C direction, nV lines along A→D/B→C.
+      for (let i = 1; i < nU; i++) {
+        const t = i / nU;
+        const p0 = P(
+          A.x + (B.x - A.x) * t,
+          A.y + (B.y - A.y) * t,
+          A.z + (B.z - A.z) * t
+        );
+        const p1 = P(
+          D.x + (C.x - D.x) * t,
+          D.y + (C.y - D.y) * t,
+          D.z + (C.z - D.z) * t
+        );
+        netPoints.push(p0, p1);
+      }
+      for (let j = 1; j < nV; j++) {
+        const t = j / nV;
+        const p0 = P(
+          A.x + (D.x - A.x) * t,
+          A.y + (D.y - A.y) * t,
+          A.z + (D.z - A.z) * t
+        );
+        const p1 = P(
+          B.x + (C.x - B.x) * t,
+          B.y + (C.y - B.y) * t,
+          B.z + (C.z - B.z) * t
+        );
+        netPoints.push(p0, p1);
+      }
+    };
+
+    // Back wall (slanted): vertX floor → backTopX roof, across full z.
+    pushNet(
+      P(vertX, 0, zMin),
+      P(vertX, 0, zMax),
+      P(backTopX, h, zMax),
+      P(backTopX, h, zMin),
+      6, 4
     );
-    leftGoal.rotation.y = Math.PI;
-    this.scene.add(leftGoal);
-
-    // Right goal: no rotation — its local +x faces world +x (away from
-    // midfield), inclined part faces -x (toward midfield).
-    const rightGoal = new THREE.LineSegments(goalGeom, lineMat);
-    rightGoal.position.set(
-      (f.goalRLeft + f.goalRRight) / 2,
-      0,
-      ((f.goalMouthYMin + f.goalMouthYMax) / 2) * Z_STRETCH
+    // Top slab: frontWallX → backTopX along x, zMin → zMax along z.
+    pushNet(
+      P(frontWallX, h, zMin),
+      P(backTopX, h, zMin),
+      P(backTopX, h, zMax),
+      P(frontWallX, h, zMax),
+      4, 6
     );
-    this.scene.add(rightGoal);
+    // Side at zMin: trapezoid post-bottom → vert-bottom → back-top → front-top.
+    pushNet(
+      P(postABotX, 0, zMin),
+      P(vertX, 0, zMin),
+      P(backTopX, h, zMin),
+      P(frontWallX, h, zMin),
+      5, 4
+    );
+    // Side at zMax: same but on the far side.
+    pushNet(
+      P(postBBotX, 0, zMax),
+      P(vertX, 0, zMax),
+      P(backTopX, h, zMax),
+      P(frontWallX, h, zMax),
+      5, 4
+    );
+
+    const netGeom = new THREE.BufferGeometry().setFromPoints(netPoints);
+    this.scene.add(new THREE.LineSegments(netGeom, netMat));
+
+    // Goal line: dashed segment connecting the bottom-front points of the
+    // mouth, marking the scoring threshold. Emitted as discrete short
+    // LineSegments (dash + gap) so it reads as "_ _ _".
+    const lineA = P(postABotX, 0, zMin);
+    const lineB = P(postBBotX, 0, zMax);
+    const dashCount = 8;
+    const dashRatio = 0.4;
+    const goalLinePoints = [];
+    for (let i = 0; i < dashCount; i++) {
+      const t0 = i / dashCount;
+      const t1 = t0 + dashRatio / dashCount;
+      goalLinePoints.push(
+        P(
+          lineA.x + (lineB.x - lineA.x) * t0,
+          0,
+          lineA.z + (lineB.z - lineA.z) * t0
+        ),
+        P(
+          lineA.x + (lineB.x - lineA.x) * t1,
+          0,
+          lineA.z + (lineB.z - lineA.z) * t1
+        )
+      );
+    }
+    const goalLineGeom = new THREE.BufferGeometry().setFromPoints(goalLinePoints);
+    this.scene.add(new THREE.LineSegments(goalLineGeom, goalLineMat));
   }
 
   _addStickman(player, color, tick) {
@@ -452,74 +580,6 @@ export class Renderer {
     mesh.material.uniforms.uViewOffset.value.set(viewOffsetX, viewOffsetY);
     mesh.visible = true;
   }
-}
-
-/* ── Goal geometry builder ─────────────────────────────── */
-
-/**
- * Build a unified goal-frame BufferGeometry centered at origin.
- *
- * Local coordinates:
- *   +x = FRONT (mouth, facing the field)
- *   -x = BACK
- *   +y = up
- *   ±z = the two sides (goal width along field depth)
- *
- * Shape (side profile, front on the right):
- *
- *                  ___________        ← back top rail (half-depth top)
- *                  \            ╲      top at y=h, spans from back
- *                   \            ╲     of goal box to midpoint
- *                    \            ╲
- *                     \            |
- *                      \           |   front post — vertical
- *                       \          |   at +halfD, from ground to
- *                        \         |   y=h (the front edge of the top)
- *                         \________|
- *                   -halfD         +halfD
- *                    back          front
- *
- * • Front posts: vertical bars at +halfD
- * • Top rectangle: depth = halfD (half of bottom depth), spans from
- *   x=0 (back edge) to x=+halfD (front edge — where the front posts meet it)
- * • Back stays: inclined bars from the back-bottom corners at -halfD
- *   up and forward to the top rectangle's back edge at x=0
- * • Bottom: full-depth rectangle on the ground
- */
-function buildGoalGeometry(depth, width, height) {
-  const halfD = depth / 2;
-  const halfW = width / 2;
-  const h = height;
-
-  // Top rectangle back edge = midpoint between front and back (x=0)
-  const xTopBack = 0;
-
-  const P = (x, y, z) => new THREE.Vector3(x, y, z);
-
-  const points = [
-    // Bottom rectangle (full depth, y=0)
-    P(-halfD, 0, -halfW), P(+halfD, 0, -halfW),
-    P(+halfD, 0, -halfW), P(+halfD, 0, +halfW),
-    P(+halfD, 0, +halfW), P(-halfD, 0, +halfW),
-    P(-halfD, 0, +halfW), P(-halfD, 0, -halfW),
-
-    // Top rectangle (half depth, y=h, from x=0 to x=+halfD)
-    P(+halfD, h, -halfW), P(+halfD, h, +halfW),  // front crossbar
-    P(+halfD, h, +halfW), P(xTopBack, h, +halfW), // top rail, +z side
-    P(xTopBack, h, +halfW), P(xTopBack, h, -halfW), // back-top rail
-    P(xTopBack, h, -halfW), P(+halfD, h, -halfW), // top rail, -z side
-
-    // Front posts (vertical at +halfD)
-    P(+halfD, 0, -halfW), P(+halfD, h, -halfW),
-    P(+halfD, 0, +halfW), P(+halfD, h, +halfW),
-
-    // Back stays (inclined: from back-bottom (-halfD, 0) up-and-forward
-    // to the back-top-rail at (0, h))
-    P(-halfD, 0, -halfW), P(xTopBack, h, -halfW),
-    P(-halfD, 0, +halfW), P(xTopBack, h, +halfW),
-  ];
-
-  return new THREE.BufferGeometry().setFromPoints(points);
 }
 
 /* ── Color helpers ─────────────────────────────────────── */

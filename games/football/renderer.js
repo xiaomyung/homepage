@@ -93,6 +93,11 @@ const PARTICLE_GRAVITY       = 0.28;
 const PARTICLE_GROUND_DRAG   = 0.45;
 const PARTICLE_SIZE          = 18;
 
+// Thin cylinder radius (world units) for goal-frame bars so they render
+// as solid poles. three.js line widths are GPU-dependent, so we use
+// actual tube geometry instead.
+const GOAL_BAR_RADIUS = 1.2;
+
 const CAMERA_FOV = 60;
 const CAMERA_TILT_DEG = 55;
 
@@ -478,6 +483,27 @@ export class Renderer {
     if (geometry) this._staticGeometries.push(geometry);
   }
 
+  /** Add a thin cylinder spanning from point A to point B, used as a
+   *  "thick line" for the goal frame bars. Caller supplies the material
+   *  so all bars in one goal share a single material instance. */
+  _addBar(a, b, material) {
+    const dir = b.clone().sub(a);
+    const length = dir.length();
+    if (length < 1e-6) return;
+    const geom = new THREE.CylinderGeometry(GOAL_BAR_RADIUS, GOAL_BAR_RADIUS, length, 8, 1);
+    // CylinderGeometry is aligned along +y by default; rotate it so +y
+    // points along `dir`, then translate to the midpoint of AB.
+    const mesh = new THREE.Mesh(geom, material);
+    const up = new THREE.Vector3(0, 1, 0);
+    const axis = up.clone().cross(dir.clone().normalize());
+    const angle = Math.acos(Math.max(-1, Math.min(1, up.dot(dir.clone().normalize()))));
+    if (axis.length() > 1e-6) {
+      mesh.setRotationFromAxisAngle(axis.normalize(), angle);
+    }
+    mesh.position.set((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+    this._addStatic(mesh, geom);
+  }
+
   /** Add an XZ-plane ellipse arc centered at (cx, cz) with x-semiaxis
    *  `rx` and z-semiaxis `rz`, from parametric angle `aStart` to `aEnd`,
    *  sampled with `segments` line segments. Pass `rz = rx` for a circle;
@@ -511,31 +537,27 @@ export class Renderer {
     const zMax = centerZ + halfW;
     const P = (x, y, z) => new THREE.Vector3(x, y, z);
 
-    // Back wall (slanted): diagonals + top crossbar + bottom rail.
-    const backGeom = new THREE.BufferGeometry().setFromPoints([
-      P(vertX, 0, zMin), P(backTopX, height, zMin),
-      P(vertX, 0, zMax), P(backTopX, height, zMax),
-      P(backTopX, height, zMin), P(backTopX, height, zMax),
-      P(vertX, 0, zMin), P(vertX, 0, zMax),
-    ]);
-    this._addStatic(new THREE.LineSegments(backGeom, mat), backGeom);
-
-    // Front mouth: 2 posts + top crossbar.
-    const frontGeom = new THREE.BufferGeometry().setFromPoints([
-      P(postABotX, 0, zMin), P(frontWallX, height, zMin),
-      P(postBBotX, 0, zMax), P(frontWallX, height, zMax),
-      P(frontWallX, height, zMin), P(frontWallX, height, zMax),
-    ]);
-    this._addStatic(new THREE.LineSegments(frontGeom, mat), frontGeom);
-
-    // Connecting rails: top (front↔back) and bottom (vertX↔post-bottom).
-    const railGeom = new THREE.BufferGeometry().setFromPoints([
-      P(frontWallX, height, zMin), P(backTopX, height, zMin),
-      P(frontWallX, height, zMax), P(backTopX, height, zMax),
-      P(vertX, 0, zMin), P(postABotX, 0, zMin),
-      P(vertX, 0, zMax), P(postBBotX, 0, zMax),
-    ]);
-    this._addStatic(new THREE.LineSegments(railGeom, mat), railGeom);
+    // Goal frame bars — rendered as thin cylinders so they look like solid
+    // metal poles instead of 1-pixel lines. Each bar is built via
+    // `_addBar(a, b)` which pivots a unit cylinder to the (a, b) axis.
+    const barMat = new THREE.MeshBasicMaterial({
+      color: mat.color, transparent: true, opacity: mat.opacity ?? 1,
+    });
+    this._staticMaterials.push(barMat);
+    // Front frame — 2 upright posts + crossbar.
+    this._addBar(P(postABotX, 0, zMin), P(frontWallX, height, zMin), barMat);
+    this._addBar(P(postBBotX, 0, zMax), P(frontWallX, height, zMax), barMat);
+    this._addBar(P(frontWallX, height, zMin), P(frontWallX, height, zMax), barMat);
+    // Back frame — uprights + top crossbar + floor rail.
+    this._addBar(P(vertX, 0, zMin), P(backTopX, height, zMin), barMat);
+    this._addBar(P(vertX, 0, zMax), P(backTopX, height, zMax), barMat);
+    this._addBar(P(backTopX, height, zMin), P(backTopX, height, zMax), barMat);
+    this._addBar(P(vertX, 0, zMin), P(vertX, 0, zMax), barMat);
+    // Side rails connecting front and back.
+    this._addBar(P(frontWallX, height, zMin), P(backTopX, height, zMin), barMat);
+    this._addBar(P(frontWallX, height, zMax), P(backTopX, height, zMax), barMat);
+    this._addBar(P(vertX, 0, zMin), P(postABotX, 0, zMin), barMat);
+    this._addBar(P(vertX, 0, zMax), P(postBBotX, 0, zMax), barMat);
 
     // Net grid on the 4 closed surfaces (back, top, left side, right side).
     // Front mouth stays open. Bilinear grid — nU lines along A→B / D→C and
@@ -557,10 +579,10 @@ export class Renderer {
         );
       }
     };
-    pushNet(P(vertX, 0, zMin),      P(vertX, 0, zMax),      P(backTopX, height, zMax),   P(backTopX, height, zMin),   6, 4); // back
-    pushNet(P(frontWallX, height, zMin), P(backTopX, height, zMin), P(backTopX, height, zMax), P(frontWallX, height, zMax), 4, 6); // top
-    pushNet(P(postABotX, 0, zMin),  P(vertX, 0, zMin),      P(backTopX, height, zMin),   P(frontWallX, height, zMin), 5, 4); // side zMin
-    pushNet(P(postBBotX, 0, zMax),  P(vertX, 0, zMax),      P(backTopX, height, zMax),   P(frontWallX, height, zMax), 5, 4); // side zMax
+    pushNet(P(vertX, 0, zMin),      P(vertX, 0, zMax),      P(backTopX, height, zMax),   P(backTopX, height, zMin),   12, 8); // back
+    pushNet(P(frontWallX, height, zMin), P(backTopX, height, zMin), P(backTopX, height, zMax), P(frontWallX, height, zMax), 8, 12); // top
+    pushNet(P(postABotX, 0, zMin),  P(vertX, 0, zMin),      P(backTopX, height, zMin),   P(frontWallX, height, zMin), 10, 8); // side zMin
+    pushNet(P(postBBotX, 0, zMax),  P(vertX, 0, zMax),      P(backTopX, height, zMax),   P(frontWallX, height, zMax), 10, 8); // side zMax
 
     const netGeom = new THREE.BufferGeometry().setFromPoints(netPoints);
     this._addStatic(new THREE.LineSegments(netGeom, netMat), netGeom);

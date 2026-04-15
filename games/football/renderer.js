@@ -588,8 +588,8 @@ export class Renderer {
 
     // Penalty arcs — half-ellipses whose chord is the goal mouth (z-axis
     // tied to the posts) with the x-semiaxis stretched deeper into the
-    // field. Endpoints stay pinned to the goalposts, curve bulges inward
-    // without wrapping around into a loop.
+    // field. Endpoints pinned to the goalposts at the physics scoring
+    // line so they stay visually locked to the mouth.
     const mouthCenterZ = ((f.goalMouthYMin + f.goalMouthYMax) / 2) * Z_STRETCH;
     const mouthHalfZ   = ((f.goalMouthYMax - f.goalMouthYMin) / 2) * Z_STRETCH;
     const arcDepth = mouthHalfZ * 2;  // x-semiaxis = 2× the chord half
@@ -600,11 +600,12 @@ export class Renderer {
     const goalHeight = f.goalMouthZMax * 2.25;
     const goalCenterZ = ((f.goalMouthYMin + f.goalMouthYMax) / 2) * Z_STRETCH;
 
-    // Pass the scoring-line x (= f.goalLineL/R) as the front mouth, and
-    // the outer box edge as the back — the goal renders as a lean-to
-    // between those two x values. This keeps the mouth posts visually
-    // aligned with the penalty arcs and the physics scoring boundary.
-    this._addGoal(f.goalLineL, f.goalLLeft, goalCenterZ, goalWidth, goalHeight, lineMat, netMat, goalLineMat);
+    // Visible mouth = physics scoring line (f.goalLineL/R). Back of
+    // the goal box = outer field edge (f.goalLLeft / f.goalRRight).
+    // _addGoal builds a trapezoidal side profile between them:
+    // horizontal roof behind the crossbar, slanted back net down to
+    // the outer ground.
+    this._addGoal(f.goalLineL, f.goalLLeft,  goalCenterZ, goalWidth, goalHeight, lineMat, netMat, goalLineMat);
     this._addGoal(f.goalLineR, f.goalRRight, goalCenterZ, goalWidth, goalHeight, lineMat, netMat, goalLineMat);
   }
 
@@ -652,20 +653,25 @@ export class Renderer {
     this._addStatic(new THREE.Line(geom, material), geom);
   }
 
-  _addGoal(goalLineX, backBotX, centerZ, width, height, mat, netMat, goalLineMat) {
+  _addGoal(mouthX, backBotX, centerZ, width, height, mat, netMat, goalLineMat) {
     const halfW = width / 2;
-    // Lean-to soccer goal side profile (triangle, x-axis):
+    // Classical trapezoidal soccer-goal side profile (x-axis):
     //
-    //              ____ crossbar @ (goalLineX, height)
-    //             /|
-    //            / | front posts (vertical, at goalLineX)
-    //           /  |
-    //          /___|
-    //      backBotX goalLineX
+    //             ______________ roof (horizontal)
+    //            |              \
+    //            |               \   <- slanted back net
+    //            |                \
+    //            |_________________\
+    //          mouthX             backBotX
+    //          (front)             (ground)
     //
-    // For the LEFT goal, backBotX < goalLineX (back edge is on -x).
-    // For the RIGHT goal, backBotX > goalLineX (back edge is on +x).
-    // Orientation is implicit in the caller-supplied x pair.
+    // Depth = |backBotX - mouthX|. The horizontal roof covers the first
+    // ~35% of the depth from the mouth; the slanted back net covers the
+    // remaining ~65%. The front mouth is a rectangle (vertical posts +
+    // crossbar). Caller decides orientation via the x-value pair —
+    // mouthX > backBotX for the LEFT goal, the reverse for the RIGHT.
+    const ROOF_FRACTION = 0.35;
+    const backTopX = mouthX + (backBotX - mouthX) * ROOF_FRACTION;
     const zMin = centerZ - halfW;
     const zMax = centerZ + halfW;
     const P = (x, y, z) => new THREE.Vector3(x, y, z);
@@ -675,23 +681,26 @@ export class Renderer {
       color: mat.color, transparent: true, opacity: mat.opacity ?? 1,
     });
     this._staticMaterials.push(barMat);
-    // Front frame — two vertical posts at the goal line + crossbar.
-    this._addBar(P(goalLineX, 0, zMin), P(goalLineX, height, zMin), barMat);
-    this._addBar(P(goalLineX, 0, zMax), P(goalLineX, height, zMax), barMat);
-    this._addBar(P(goalLineX, height, zMin), P(goalLineX, height, zMax), barMat);
-    // Slanted back edges from the crossbar down to the outer back bottom.
-    this._addBar(P(goalLineX, height, zMin), P(backBotX, 0, zMin), barMat);
-    this._addBar(P(goalLineX, height, zMax), P(backBotX, 0, zMax), barMat);
-    // Ground rails closing the floor triangle.
+    // Front mouth — two vertical posts + crossbar at the goal line.
+    this._addBar(P(mouthX, 0,      zMin), P(mouthX, height, zMin), barMat);
+    this._addBar(P(mouthX, 0,      zMax), P(mouthX, height, zMax), barMat);
+    this._addBar(P(mouthX, height, zMin), P(mouthX, height, zMax), barMat);
+    // Roof rails running back from the mouth to where the back slope starts.
+    this._addBar(P(mouthX,   height, zMin), P(backTopX, height, zMin), barMat);
+    this._addBar(P(mouthX,   height, zMax), P(backTopX, height, zMax), barMat);
+    this._addBar(P(backTopX, height, zMin), P(backTopX, height, zMax), barMat);
+    // Slanted back rails from the roof-back down to the outer ground.
+    this._addBar(P(backTopX, height, zMin), P(backBotX, 0, zMin), barMat);
+    this._addBar(P(backTopX, height, zMax), P(backBotX, 0, zMax), barMat);
+    // Ground rails closing the floor quad.
     this._addBar(P(backBotX, 0, zMin), P(backBotX, 0, zMax), barMat);
-    this._addBar(P(backBotX, 0, zMin), P(goalLineX, 0, zMin), barMat);
-    this._addBar(P(backBotX, 0, zMax), P(goalLineX, 0, zMax), barMat);
+    this._addBar(P(backBotX, 0, zMin), P(mouthX,   0, zMin), barMat);
+    this._addBar(P(backBotX, 0, zMax), P(mouthX,   0, zMax), barMat);
 
-    // Net grid on the 3 closed surfaces: slanted back + two triangular
-    // sides. Front mouth stays open; there is no roof (the crossbar is
-    // the apex of the triangle). Bilinear grid — nU lines along A→B /
-    // D→C, nV lines along A→D / B→C. For triangles, pass C === D and
-    // the j-loop collapses into a point along that collapsed edge.
+    // Net grid on the 4 closed faces: roof, slanted back, and two
+    // trapezoidal sides. Front mouth stays open. pushNet does a bilinear
+    // grid between 4 corners — nU lines along A→B / D→C and nV lines
+    // along A→D / B→C.
     const netPoints = [];
     const pushNet = (A, B, C, D, nU, nV) => {
       for (let i = 1; i < nU; i++) {
@@ -709,30 +718,36 @@ export class Renderer {
         );
       }
     };
-    // Back slanted face — rectangle from ground (backBotX, 0) up to the
-    // crossbar (goalLineX, height), spanning full z.
+    // Roof — horizontal rectangle at y = height between mouthX and backTopX.
     pushNet(
-      P(backBotX,  0,      zMin), P(backBotX,  0,      zMax),
-      P(goalLineX, height, zMax), P(goalLineX, height, zMin),
-      12, 8,
+      P(mouthX,   height, zMin), P(backTopX, height, zMin),
+      P(backTopX, height, zMax), P(mouthX,   height, zMax),
+      8, 12,
     );
-    // Side triangle zMin — A=front-bot, B=back-bot, C=D=crossbar.
+    // Slanted back net — rectangle from (backTopX, height) down to
+    // (backBotX, 0), spanning full z.
     pushNet(
-      P(goalLineX, 0,      zMin), P(backBotX,  0,      zMin),
-      P(goalLineX, height, zMin), P(goalLineX, height, zMin),
+      P(backTopX, height, zMin), P(backBotX, 0,      zMin),
+      P(backBotX, 0,      zMax), P(backTopX, height, zMax),
+      10, 12,
+    );
+    // Side trapezoid zMin — 4 corners: mouth-bot, back-bot, back-top, mouth-top.
+    pushNet(
+      P(mouthX,   0,      zMin), P(backBotX, 0,      zMin),
+      P(backTopX, height, zMin), P(mouthX,   height, zMin),
       10, 8,
     );
-    // Side triangle zMax — mirror of zMin.
+    // Side trapezoid zMax — mirror of zMin at zMax.
     pushNet(
-      P(goalLineX, 0,      zMax), P(backBotX,  0,      zMax),
-      P(goalLineX, height, zMax), P(goalLineX, height, zMax),
+      P(mouthX,   0,      zMax), P(backBotX, 0,      zMax),
+      P(backTopX, height, zMax), P(mouthX,   height, zMax),
       10, 8,
     );
 
     const netGeom = new THREE.BufferGeometry().setFromPoints(netPoints);
     this._addStatic(new THREE.LineSegments(netGeom, netMat), netGeom);
 
-    // Dashed goal line along the mouth ground edge (z-axis at goalLineX).
+    // Dashed goal line along the mouth ground edge (z-axis at mouthX).
     const dashCount = 8;
     const dashRatio = 0.4;
     const goalLinePoints = [];
@@ -740,8 +755,8 @@ export class Renderer {
       const t0 = i / dashCount;
       const t1 = t0 + dashRatio / dashCount;
       goalLinePoints.push(
-        P(goalLineX, 0, zMin + (zMax - zMin) * t0),
-        P(goalLineX, 0, zMin + (zMax - zMin) * t1),
+        P(mouthX, 0, zMin + (zMax - zMin) * t0),
+        P(mouthX, 0, zMin + (zMax - zMin) * t1),
       );
     }
     const goalLineGeom = new THREE.BufferGeometry().setFromPoints(goalLinePoints);

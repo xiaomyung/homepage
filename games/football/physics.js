@@ -87,7 +87,7 @@ const PUSH_VICTIM_STAMINA_MULT = 3;
 
 // Goal frame
 const GOAL_BACK_OFFSET = 30;
-const GOAL_DEPTH = 54;
+const GOAL_DEPTH = 78;
 const GOAL_LINE_INSET = 6; // scoring line sits this far inside the mouth
 const GOAL_MOUTH_Z = 26;  // 30% taller than the original 20
 const GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - 20) / 2;

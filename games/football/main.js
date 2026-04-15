@@ -18,7 +18,7 @@
  */
 
 import { buildAtlas } from './atlas.js';
-import { Renderer } from './renderer.js?v=62';
+import { Renderer } from './renderer.js?v=65';
 import {
   createField,
   createState,
@@ -26,7 +26,7 @@ import {
   tick as physicsTick,
   buildInputs,
   TICK_MS,
-} from './physics.js?v=34';
+} from './physics.js?v=35';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import {
@@ -67,6 +67,8 @@ async function main() {
   const canvas = document.getElementById('game-canvas');
   renderer = new Renderer(canvas, atlas);
   renderer.autoResize();
+  // Always exposed so the freecam toggle (and ad-hoc debugging) can drive it.
+  window.__footballRenderer = renderer;
 
   scoreboard = createScoreboard();
   statsPanel = createStatsPanel({ apiBase: API_BASE });

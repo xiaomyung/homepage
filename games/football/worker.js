@@ -4,17 +4,25 @@
  * Spawned by main.js when the user clicks [start]. Terminated on [stop]
  * or when the main-thread pause gate fires (visibilitychange, pagehide).
  *
- * Loop:
- *   1. Fetch a matchup from /api/football/matchup
- *   2. Run the match headlessly using physics.js (tick loop, no wall-clock)
- *   3. Record the result in a local batch
- *   4. Every BATCH_SIZE results, POST to /api/football/results
- *   5. Repeat
+ * Protocol (bandwidth-efficient):
+ *   1. On start: `GET /population` — fetches all 50 brain weights in
+ *      one snapshot, keyed by id, and records the current generation.
+ *   2. `GET /matchup?count=N` — returns just brain IDs + the broker's
+ *      current generation. The worker looks weights up locally.
+ *   3. If the matchup response's generation drifts from our cached
+ *      one, re-fetch /population before running the batch.
+ *   4. Run each match headlessly via physics.js (tight tick loop).
+ *   5. Batch-POST `/results` fire-and-forget, amortized across
+ *      RESULT_BATCH_SIZE matches.
  *
- * The matchup response carries the full weight arrays for each brain so
- * the worker never needs to ask "give me the weights for brain id X"
- * separately. This keeps the broker stateless w.r.t. ongoing worker
- * sessions — restart-safe.
+ * Critical optimisation: /matchup used to embed the full 1233-float
+ * weight array for every brain in every matchup. With batch=40 that's
+ * ~1.7 MB per response × 16 workers = ~200 MB/sec through the single-
+ * threaded broker, which capped throughput at ~2500 sims/sec
+ * regardless of client compute speed. Moving weights to a per-
+ * generation `/population` snapshot cuts matchup responses to a few
+ * bytes per match; broker bandwidth becomes negligible and workers
+ * run compute-limited.
  *
  * Messages:
  *   main → worker: {type: 'start', apiBase: '/api/football'}
@@ -27,20 +35,20 @@ import { createField, createState, createSeededRng, tick as physicsTick, buildIn
 import { NeuralNet, WEIGHT_COUNT } from './nn.js';
 import { fallbackAction } from './fallback.js';
 
-// Fetch this many matchups per /matchup GET. Amortizes HTTP latency +
-// JSON decode across many matches. The main loop also *prefetches*
-// the next batch while the current one is being processed, so the
-// worker's critical path never waits for HTTP — bigger batches trade
-// freshness for wire efficiency, prefetch hides the latency either way.
 const MATCHUP_BATCH_SIZE = 40;
-// Post this many results per /results POST. Fire-and-forget (no
-// await) so the worker never blocks on the broker's response.
 const RESULT_BATCH_SIZE = 40;
 const DEFAULT_MATCH_TICKS = 1500; // ~24s of simulated play at 16ms/tick
 
 let running = false;
 let apiBase = '/api/football';
 let matchTicks = DEFAULT_MATCH_TICKS;
+
+// Local population cache — indexed by brain.id, populated once per
+// generation via /population, refreshed on generation drift. Each
+// entry holds a pre-built Float64Array so runMatch can loadWeights
+// directly without re-parsing.
+let cachedGeneration = -1;
+let weightsById = [];
 
 // Persistent NN instances reused across all matches. Each holds its
 // own pre-allocated weights Float64Array and layer scratch buffers,
@@ -77,39 +85,45 @@ async function main() {
       }
     }
   } catch {
-    // Use defaults if /config is unreachable
+    /* use defaults */
   }
+
+  // Prime the local population cache before any matchup work.
+  await ensurePopulation(null);
 
   let results = [];
   let simsSinceReport = 0;
   let reportStart = Date.now();
 
-  // Prefetch pattern: fire the NEXT /matchup fetch the moment the
-  // current batch starts processing, so the HTTP round-trip overlaps
-  // with compute instead of stalling the worker loop. `pendingFetch`
-  // is a Promise<matchup[]> that resolves to the next batch.
+  // Prefetch: the next /matchup fetch races with the current batch's
+  // compute, so the worker's critical path never awaits HTTP.
   let pendingFetch = safeFetchBatch();
 
   while (running) {
-    const matchups = await pendingFetch;
-    // Kick off the next GET immediately so it races with this batch's
-    // compute instead of starting after the batch completes.
+    const envelope = await pendingFetch;
     pendingFetch = safeFetchBatch();
 
-    if (!matchups || matchups.length === 0) {
+    if (!envelope || !envelope.matchups || envelope.matchups.length === 0) {
       await sleep(100);
       continue;
     }
 
-    for (const matchup of matchups) {
+    // Refresh population cache if the broker has bred since our last
+    // fetch. Stale-id matches still process correctly — the broker's
+    // recordResult drops unknown ids.
+    if (envelope.generation !== cachedGeneration) {
+      await ensurePopulation(envelope.generation);
+    }
+
+    for (const matchup of envelope.matchups) {
       if (!running) break;
-      results.push(runMatch(matchup));
-      simsSinceReport++;
+      const result = runMatch(matchup);
+      if (result) {
+        results.push(result);
+        simsSinceReport++;
+      }
 
       if (results.length >= RESULT_BATCH_SIZE) {
-        // Fire-and-forget: hand the batch off to a detached POST and
-        // replace the buffer so the hot loop never waits for HTTP.
-        // Silent-drop on failure — the broker is eventually consistent.
         const toSend = results;
         results = [];
         postResults(toSend).catch(() => {});
@@ -122,62 +136,73 @@ async function main() {
     }
   }
 
-  // Flush any remaining results on shutdown — awaited so the final
-  // batch actually lands before the worker exits.
   if (results.length > 0) {
-    try {
-      await postResults(results);
-    } catch {
-      /* drop on shutdown */
-    }
+    try { await postResults(results); } catch { /* drop on shutdown */ }
   }
 }
 
-/** Wrap fetchMatchupBatch with failure back-off so the main loop can
- *  await it directly without a surrounding try/catch on every call. */
 async function safeFetchBatch() {
   try {
     return await fetchMatchupBatch(MATCHUP_BATCH_SIZE);
   } catch {
-    // Broker unreachable — brief pause then the main loop will loop
-    // around and ask us to fetch again.
     await sleep(1000);
     return null;
   }
 }
 
+/** Fetch /population and rebuild the local weights cache. If the
+ *  caller knows the target generation, we verify it and retry on
+ *  unexpected drift (rare but possible if two breeds race between
+ *  a matchup fetch and a population fetch). Otherwise any generation
+ *  the broker currently serves is accepted. */
+async function ensurePopulation(expectedGen) {
+  try {
+    const res = await fetch(`${apiBase}/population`);
+    if (!res.ok) throw new Error(`population fetch: ${res.status}`);
+    const body = await res.json();
+    const nextCache = [];
+    for (const b of body.brains) {
+      nextCache[b.id] = new Float64Array(b.weights);
+    }
+    weightsById = nextCache;
+    cachedGeneration = body.generation;
+    // If the broker's generation jumped past the one we expected, we
+    // accept the new snapshot anyway — future matchups will arrive
+    // on the newer generation and match our cache.
+    void expectedGen;
+  } catch {
+    /* leave stale cache in place; ensurePopulation will be retried */
+  }
+}
+
 /* ── Match runner ───────────────────────────────────────── */
 
-// Reused NN input buffers — typed so the NN forward loop can read
-// them via Float64Array fast paths without deopting on mixed-type
-// element access.
 const p1InputBuf = new Float64Array(NN_INPUT_SIZE);
 const p2InputBuf = new Float64Array(NN_INPUT_SIZE);
 
 function runMatch(matchup) {
+  const p1Weights = weightsById[matchup.p1];
+  if (!p1Weights) return null; // cache miss — broker will drop results anyway
+  const p2IsFallback = matchup.type === 'fallback';
+  const p2Weights = p2IsFallback ? null : weightsById[matchup.p2];
+  if (!p2IsFallback && !p2Weights) return null;
+
   const field = createField();
   const seed = (Math.random() * 2 ** 31) >>> 0;
   const state = createState(field, createSeededRng(seed));
-  // Training mode: skip celebrate/reposition/waiting/matchend pause
-  // frames entirely, zero grace frames, no ball drop animation. Every
-  // tick of the budget goes into active play.
+  // Training mode: skip celebrate/reposition/waiting/matchend pauses,
+  // zero grace frames, no ball drop — every tick on active play.
   state.headless = true;
   state.graceFrames = 0;
   state.ball.z = 0;
 
-  p1Brain.loadWeights(matchup.p1.weights);
-  const p2IsFallback = matchup.type === 'fallback';
-  if (!p2IsFallback) p2Brain.loadWeights(matchup.p2.weights);
+  p1Brain.loadWeights(p1Weights);
+  if (!p2IsFallback) p2Brain.loadWeights(p2Weights);
 
-  // Action-repeat stride: compute a fresh NN action every
-  // NN_ACTION_STRIDE ticks and reuse it verbatim on the in-between
-  // ticks. Split as decision-outer / physics-inner rather than a
-  // single loop with a branch so V8 sees two monomorphic loop bodies
-  // (outer: NN forward + buildInputs; inner: pure physicsTick). The
-  // single-loop form with `if (i % K === 0)` branch-deopts the hot
-  // path — measured ~2× slower than this pattern. Same stride is
-  // applied in the visual showcase (main.js) so training and display
-  // decision cadences match (feedback_training_visual_parity).
+  // Action-repeat stride — decision-outer, physics-inner so V8 sees
+  // two monomorphic loop bodies and can fully inline physicsTick in
+  // the tight inner loop. Same stride number is used in the visual
+  // showcase loop (main.js) for training/visual parity.
   let ticksDone = 0;
   while (ticksDone < matchTicks) {
     const p1Action = p1Brain.forward(buildInputs(state, 'p1', p1InputBuf));
@@ -192,8 +217,8 @@ function runMatch(matchup) {
   }
 
   return {
-    p1_id: matchup.p1.id,
-    p2_id: p2IsFallback ? null : matchup.p2.id,
+    p1_id: matchup.p1,
+    p2_id: p2IsFallback ? null : matchup.p2,
     goals_p1: state.scoreL,
     goals_p2: state.scoreR,
   };
@@ -204,10 +229,7 @@ function runMatch(matchup) {
 async function fetchMatchupBatch(count) {
   const res = await fetch(`${apiBase}/matchup?count=${count}`);
   if (!res.ok) throw new Error(`matchup fetch: ${res.status}`);
-  const body = await res.json();
-  // Broker responds with an array when `count` is present, a single
-  // object otherwise — accept both for backward compatibility.
-  return Array.isArray(body) ? body : [body];
+  return res.json();
 }
 
 async function postResults(batch) {

@@ -408,16 +408,11 @@ function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-/** Build a brain JSON fragment as a raw string — weights are already
- *  pre-serialized on the brain, so this is O(1) per brain instead of
- *  O(1233) per brain with an Array.from + JSON.stringify. */
-function brainFragment(brain) {
-  return `{"id":${brain.id},"name":${JSON.stringify(brain.name)},"weights":${brain._weightsJson}}`;
-}
-
-/** Pick a matchup and return it as a raw JSON string. Used by
- *  handleMatchup to splice brain weights into the response body
- *  without ever re-JSON-encoding the 1233-float array. */
+/** Pick a matchup and return it as a raw JSON string containing
+ *  only brain IDs. Workers maintain a local weights cache (fetched
+ *  from /population on start and on generation drift), so the
+ *  hot-path /matchup response stays a few bytes per matchup
+ *  instead of 40+ KB per brain. */
 function pickMatchupJson() {
   const cfg = state.config;
   const pop = state.population;
@@ -427,7 +422,7 @@ function pickMatchupJson() {
     const candidates = pop.filter((b) => needsMoreFallback(b, cfg));
     if (candidates.length > 0) {
       const pick = pickRandom(candidates);
-      return `{"type":"fallback","p1":${brainFragment(pick)},"p2":null}`;
+      return `{"type":"fallback","p1":${pick.id},"p2":null}`;
     }
   }
 
@@ -440,7 +435,7 @@ function pickMatchupJson() {
   for (let attempts = 0; b.id === a.id && attempts < 5; attempts++) {
     b = pickRandom(pool);
   }
-  return `{"type":"pop","p1":${brainFragment(a)},"p2":${brainFragment(b)}}`;
+  return `{"type":"pop","p1":${a.id},"p2":${b.id}}`;
 }
 
 /** Showcase brains keep a structured return so the existing
@@ -568,17 +563,41 @@ function handleMatchup(req, res) {
       if (Number.isFinite(n) && n > 0) count = Math.min(n, MATCHUP_BATCH_MAX);
     }
   }
-  // Build the response body by string concatenation of pre-serialized
-  // brain fragments — zero JSON.stringify calls on the 1233-float
-  // weight arrays, which is the broker's hottest CPU cost.
-  let body;
+  // Response envelope carries the generation counter so clients detect
+  // a breed and re-fetch their population cache. The matchups payload
+  // is ID-only — brain weights are fetched separately via /population
+  // once per generation.
+  let matchupsBody;
   if (count === 0) {
-    body = pickMatchupJson();
+    matchupsBody = pickMatchupJson();
   } else {
     const parts = new Array(count);
     for (let i = 0; i < count; i++) parts[i] = pickMatchupJson();
-    body = '[' + parts.join(',') + ']';
+    matchupsBody = '[' + parts.join(',') + ']';
   }
+  const body = `{"generation":${state.generation},"matchups":${matchupsBody}}`;
+  const buf = Buffer.from(body);
+  res.writeHead(200, {
+    'Content-Type': 'application/json',
+    'Content-Length': buf.length,
+  });
+  res.end(buf);
+}
+
+/** Serve the full population snapshot — one brain per entry with
+ *  pre-serialized weights JSON fragments. Called by clients on worker
+ *  start and on generation drift (detected via handleMatchup's
+ *  generation counter). Response size scales with population_size,
+ *  not per-matchup traffic: 50 × 12 KB ≈ 600 KB fetched ~once per
+ *  generation instead of per matchup. */
+function handlePopulation(req, res) {
+  const pop = state.population;
+  const brainParts = new Array(pop.length);
+  for (let i = 0; i < pop.length; i++) {
+    const b = pop[i];
+    brainParts[i] = `{"id":${b.id},"name":${JSON.stringify(b.name)},"weights":${b._weightsJson}}`;
+  }
+  const body = `{"generation":${state.generation},"brains":[${brainParts.join(',')}]}`;
   const buf = Buffer.from(body);
   res.writeHead(200, {
     'Content-Type': 'application/json',
@@ -735,6 +754,7 @@ async function dispatch(req, res) {
 
   switch (key) {
     case `GET ${ROUTE_PREFIX}/matchup`:      return handleMatchup(req, res);
+    case `GET ${ROUTE_PREFIX}/population`:   return handlePopulation(req, res);
     case `POST ${ROUTE_PREFIX}/results`:     return handleResults(req, res);
     case `GET ${ROUTE_PREFIX}/showcase`:     return handleShowcase(req, res);
     case `GET ${ROUTE_PREFIX}/stats`:        return handleStats(req, res);

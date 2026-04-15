@@ -424,7 +424,14 @@ export function facingToward(p, worldX, worldZ, tol) {
 function applyMovement(state, p, moveX, moveY) {
   const effSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina);
   let targetVx = clamp(moveX, -1, 1) * effSpeed;
-  let targetVy = clamp(moveY, -1, 1) * effSpeed;
+  // Y physics-space is compressed by Z_STRETCH relative to visual
+  // space (see createField + renderer Z_STRETCH). Without this
+  // scaling, the same action.moveY = 1.0 makes the player cross the
+  // pitch depth-wise in ~5 ticks while taking ~90 ticks to cross
+  // horizontally — visually the player "flies" across the y axis.
+  // Dividing by Z_STRETCH makes equal visual distance cost equal
+  // physics time, so walking reads symmetrically in both axes.
+  let targetVy = clamp(moveY, -1, 1) * effSpeed / Z_STRETCH;
 
   if ((p.y <= 0 && targetVy < 0) || (p.y >= FIELD_HEIGHT - PLAYER_HEIGHT && targetVy > 0)) {
     targetVy = 0; p.vy = 0;

@@ -26,7 +26,7 @@ import {
   tick as physicsTick,
   buildInputs,
   TICK_MS,
-} from './physics.js?v=39';
+} from './physics.js?v=40';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import {

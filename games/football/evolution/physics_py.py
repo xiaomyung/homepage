@@ -682,9 +682,18 @@ def _check_ball_score_or_out(state: dict) -> None:
         _score_goal(state, "left" if goal_l else "right")
         return
 
-    # Past the line but not a goal. If still in the mouth (y/z) the ball is
-    # mid-cross — let it continue. Otherwise it hit a post/crossbar; bounce.
+    # Past the line but not a goal. If still in the mouth (y/z) the ball
+    # is mid-cross — let it continue. Otherwise, only bounce if the ball
+    # is physically against a post or the crossbar. A ball going around
+    # the side of the goal (y well outside the mouth) or over the top
+    # should pass freely so it can travel behind the goal.
     if within_mouth_y and below_crossbar:
+        return
+
+    near_post_low = abs(ball["y"] - f["goalMouthYMin"]) <= BALL_RADIUS
+    near_post_high = abs(ball["y"] - f["goalMouthYMax"]) <= BALL_RADIUS
+    near_crossbar = within_mouth_y and abs(ball["z"] - f["goalMouthZMax"]) <= BALL_RADIUS
+    if not near_post_low and not near_post_high and not near_crossbar:
         return
 
     line = f["goalLineL"] if crossed_l else f["goalLineR"]
@@ -694,7 +703,7 @@ def _check_ball_score_or_out(state: dict) -> None:
         pre_vx = abs(ball["vx"])
         ball["vx"] = -ball["vx"] * BOUNCE_RETAIN
         _record_bounce(state, "x", pre_vx)
-    if not below_crossbar and ball["vz"] > 0:
+    if near_crossbar and ball["vz"] > 0:
         pre_vz = abs(ball["vz"])
         ball["vz"] = -pre_vz * BOUNCE_RETAIN
         _record_bounce(state, "z", pre_vz)

@@ -651,8 +651,18 @@ function checkBallScoreOrOut(state) {
   }
 
   // Past the line but not a goal. If still in the mouth (y/z), the ball is
-  // mid-cross — let it continue. Otherwise it hit a post/crossbar; bounce.
+  // mid-cross — let it continue. Otherwise, only bounce if the ball is
+  // physically against a post or the crossbar. A ball going around the
+  // side of the goal (y well outside the mouth) or over the top (z above
+  // the crossbar by more than a ball radius) should pass freely so it
+  // can travel behind the goal.
   if (withinMouthY && belowCrossbar) return;
+
+  const nearPostLow  = Math.abs(ball.y - f.goalMouthYMin) <= BALL_RADIUS;
+  const nearPostHigh = Math.abs(ball.y - f.goalMouthYMax) <= BALL_RADIUS;
+  const nearCrossbar = withinMouthY
+    && Math.abs(ball.z - f.goalMouthZMax) <= BALL_RADIUS;
+  if (!nearPostLow && !nearPostHigh && !nearCrossbar) return;
 
   const line = crossedL ? f.goalLineL : f.goalLineR;
   const sign = crossedL ? 1 : -1;
@@ -662,7 +672,7 @@ function checkBallScoreOrOut(state) {
     ball.vx = -ball.vx * BOUNCE_RETAIN;
     recordBounce(state, 'x', preVx);
   }
-  if (!belowCrossbar && ball.vz > 0) {
+  if (nearCrossbar && ball.vz > 0) {
     const preVz = Math.abs(ball.vz);
     ball.vz = -preVz * BOUNCE_RETAIN;
     recordBounce(state, 'z', preVz);

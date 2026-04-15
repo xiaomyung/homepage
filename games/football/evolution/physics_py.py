@@ -34,7 +34,7 @@ WALL_BOUNCE_DAMP = 0.5
 BOUNCE_VZ_MIN = 1.5
 BALL_VEL_CUTOFF = 0.1
 BALL_VEL_CUTOFF_SQ = BALL_VEL_CUTOFF * BALL_VEL_CUTOFF
-BALL_RADIUS = 6
+BALL_RADIUS = 1.4175
 RESPAWN_DROP_Z = 60
 OUT_OF_BOUNDS_MARGIN = 50
 
@@ -615,22 +615,30 @@ def _update_ball(state: dict) -> None:
         ball["vz"] -= GRAVITY
         ball["z"] += ball["vz"]
         if ball["z"] <= 0:
+            pre_vz = abs(ball["vz"])
             ball["z"] = 0
-            if abs(ball["vz"]) > BOUNCE_VZ_MIN:
-                ball["vz"] = abs(ball["vz"]) * AIR_BOUNCE
+            if pre_vz > BOUNCE_VZ_MIN:
+                ball["vz"] = pre_vz * AIR_BOUNCE
+                _record_bounce(state, "z", pre_vz)
             else:
                 ball["vz"] = 0
 
     if ball["y"] < BALL_RADIUS:
+        pre_vy = abs(ball["vy"])
         ball["y"] = BALL_RADIUS
-        ball["vy"] = abs(ball["vy"]) * WALL_BOUNCE_DAMP
+        ball["vy"] = pre_vy * WALL_BOUNCE_DAMP
+        _record_bounce(state, "y", pre_vy)
     elif ball["y"] > FIELD_HEIGHT - BALL_RADIUS:
+        pre_vy = abs(ball["vy"])
         ball["y"] = FIELD_HEIGHT - BALL_RADIUS
-        ball["vy"] = -abs(ball["vy"]) * WALL_BOUNCE_DAMP
+        ball["vy"] = -pre_vy * WALL_BOUNCE_DAMP
+        _record_bounce(state, "y", pre_vy)
 
     if ball["z"] > CEILING:
+        pre_vz = abs(ball["vz"])
         ball["z"] = CEILING
-        ball["vz"] = -abs(ball["vz"]) * AIR_BOUNCE
+        ball["vz"] = -pre_vz * AIR_BOUNCE
+        _record_bounce(state, "z", pre_vz)
 
     if ball["vx"] * ball["vx"] < BALL_VEL_CUTOFF_SQ:
         ball["vx"] = 0
@@ -682,9 +690,35 @@ def _check_ball_score_or_out(state: dict) -> None:
     sign = 1 if crossed_l else -1
     ball["x"] = line + sign * (BALL_RADIUS + 1)
     if ball["vx"] * sign < 0:
+        pre_vx = abs(ball["vx"])
         ball["vx"] = -ball["vx"] * BOUNCE_RETAIN
+        _record_bounce(state, "x", pre_vx)
     if not below_crossbar and ball["vz"] > 0:
-        ball["vz"] = -ball["vz"] * BOUNCE_RETAIN
+        pre_vz = abs(ball["vz"])
+        ball["vz"] = -pre_vz * BOUNCE_RETAIN
+        _record_bounce(state, "z", pre_vz)
+
+
+BOUNCE_EVENT_MIN = 0.3
+
+
+def _record_bounce(state: dict, axis: str, force: float) -> None:
+    """Emit a ball-bounce event for the renderer's particle system. Only
+    fires when recordEvents is on; gated at BOUNCE_EVENT_MIN so tiny
+    settle-bounces don't spam the event stream."""
+    if not state["recordEvents"]:
+        return
+    if force < BOUNCE_EVENT_MIN:
+        return
+    ball = state["ball"]
+    state["events"].append({
+        "type": "ball_bounce",
+        "axis": axis,
+        "force": force,
+        "x": ball["x"],
+        "y": ball["y"],
+        "z": ball["z"],
+    })
 
 
 # ── Scoring, ball-out, reset, finalize ─────────────────────────

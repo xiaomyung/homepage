@@ -29,7 +29,7 @@ const WALL_BOUNCE_DAMP = 0.5;
 const BOUNCE_VZ_MIN = 1.5;
 const BALL_VEL_CUTOFF = 0.1;
 const BALL_VEL_CUTOFF_SQ = BALL_VEL_CUTOFF * BALL_VEL_CUTOFF;
-export const BALL_RADIUS = 6;
+export const BALL_RADIUS = 1.4175;
 const RESPAWN_DROP_Z = 60;
 const OUT_OF_BOUNDS_MARGIN = 50;
 
@@ -575,23 +575,35 @@ function updateBall(state) {
     ball.vz -= GRAVITY;
     ball.z += ball.vz;
     if (ball.z <= 0) {
+      const preVz = Math.abs(ball.vz);
       ball.z = 0;
-      ball.vz = Math.abs(ball.vz) > BOUNCE_VZ_MIN ? Math.abs(ball.vz) * AIR_BOUNCE : 0;
+      if (preVz > BOUNCE_VZ_MIN) {
+        ball.vz = preVz * AIR_BOUNCE;
+        recordBounce(state, 'z', preVz);
+      } else {
+        ball.vz = 0;
+      }
     }
   }
 
   // Ball body stays fully inside the top/bottom walls; bounces off.
   if (ball.y < BALL_RADIUS) {
+    const preVy = Math.abs(ball.vy);
     ball.y = BALL_RADIUS;
-    ball.vy = Math.abs(ball.vy) * WALL_BOUNCE_DAMP;
+    ball.vy = preVy * WALL_BOUNCE_DAMP;
+    recordBounce(state, 'y', preVy);
   } else if (ball.y > FIELD_HEIGHT - BALL_RADIUS) {
+    const preVy = Math.abs(ball.vy);
     ball.y = FIELD_HEIGHT - BALL_RADIUS;
-    ball.vy = -Math.abs(ball.vy) * WALL_BOUNCE_DAMP;
+    ball.vy = -preVy * WALL_BOUNCE_DAMP;
+    recordBounce(state, 'y', preVy);
   }
 
   if (ball.z > CEILING) {
+    const preVz = Math.abs(ball.vz);
     ball.z = CEILING;
-    ball.vz = -Math.abs(ball.vz) * AIR_BOUNCE;
+    ball.vz = -preVz * AIR_BOUNCE;
+    recordBounce(state, 'z', preVz);
   }
 
   if (ball.vx * ball.vx < BALL_VEL_CUTOFF_SQ) ball.vx = 0;
@@ -645,11 +657,37 @@ function checkBallScoreOrOut(state) {
   const sign = crossedL ? 1 : -1;
   ball.x = line + sign * (BALL_RADIUS + 1);
   if (ball.vx * sign < 0) {
+    const preVx = Math.abs(ball.vx);
     ball.vx = -ball.vx * BOUNCE_RETAIN;
+    recordBounce(state, 'x', preVx);
   }
   if (!belowCrossbar && ball.vz > 0) {
-    ball.vz = -ball.vz * BOUNCE_RETAIN;
+    const preVz = Math.abs(ball.vz);
+    ball.vz = -preVz * BOUNCE_RETAIN;
+    recordBounce(state, 'z', preVz);
   }
+}
+
+/**
+ * Record a ball bounce event for the renderer's particle system. Only
+ * emitted when recordEvents is on; gated at `BOUNCE_EVENT_MIN` so
+ * microscopic settle-bounces don't spawn noise. `axis` is the velocity
+ * component that was reversed ('x' posts, 'y' field walls, 'z' ground/
+ * ceiling); `force` is the magnitude of that component before the flip.
+ */
+const BOUNCE_EVENT_MIN = 0.3;
+function recordBounce(state, axis, force) {
+  if (!state.recordEvents) return;
+  if (force < BOUNCE_EVENT_MIN) return;
+  const ball = state.ball;
+  state.events.push({
+    type: 'ball_bounce',
+    axis,
+    force,
+    x: ball.x,
+    y: ball.y,
+    z: ball.z,
+  });
 }
 
 /* ── Scoring, ball-out, reset, finalize ──────────────────────── */

@@ -44,10 +44,16 @@
   <h2>push (dir=+1, fist forward): 10 frames held at peak</h2>
   <canvas id="stage-push" class="strip"></canvas>
 
+  <h2>splash particles (ground bounce, various forces + ages)</h2>
+  <canvas id="stage-splash" class="strip"></canvas>
+
+  <h2>ball bounce alignment: ball at top + bottom physics walls</h2>
+  <canvas id="stage-ball-walls" class="main"></canvas>
+
 <script type="module">
-  import { buildAtlas } from './atlas.js?v=86';
-  import { Renderer } from './renderer.js?v=86';
-  import { createField, createState, createSeededRng, FIELD_HEIGHT } from './physics.js?v=86';
+  import { buildAtlas } from './atlas.js?v=93';
+  import { Renderer } from './renderer.js?v=93';
+  import { createField, createState, createSeededRng, FIELD_HEIGHT, BALL_RADIUS } from './physics.js?v=93';
 
   const log = document.getElementById('log');
   function write(cls, msg) {
@@ -178,7 +184,66 @@
         pushProgress: (i / (n - 1)) * 18,
       }), 10);
 
-      write('ok', 'idle + walk + run + celebrate + push strips rendered');
+      /* ── Splash particle strip ───────────────────────── */
+
+      {
+        const canvas = document.getElementById('stage-splash');
+        const r = new Renderer(canvas, atlas, { fieldWidth: stripFieldWidth });
+        r.autoResize();
+        r._poolCursor = 0;
+        const n = 6;
+        const spacing = stripFieldWidth / (n + 1);
+        // Spawn a burst at each slot with force ramping up. Each slot's
+        // particles are then aged independently (only the particles that
+        // belong to this slot get stepped) so all six slots co-exist with
+        // distinct ages in one canvas — no cross-contamination.
+        for (let i = 0; i < n; i++) {
+          const force = 2 + i * 2.5;
+          const ev = {
+            axis: 'z',
+            force,
+            x: spacing * (i + 1) - 9,
+            y: FIELD_HEIGHT / 2,
+            z: 0,
+          };
+          const before = r._particleNext;
+          r._spawnBounceParticles(ev);
+          const after = r._particleNext;
+          const stepFrames = i * 2;
+          for (let f = 0; f < stepFrames; f++) {
+            for (let idx = before; idx !== after; idx = (idx + 1) % r._particles.length) {
+              const p = r._particles[idx];
+              if (p.life <= 0) continue;
+              p.x += p.vx; p.y += p.vy; p.z += p.vz;
+              p.vz -= 0.28;
+              if (p.z < 0) { p.z = 0; p.vz = 0; p.vx *= 0.45; p.vy *= 0.45; }
+              p.life--;
+            }
+          }
+        }
+        r._drawParticles();
+        r.renderer.render(r.scene, r.camera);
+      }
+
+      /* ── Ball at bounce position ─────────────────── */
+      {
+        const canvas = document.getElementById('stage-ball-walls');
+        const r = new Renderer(canvas, atlas);
+        r.autoResize();
+        const field2 = createField();
+        const s2 = createState(field2, createSeededRng(1));
+        // Place ball exactly where physics puts it when bouncing off the
+        // bottom wall. The visible ball edge should touch the drawn
+        // bottom field line.
+        s2.p1.x = 200; s2.p1.y = 20;
+        s2.p2.x = 650; s2.p2.y = 20;
+        s2.ball.x = 450;
+        s2.ball.y = FIELD_HEIGHT - BALL_RADIUS;  // physics bounce y
+        s2.ball.z = 0;
+        r.renderState(s2);
+      }
+
+      write('ok', 'all strips rendered');
     } catch (err) {
       write('fail', `ERROR: ${err.message}`);
       console.error(err);

@@ -75,7 +75,23 @@ const PUSH_EXTEND_ANGLE   = Math.PI * 0.5;
 const PUSH_FIST_SIZE      = 0.65 * STICKMAN_GLYPH_SIZE;
 const PUSH_BACK_TILT      = 0.28;                        // rad — body leans back during windup
 const PUSH_FWD_TILT       = 0.42;                        // rad — body leans forward on strike
-const BALL_GLYPH_SIZE = 24;
+const BALL_SIZE = 10.206;
+
+// Splash particles for ball bounces. Pool holds up to PARTICLE_POOL slots,
+// filled via a rolling index so old particles are recycled automatically.
+// Count and velocity per bounce scale with the incoming-velocity magnitude
+// (force) so hard hits produce a bigger, faster burst than soft settles.
+const PARTICLE_POOL          = 120;
+const PARTICLE_BASE_COUNT    = 2;    // minimum particles per bounce
+const PARTICLE_FORCE_COUNT   = 1.4;  // extra particles per force unit
+const PARTICLE_MAX_COUNT     = 14;
+const PARTICLE_BASE_SPEED    = 0.25; // outward speed as fraction of force
+const PARTICLE_SPREAD        = 0.6;  // lateral randomness multiplier
+const PARTICLE_LIFE_BASE     = 18;   // frames
+const PARTICLE_LIFE_VARIANCE = 10;
+const PARTICLE_GRAVITY       = 0.28;
+const PARTICLE_GROUND_DRAG   = 0.45;
+const PARTICLE_SIZE          = 18;
 
 const CAMERA_FOV = 60;
 const CAMERA_TILT_DEG = 55;
@@ -122,9 +138,27 @@ const FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
+// Procedural ring shader for the ball — true circle with a centered
+// hole at 1/3 of the outer radius. Outer edge fades out past 0.5,
+// inner edge fades in past 0.167 (1/3 of 0.5).
+const BALL_FRAGMENT_SHADER = /* glsl */ `
+  uniform vec3 uColor;
+  varying vec2 vUv;
+  void main() {
+    vec2 p = vUv - 0.5;
+    float d = length(p);
+    float outer = smoothstep(0.5, 0.47, d);
+    float inner = smoothstep(0.15, 0.18, d);
+    float alpha = outer * inner;
+    if (alpha < 0.01) discard;
+    gl_FragColor = vec4(uColor, alpha);
+  }
+`;
+
 /* ── Palette (matches style.css design tokens) ─────────────── */
 
 const COLOR_TEXT = rgb('#d0d0d0');
+const COLOR_WHITE = [1, 1, 1];
 const COLOR_GREEN = rgb('#9ece6a');
 const COLOR_AMBER = rgb('#e0af68');
 const COLOR_RED = rgb('#f7768e');
@@ -170,6 +204,9 @@ export class Renderer {
     this._glyphO = this._glyphGeometries.get('o');
     this._glyphPipe = this._glyphGeometries.get('|');
     this._glyphFist = this._glyphGeometries.get('O');
+    this._glyphSparkA = this._glyphGeometries.get('*');
+    this._glyphSparkB = this._glyphGeometries.get("'");
+    this._glyphSparkC = this._glyphGeometries.get('.');
 
     // Pool of meshes, each with its own cloned material + cached uniform refs
     // so the hot path writes via `mesh._uColor.set(...)` directly.
@@ -200,6 +237,34 @@ export class Renderer {
     }
     this._poolCursor = 0;
 
+    // Track static scene objects so dispose() can release them.
+    this._staticGeometries = [];
+    this._staticMaterials = [];
+
+    // Dedicated ball mesh: a plane billboarded to the camera and filled
+    // by a procedural circle shader, so the ball is a true circle instead
+    // of the slightly oval `o` glyph.
+    const ballGeom = new THREE.PlaneGeometry(1, 1);
+    const ballMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uColor: { value: new THREE.Vector3(1, 1, 1) },
+        uViewOffset: { value: new THREE.Vector2(0, 0) },
+        uRotation: { value: 0 },
+      },
+      vertexShader: VERTEX_SHADER,
+      fragmentShader: BALL_FRAGMENT_SHADER,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this._ballMesh = new THREE.Mesh(ballGeom, ballMat);
+    this._ballMesh.frustumCulled = false;
+    this._ballUColor = ballMat.uniforms.uColor.value;
+    this._ballUViewOffset = ballMat.uniforms.uViewOffset.value;
+    this._staticGeometries.push(ballGeom);
+    this._staticMaterials.push(ballMat);
+    this.scene.add(this._ballMesh);
+
     // Pre-allocated per-player color buffers so staminaColor can write into
     // a reused array instead of allocating [r,g,b] every frame.
     this._p1Color = [0, 0, 0];
@@ -212,9 +277,16 @@ export class Renderer {
     // accumulated with the current swing rate so rate changes never snap.
     this._animByPlayer = new WeakMap();
 
-    // Track static scene objects so dispose() can release them.
-    this._staticGeometries = [];
-    this._staticMaterials = [];
+    // Splash particle pool — ring-buffer allocation, `life === 0` means
+    // free. Fields are all numbers so there's zero GC churn per frame.
+    this._particles = [];
+    for (let i = 0; i < PARTICLE_POOL; i++) {
+      this._particles.push({
+        x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
+        life: 0, maxLife: 0,
+      });
+    }
+    this._particleNext = 0;
 
     this._buildFieldLines();
 
@@ -266,15 +338,25 @@ export class Renderer {
     this._addStickman(state.p1, this._p1Color, tick, p1Celebrating);
     this._addStickman(state.p2, this._p2Color, tick, p2Celebrating);
 
-    // Ball — bounce height becomes a view-space y offset so it shows up
-    // regardless of camera tilt.
-    this._placeGlyph(
-      this._glyphO,
-      state.ball.x, 0, state.ball.y,
-      BALL_GLYPH_SIZE,
-      COLOR_TEXT,
-      0, (state.ball.z || 0) * 0.5
-    );
+    // Ball — dedicated circle-shader mesh, not a font glyph, so it
+    // renders as a true circle. Bounce height becomes a view-space y
+    // offset so the ball shows up regardless of camera tilt.
+    this._ballMesh.position.set(state.ball.x, 0, state.ball.y * Z_STRETCH);
+    this._ballMesh.scale.set(BALL_SIZE, BALL_SIZE, 1);
+    this._ballUColor.set(COLOR_TEXT[0], COLOR_TEXT[1], COLOR_TEXT[2]);
+    this._ballUViewOffset.set(0, (state.ball.z || 0) * 0.5);
+
+    // Consume ball-bounce events and spawn splash particles. Physics
+    // clears `state.events` at the top of each tick, so any entries here
+    // are brand-new this frame.
+    if (state.events) {
+      for (let i = 0; i < state.events.length; i++) {
+        const ev = state.events[i];
+        if (ev.type === 'ball_bounce') this._spawnBounceParticles(ev);
+      }
+    }
+    this._stepParticles();
+    this._drawParticles();
 
     // Hide any meshes that were active last frame but aren't used this frame.
     for (let i = this._poolCursor; i < prevCursor; i++) {
@@ -660,6 +742,89 @@ export class Renderer {
       this._placeGlyph(this._glyphFist, x, 0, z, fistSize, color,
         rShPushX + rSin * STICKMAN_LIMB_FULL_H,
         rShY     - rCos * STICKMAN_LIMB_FULL_H);
+    }
+  }
+
+  /** Spawn a burst of splash particles at the bounce location. Count and
+   *  outward speed both scale with `ev.force`; the `ev.axis` tells us
+   *  which velocity component was reversed, so the burst can fan out
+   *  perpendicular to the surface that was struck. */
+  _spawnBounceParticles(ev) {
+    const count = Math.min(
+      PARTICLE_MAX_COUNT,
+      Math.floor(PARTICLE_BASE_COUNT + ev.force * PARTICLE_FORCE_COUNT),
+    );
+    const speed = ev.force * PARTICLE_BASE_SPEED;
+    const spread = speed * PARTICLE_SPREAD;
+    for (let i = 0; i < count; i++) {
+      const p = this._particles[this._particleNext];
+      this._particleNext = (this._particleNext + 1) % this._particles.length;
+
+      p.x = ev.x;
+      p.y = ev.y;
+      p.z = ev.z;
+
+      // Surface-normal burst: dominant component is along the struck axis,
+      // other two axes get a small lateral kick. axis='z' (ground/ceiling)
+      // bursts upward; axis='y' (field walls) bursts back toward center;
+      // axis='x' (goal posts) bursts back into the field horizontally.
+      const r1 = (Math.random() - 0.5) * 2;
+      const r2 = (Math.random() - 0.5) * 2;
+      const r3 = Math.random();
+      if (ev.axis === 'z') {
+        p.vx = r1 * spread;
+        p.vy = r2 * spread;
+        p.vz = (ev.z > 0 ? -1 : 1) * speed * (0.5 + r3);
+      } else if (ev.axis === 'y') {
+        const sign = ev.y < FIELD_HEIGHT / 2 ? 1 : -1;
+        p.vx = r1 * spread;
+        p.vy = sign * speed * (0.5 + r3);
+        p.vz = speed * (0.3 + r3 * 0.7);
+      } else {
+        const sign = ev.x < this.fieldWidth * 0.5 ? 1 : -1;
+        p.vx = sign * speed * (0.5 + r3);
+        p.vy = r2 * spread;
+        p.vz = speed * (0.3 + r3 * 0.7);
+      }
+
+      p.maxLife = PARTICLE_LIFE_BASE + Math.floor(Math.random() * PARTICLE_LIFE_VARIANCE);
+      p.life = p.maxLife;
+    }
+  }
+
+  /** Advance all live particles by one frame. Particles fall under light
+   *  gravity and lose horizontal speed on ground contact. */
+  _stepParticles() {
+    for (let i = 0; i < this._particles.length; i++) {
+      const p = this._particles[i];
+      if (p.life <= 0) continue;
+      p.x += p.vx;
+      p.y += p.vy;
+      p.z += p.vz;
+      p.vz -= PARTICLE_GRAVITY;
+      if (p.z < 0) {
+        p.z = 0;
+        p.vz = 0;
+        p.vx *= PARTICLE_GROUND_DRAG;
+        p.vy *= PARTICLE_GROUND_DRAG;
+      }
+      p.life--;
+    }
+  }
+
+  /** Draw all live particles. Glyph fades `*` → `'` → `.` as age grows. */
+  _drawParticles() {
+    for (let i = 0; i < this._particles.length; i++) {
+      const p = this._particles[i];
+      if (p.life <= 0) continue;
+      const ageFrac = p.life / p.maxLife;
+      const glyph = ageFrac > 0.66 ? this._glyphSparkA
+                  : ageFrac > 0.33 ? this._glyphSparkB
+                  : this._glyphSparkC;
+      this._placeGlyph(
+        glyph, p.x, 0, p.y, PARTICLE_SIZE * (0.6 + 0.4 * ageFrac), COLOR_WHITE,
+        0, p.z * 0.5,
+      );
     }
   }
 

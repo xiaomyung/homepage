@@ -18,14 +18,14 @@
  */
 
 import { buildAtlas } from './atlas.js';
-import { Renderer } from './renderer.js?v=38';
+import { Renderer } from './renderer.js?v=51';
 import {
   createField,
   createState,
   createSeededRng,
   tick as physicsTick,
   buildInputs,
-} from './physics.js?v=32';
+} from './physics.js?v=33';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import {
@@ -115,6 +115,8 @@ async function nextShowcase() {
 
   const state = createState(createField(), createSeededRng((Math.random() * 2 ** 31) >>> 0));
   state.graceFrames = 0;
+  // Let the renderer consume ball-bounce events for splash particles.
+  state.recordEvents = true;
 
   let p1Brain = null;
   let p2Brain = null;

@@ -423,8 +423,9 @@ body {
   display: grid;
   grid-template-columns: auto 1fr auto 1fr;
   column-gap: 0.9rem;
-  row-gap: 0.1rem;
-  font-size: 0.55rem;
+  row-gap: 0.05rem;
+  font-size: 0.7rem;
+  line-height: 1.35;
   color: var(--text-dim);
   margin-bottom: 0.6rem;
 }

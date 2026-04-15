@@ -233,12 +233,31 @@ export function createFitnessGraph({ apiBase, pollIntervalMs = 5000 }) {
   // "avg 0.33") that double as the color legend — wider than a pure
   // number so the key word survives on narrow layouts.
   const RIGHT_PAD = 64;
-  const LABEL_FONT = '10px "Iosevka Term", monospace';
-  const LABEL_MIN_GAP = 12;
+  const LABEL_FONT = '11px "Iosevka Term", monospace';
+  const LABEL_MIN_GAP = 13;
+
+  /** Resize the canvas backing store to match its CSS box × devicePixelRatio,
+   *  then reset the 2D context transform so subsequent draw calls use CSS
+   *  pixel coordinates. Returns the CSS-pixel dimensions (or null when the
+   *  canvas is hidden / not laid out yet, in which case drawing is a no-op). */
+  function syncDPR() {
+    const rect = canvas.getBoundingClientRect();
+    const cssW = Math.round(rect.width);
+    const cssH = Math.round(rect.height);
+    if (cssW <= 0 || cssH <= 0) return null;
+    const dpr = window.devicePixelRatio || 1;
+    const bufW = Math.round(cssW * dpr);
+    const bufH = Math.round(cssH * dpr);
+    if (canvas.width !== bufW)  canvas.width  = bufW;
+    if (canvas.height !== bufH) canvas.height = bufH;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { w: cssW, h: cssH };
+  }
 
   function draw() {
-    const w = canvas.width;
-    const h = canvas.height;
+    const dims = syncDPR();
+    if (!dims) return;
+    const { w, h } = dims;
     ctx.clearRect(0, 0, w, h);
 
     if (history.length < 2) {
@@ -317,6 +336,12 @@ export function createFitnessGraph({ apiBase, pollIntervalMs = 5000 }) {
     ctx.fillText(`avg ${avgs[n - 1].toFixed(2)}`, labelX, avgLabelY);
   }
 
+  // Redraw whenever the canvas box changes (DPR shift, panel open, window
+  // resize) so the backing store stays in step with the CSS layout.
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => draw()).observe(canvas);
+  }
+
   poll();
   setInterval(poll, pollIntervalMs);
 
@@ -341,8 +366,9 @@ export function createConfigControls() {
   // Worker count is a client-side-only setting clamped to [1, hardwareMax].
   // Default is the full hardware count so training ramps up to the
   // client's maximum throughput the moment [start] is pressed — users
-  // who want to throttle back can step down manually.
-  const hardwareMax = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 8));
+  // who want to throttle back can step down manually. No artificial
+  // ceiling: a 16-thread CPU should get 16 workers if it asks for them.
+  const hardwareMax = Math.max(1, navigator.hardwareConcurrency || 4);
   let workerCount = hardwareMax;
   const workerChangeListeners = [];
   const renderWorkerStepper = () => {

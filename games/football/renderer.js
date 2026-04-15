@@ -43,7 +43,38 @@ const STICKMAN_SHOULDER_OFY = 0.92 * STICKMAN_GLYPH_SIZE;
 const STICKMAN_HIP_OFX      = 0.12 * STICKMAN_GLYPH_SIZE;
 const STICKMAN_HEAD_GAP_Y   = 0.23 * STICKMAN_GLYPH_SIZE;
 const STICKMAN_LIMB_HALF_H  = 0.45 * STICKMAN_GLYPH_SIZE;
+const STICKMAN_LIMB_FULL_H  = STICKMAN_LIMB_HALF_H * 2;
 const TWO_PI = Math.PI * 2;
+
+// Celebration pose — jumping-jack with arms straight up.
+const CELEB_PHASE_RATE = 0.25;           // rad per tick; ~25 ticks per hop
+const CELEB_JUMP_PEAK  = 0.55 * STICKMAN_GLYPH_SIZE;
+const CELEB_LEG_SPREAD = 0.55;           // leg outward angle at jump apex (rad)
+// Push pose — a spring-loaded boxing-glove jab. Animation is driven
+// directly by `anim.pushProgress` (ticks since pushTimer went positive);
+// the scripted curves return both arm angle and pivot shift per phase.
+// Phases over normalized progress t ∈ [0, 1]:
+//   [0,        RAISE_T]     raise:   arms rotate 0 → π/2, pivot 0
+//   [RAISE_T,  WINDUP_T]    windup:  arms horizontal, pivot slides 0 → -WINDUP_DIST
+//   [WINDUP_T, STRIKE_T]    strike:  arms horizontal, pivot snaps -WINDUP → +STRIKE (explosive)
+//   [STRIKE_T, SETTLE_T]    settle:  arms horizontal, pivot +STRIKE → 0
+//   [SETTLE_T, LOWER_T]     hold:    arms horizontal, pivot 0
+//   [LOWER_T,  1]           lower:   arms rotate π/2 → 0, pivot 0
+const PUSH_TOTAL_TICKS    = 18;             // matches physics PUSH_ANIM_MS (300ms / TICK_MS)
+const PUSH_RAISE_T        = 0.15;
+const PUSH_WINDUP_T       = 0.35;
+const PUSH_STRIKE_T       = 0.50;
+const PUSH_SETTLE_T       = 0.70;
+const PUSH_LOWER_T        = 0.85;
+const PUSH_WINDUP_DIST    = 0.70 * STICKMAN_GLYPH_SIZE;  // pivot pull-back
+const PUSH_STRIKE_DIST    = 0.55 * STICKMAN_GLYPH_SIZE;  // pivot launch past shoulder
+const PUSH_CROUCH_DEPTH   = 0.30 * STICKMAN_GLYPH_SIZE;  // upper body dip during windup
+const PUSH_HOP_DIST       = 0.40 * STICKMAN_GLYPH_SIZE;  // whole body hop on strike
+const PUSH_FIST_PULSE     = 0.35;                        // fist grows to (1 + pulse)× at strike peak
+const PUSH_EXTEND_ANGLE   = Math.PI * 0.5;
+const PUSH_FIST_SIZE      = 0.65 * STICKMAN_GLYPH_SIZE;
+const PUSH_BACK_TILT      = 0.28;                        // rad — body leans back during windup
+const PUSH_FWD_TILT       = 0.42;                        // rad — body leans forward on strike
 const BALL_GLYPH_SIZE = 24;
 
 const CAMERA_FOV = 60;
@@ -138,6 +169,7 @@ export class Renderer {
     // so the hot path avoids a Map lookup per glyph.
     this._glyphO = this._glyphGeometries.get('o');
     this._glyphPipe = this._glyphGeometries.get('|');
+    this._glyphFist = this._glyphGeometries.get('O');
 
     // Pool of meshes, each with its own cloned material + cached uniform refs
     // so the hot path writes via `mesh._uColor.set(...)` directly.
@@ -226,10 +258,13 @@ export class Renderer {
     this._poolCursor = 0;
 
     const tick = state.tick || 0;
+    const celebrating = state.pauseState === 'celebrate';
+    const p1Celebrating = celebrating && state.goalScorer === state.p1;
+    const p2Celebrating = celebrating && state.goalScorer === state.p2;
     staminaColorInto(state.p1.stamina, this._p1Color);
     staminaColorInto(state.p2.stamina, this._p2Color);
-    this._addStickman(state.p1, this._p1Color, tick);
-    this._addStickman(state.p2, this._p2Color, tick);
+    this._addStickman(state.p1, this._p1Color, tick, p1Celebrating);
+    this._addStickman(state.p2, this._p2Color, tick, p2Celebrating);
 
     // Ball — bounce height becomes a view-space y offset so it shows up
     // regardless of camera tilt.
@@ -436,88 +471,196 @@ export class Renderer {
 
   /* ── Stickman & pool ────────────────────────────────────── */
 
-  _addStickman(player, color, tick) {
-    // 6-glyph billboarded figure rendered via one unified pendulum pose.
+  _addStickman(player, color, tick, isCelebrating) {
+    // 6-glyph billboarded figure rendered via one unified pendulum pose,
+    // with celebration and push overrides layered on top as smoothed blends.
     // At rest (amplitude → 0) every limb hangs straight, giving a vertical
-    // Minecraft-Steve idle; speed ramps amplitude and forward lean in
-    // smoothly via a per-player low-pass filter, so transitions between
-    // standing / walking / running / direction flips never snap.
-    const x = player.x + 9;
+    // Minecraft-Steve idle; speed ramps amplitude and forward lean in via
+    // a per-player low-pass filter, so transitions between standing /
+    // walking / running / direction flips / celebrating / pushing never
+    // snap.
+    let x = player.x + 9;
     const z = player.y;
     const s = STICKMAN_GLYPH_SIZE;
 
-    const vx = player.vx;
-    const vy = player.vy;
-    const speed = Math.sqrt(vx * vx + vy * vy);
+    // Fetch / init smoothed state for this player. Derived velocity comes
+    // from the frame-to-frame position delta, so any motion source (NN
+    // output, reposition walk, push) feeds the same animation pipeline.
+    let anim = this._animByPlayer.get(player);
+    if (!anim) {
+      anim = {
+        tilt: 0, amplitude: 0, phase: 0,
+        celebrate: 0, celebratePhase: 0,
+        pushing: 0, pushProgress: 0, prevPushTimer: 0,
+        lastTick: tick, lastX: player.x, lastY: player.y,
+      };
+      this._animByPlayer.set(player, anim);
+    }
+    const dt = tick > anim.lastTick ? tick - anim.lastTick : 0;
+    const denom = dt > 0 ? dt : 1;
+    const effVx = (player.x - anim.lastX) / denom;
+    const effVy = (player.y - anim.lastY) / denom;
+    anim.lastTick = tick;
+    anim.lastX = player.x;
+    anim.lastY = player.y;
 
-    // Targets derived directly from current speed — no hard gates.
+    const speed = Math.sqrt(effVx * effVx + effVy * effVy);
+
+    // Targets derived from derived velocity — no hard gates.
     const targetAmplitude = Math.min(speed * 0.2, 1.0);
     const targetTilt = speed > STICKMAN_RUN_THRESHOLD
-      ? -Math.sign(vx) * Math.min(
+      ? -Math.sign(effVx) * Math.min(
           (speed - STICKMAN_RUN_THRESHOLD) * STICKMAN_TILT_PER_SPEED,
           STICKMAN_TILT_MAX,
         )
       : 0;
     const swingRate = 0.2 + speed * 0.04;
 
-    // Fetch / init smoothed state for this player.
-    let anim = this._animByPlayer.get(player);
-    if (!anim) {
-      anim = { tilt: targetTilt, amplitude: targetAmplitude, phase: 0, lastTick: tick };
-      this._animByPlayer.set(player, anim);
+    const targetCelebrate = isCelebrating ? 1 : 0;
+    const targetPushing   = player.pushTimer > 0 ? 1 : 0;
+
+    // Push progress counter: resets on the rising edge of pushTimer and
+    // accumulates ticks until it falls back to zero. Drives the scripted
+    // 3-phase boxing curve below.
+    if (player.pushTimer > 0) {
+      if (anim.prevPushTimer <= 0) anim.pushProgress = 0;
+      anim.pushProgress += dt;
+    } else {
+      anim.pushProgress = 0;
     }
-    const dt = tick > anim.lastTick ? tick - anim.lastTick : 0;
-    anim.lastTick = tick;
+    anim.prevPushTimer = player.pushTimer;
+
     anim.tilt      += (targetTilt      - anim.tilt)      * STICKMAN_SMOOTH;
     anim.amplitude += (targetAmplitude - anim.amplitude) * STICKMAN_SMOOTH;
-    // Wrap phase to keep Math.sin precision stable over long sessions.
-    anim.phase = (anim.phase + swingRate * dt) % TWO_PI;
+    anim.celebrate += (targetCelebrate - anim.celebrate) * STICKMAN_SMOOTH;
+    // `pushing` is a binary-ish gate: 1 while the scripted curve is
+    // active, 0 otherwise. No LPF needed since the curve itself
+    // smoothly enters/exits via the raise/lower phases.
+    anim.pushing = targetPushing;
+    // Wrap phases to keep Math.sin precision stable over long sessions.
+    anim.phase          = (anim.phase          + swingRate       * dt) % TWO_PI;
+    anim.celebratePhase = (anim.celebratePhase + CELEB_PHASE_RATE * dt) % TWO_PI;
 
-    const tilt      = anim.tilt;
     const amplitude = anim.amplitude;
+    const celeb     = anim.celebrate;
+    const celebInv  = 1 - celeb;
+    const pushing   = anim.pushing;
     const swing     = Math.sin(anim.phase);
 
-    // Body bob scales with amplitude so it fades in/out with the swing.
-    const bob = Math.abs(swing) * 0.08 * amplitude;
+    // Jump bob (upward-only half-sine, gated by the celebrate blend).
+    const jumpY = Math.max(0, Math.sin(anim.celebratePhase)) * CELEB_JUMP_PEAK * celeb;
+    // Walking bob blended out as celebration takes over.
+    const bob = Math.abs(swing) * 0.08 * amplitude * celebInv;
 
-    const tiltC = Math.cos(tilt);
-    const tiltS = Math.sin(tilt);
-    const hipBaseY = s * 0.10 + bob * s;
+    // Push scripted state — one branch, every downstream effect captured.
+    // Computed before placement because dip/hop/tilt/pivot/fist all feed
+    // into positions below. Zero-valued fall-throughs keep the hot path
+    // branchless for the non-push case.
+    const pushDir = player.dir;
+    let pushArmAngle   = 0;
+    let pushPivotShift = 0;
+    let pushBodyDip    = 0;
+    let pushFistScale  = 1;
+    let pushTiltOffset = 0;
+    let strikeActive   = false;
+    if (pushing > 0) {
+      const pushT = Math.min(anim.pushProgress / PUSH_TOTAL_TICKS, 1);
+      pushArmAngle   =  pushDir * pushArmAngleAt(pushT);
+      pushPivotShift =  pushDir * pushPivotAt(pushT);
+      pushBodyDip    =  pushBodyDipAt(pushT);
+      pushFistScale  =  pushFistScaleAt(pushT);
+      pushTiltOffset = -pushDir * pushBodyTiltAt(pushT);
+      x             +=  pushDir * pushHopAt(pushT);
+      strikeActive   =  pushT >= PUSH_WINDUP_T && pushT <= PUSH_LOWER_T;
+    }
 
-    // Rotate body-local offset (dx, dy) around the hip by `tilt` (CCW).
-    // Inlined at every call site below to avoid allocating closures each
-    // frame. hipY adds the hip base offset; hipX is just the rotated dx.
+    // Walk tilt applies to the whole figure (running lean carries the
+    // hips naturally). Push tilt is upper-body-only so feet stay planted
+    // during the strike snap. Hip anchors use walkC/walkS; torso/shoulder/
+    // head use tiltC/tiltS from the combined upperTilt.
+    const walkTilt  = anim.tilt;
+    const upperTilt = walkTilt + pushTiltOffset;
+    const walkC = Math.cos(walkTilt);
+    const walkS = Math.sin(walkTilt);
+    const tiltC = Math.cos(upperTilt);
+    const tiltS = Math.sin(upperTilt);
 
+    const hipBaseY  = s * 0.10 + bob * s + jumpY;
+    const upperHipY = hipBaseY + pushBodyDip;
+
+    // Torso / shoulders / head rotate around the hip by upperTilt.
     const torsoCX = -STICKMAN_TORSO_HALF_H * tiltS;
-    const torsoCY = hipBaseY + STICKMAN_TORSO_HALF_H * tiltC;
-    this._placeGlyph(this._glyphPipe, x, 0, z, s, color, torsoCX, torsoCY, tilt);
+    const torsoCY = upperHipY + STICKMAN_TORSO_HALF_H * tiltC;
+    this._placeGlyph(this._glyphPipe, x, 0, z, s, color, torsoCX, torsoCY, upperTilt);
 
     const lShX = -STICKMAN_SHOULDER_OFX * tiltC - STICKMAN_SHOULDER_OFY * tiltS;
-    const lShY = hipBaseY - STICKMAN_SHOULDER_OFX * tiltS + STICKMAN_SHOULDER_OFY * tiltC;
+    const lShY = upperHipY - STICKMAN_SHOULDER_OFX * tiltS + STICKMAN_SHOULDER_OFY * tiltC;
     const rShX =  STICKMAN_SHOULDER_OFX * tiltC - STICKMAN_SHOULDER_OFY * tiltS;
-    const rShY = hipBaseY + STICKMAN_SHOULDER_OFX * tiltS + STICKMAN_SHOULDER_OFY * tiltC;
+    const rShY = upperHipY + STICKMAN_SHOULDER_OFX * tiltS + STICKMAN_SHOULDER_OFY * tiltC;
 
     // Head sits a fixed world-space gap above the neck midpoint so its
     // distance from the body is preserved when the torso leans forward.
-    // The head glyph itself still rotates by `tilt` so it reads as part
-    // of the body.
     const neckCX = (lShX + rShX) * 0.5;
     const neckCY = (lShY + rShY) * 0.5;
-    this._placeGlyph(this._glyphO, x, 0, z, s, color, neckCX, neckCY + STICKMAN_HEAD_GAP_Y, tilt);
+    this._placeGlyph(this._glyphO, x, 0, z, s, color, neckCX, neckCY + STICKMAN_HEAD_GAP_Y, upperTilt);
 
-    const lHipX = -STICKMAN_HIP_OFX * tiltC;
-    const lHipY = hipBaseY - STICKMAN_HIP_OFX * tiltS;
-    const rHipX =  STICKMAN_HIP_OFX * tiltC;
-    const rHipY = hipBaseY + STICKMAN_HIP_OFX * tiltS;
+    // Hip anchors use walk tilt only — push lean doesn't drag the feet.
+    const lHipX = -STICKMAN_HIP_OFX * walkC;
+    const lHipY = hipBaseY - STICKMAN_HIP_OFX * walkS;
+    const rHipX =  STICKMAN_HIP_OFX * walkC;
+    const rHipY = hipBaseY + STICKMAN_HIP_OFX * walkS;
 
-    // Pendulum limbs. Contralateral rule (left leg + right arm forward)
-    // falls out of `legAngle = -armAngle` with mirrored left/right signs.
-    const armAngle = swing * 0.85 * amplitude;
-    const legAngle = -swing * 0.7  * amplitude;
-    this._placeLimb(x, z, s, color, lShX,  lShY,   armAngle);
-    this._placeLimb(x, z, s, color, rShX,  rShY,  -armAngle);
-    this._placeLimb(x, z, s, color, lHipX, lHipY,  legAngle);
-    this._placeLimb(x, z, s, color, rHipX, rHipY, -legAngle);
+    // Normal pendulum limb angles (contralateral pairing).
+    const armSwing = swing * 0.85 * amplitude;
+    const legSwing = -swing * 0.7  * amplitude;
+    let leftArmAngle  =  armSwing;
+    let rightArmAngle = -armSwing;
+    let leftLegAngle  =  legSwing;
+    let rightLegAngle = -legSwing;
+
+    // Celebration override: arms sweep outward to straight up, legs do a
+    // symmetric jumping-jack that spreads at jump apex and contracts on
+    // the ground. Both values blend in via `celeb`.
+    if (celeb > 0.001) {
+      const legSpread = Math.max(0, Math.sin(anim.celebratePhase)) * CELEB_LEG_SPREAD;
+      leftArmAngle  = leftArmAngle  * celebInv +  Math.PI   * celeb;
+      rightArmAngle = rightArmAngle * celebInv + -Math.PI   * celeb;
+      leftLegAngle  = leftLegAngle  * celebInv + -legSpread * celeb;
+      rightLegAngle = rightLegAngle * celebInv +  legSpread * celeb;
+    }
+
+    // Push override: arm angle follows the scripted curve exactly —
+    // no LPF smearing of the explosive strike.
+    if (pushing > 0) {
+      leftArmAngle  = pushArmAngle;
+      rightArmAngle = pushArmAngle;
+    }
+
+    const lShPushX = lShX + pushPivotShift;
+    const rShPushX = rShX + pushPivotShift;
+
+    this._placeLimb(x, z, s, color, lShPushX, lShY,  leftArmAngle);
+    this._placeLimb(x, z, s, color, rShPushX, rShY,  rightArmAngle);
+    this._placeLimb(x, z, s, color, lHipX,    lHipY, leftLegAngle);
+    this._placeLimb(x, z, s, color, rHipX,    rHipY, rightLegAngle);
+
+    // Push fists — visible from windup through lower, covering the
+    // whole "glove in motion" window. Two `O` glyphs track the tips of
+    // the two extended arms, including the pivot shift. The glyph size
+    // pulses larger at strike peak via pushFistScale for impact weight.
+    if (strikeActive && pushing > 0) {
+      const lSin = Math.sin(leftArmAngle);
+      const lCos = Math.cos(leftArmAngle);
+      const rSin = Math.sin(rightArmAngle);
+      const rCos = Math.cos(rightArmAngle);
+      const fistSize = PUSH_FIST_SIZE * pushFistScale;
+      this._placeGlyph(this._glyphFist, x, 0, z, fistSize, color,
+        lShPushX + lSin * STICKMAN_LIMB_FULL_H,
+        lShY     - lCos * STICKMAN_LIMB_FULL_H);
+      this._placeGlyph(this._glyphFist, x, 0, z, fistSize, color,
+        rShPushX + rSin * STICKMAN_LIMB_FULL_H,
+        rShY     - rCos * STICKMAN_LIMB_FULL_H);
+    }
   }
 
   /** Place a single glyph that represents a limb pivoting at (pivotX,
@@ -550,6 +693,131 @@ export class Renderer {
 }
 
 /* ── Helpers ───────────────────────────────────────────────── */
+
+/**
+ * Arm angle curve for the spring-loaded push. Arms rotate from down
+ * to horizontal during RAISE, hold horizontal through WINDUP/STRIKE/
+ * SETTLE/hold, then rotate back to down during LOWER. Magnitude only —
+ * multiply by pushDir outside.
+ */
+function pushArmAngleAt(t) {
+  if (t < PUSH_RAISE_T) {
+    const p = t / PUSH_RAISE_T;
+    return PUSH_EXTEND_ANGLE * easeInOut(p);
+  }
+  if (t < PUSH_LOWER_T) return PUSH_EXTEND_ANGLE;
+  const p = (t - PUSH_LOWER_T) / (1 - PUSH_LOWER_T);
+  return PUSH_EXTEND_ANGLE * (1 - easeInOut(p));
+}
+
+/**
+ * Shoulder pivot shift curve for the spring-loaded push. 0 during the
+ * raise, slides back during windup, springs forward through strike,
+ * settles to 0. Magnitude only — multiply by pushDir outside.
+ */
+function pushPivotAt(t) {
+  if (t < PUSH_RAISE_T) return 0;
+  if (t < PUSH_WINDUP_T) {
+    const p = (t - PUSH_RAISE_T) / (PUSH_WINDUP_T - PUSH_RAISE_T);
+    return -PUSH_WINDUP_DIST * easeOut(p);
+  }
+  if (t < PUSH_STRIKE_T) {
+    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
+    const span = PUSH_WINDUP_DIST + PUSH_STRIKE_DIST;
+    return -PUSH_WINDUP_DIST + span * (p * p);
+  }
+  if (t < PUSH_SETTLE_T) {
+    const p = (t - PUSH_STRIKE_T) / (PUSH_SETTLE_T - PUSH_STRIKE_T);
+    return PUSH_STRIKE_DIST * (1 - easeInOut(p));
+  }
+  return 0;
+}
+
+/**
+ * Upper-body crouch depth during push. Body drops while the pivot
+ * pulls back, snaps upright during the strike, settles at 0. Negative
+ * values are subtracted from the upper body's Y so a negative result
+ * means "lower than neutral."
+ */
+function pushBodyDipAt(t) {
+  if (t < PUSH_RAISE_T) return 0;
+  if (t < PUSH_WINDUP_T) {
+    const p = (t - PUSH_RAISE_T) / (PUSH_WINDUP_T - PUSH_RAISE_T);
+    return -PUSH_CROUCH_DEPTH * easeOut(p);
+  }
+  if (t < PUSH_STRIKE_T) {
+    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
+    return -PUSH_CROUCH_DEPTH * (1 - p * p);
+  }
+  return 0;
+}
+
+/**
+ * Whole-body horizontal hop during push. 0 during raise/windup, springs
+ * forward with quadratic acceleration during strike, decays during settle.
+ * Magnitude only — multiply by pushDir outside.
+ */
+function pushHopAt(t) {
+  if (t < PUSH_WINDUP_T) return 0;
+  if (t < PUSH_STRIKE_T) {
+    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
+    return PUSH_HOP_DIST * p * p;
+  }
+  if (t < PUSH_SETTLE_T) {
+    const p = (t - PUSH_STRIKE_T) / (PUSH_SETTLE_T - PUSH_STRIKE_T);
+    return PUSH_HOP_DIST * (1 - easeInOut(p));
+  }
+  return 0;
+}
+
+/**
+ * Fist glyph scale multiplier. 1.0 baseline, pulses to (1 + PUSH_FIST_PULSE)
+ * linearly through the strike phase, decays back to 1 during settle.
+ */
+function pushFistScaleAt(t) {
+  if (t < PUSH_WINDUP_T) return 1;
+  if (t < PUSH_STRIKE_T) {
+    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
+    return 1 + PUSH_FIST_PULSE * p;
+  }
+  if (t < PUSH_SETTLE_T) {
+    const p = (t - PUSH_STRIKE_T) / (PUSH_SETTLE_T - PUSH_STRIKE_T);
+    return 1 + PUSH_FIST_PULSE * (1 - easeInOut(p));
+  }
+  return 1;
+}
+
+/**
+ * Body lean along the push axis as a signed "forward amount":
+ * negative = lean away from push dir (back / windup loading),
+ * positive = lean toward push dir (forward / strike release).
+ * Caller multiplies by player.dir to map into the walk-tilt convention
+ * (where negative tilt leans right for dir=+1).
+ */
+function pushBodyTiltAt(t) {
+  if (t < PUSH_RAISE_T) return 0;
+  if (t < PUSH_WINDUP_T) {
+    const p = (t - PUSH_RAISE_T) / (PUSH_WINDUP_T - PUSH_RAISE_T);
+    return -PUSH_BACK_TILT * easeOut(p);
+  }
+  if (t < PUSH_STRIKE_T) {
+    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
+    return -PUSH_BACK_TILT + (PUSH_BACK_TILT + PUSH_FWD_TILT) * (p * p);
+  }
+  if (t < PUSH_SETTLE_T) {
+    const p = (t - PUSH_STRIKE_T) / (PUSH_SETTLE_T - PUSH_STRIKE_T);
+    return PUSH_FWD_TILT * (1 - easeInOut(p));
+  }
+  return 0;
+}
+
+function easeInOut(p) {
+  return p < 0.5 ? 2 * p * p : 1 - (2 * (1 - p)) * (1 - p);
+}
+
+function easeOut(p) {
+  return 1 - (1 - p) * (1 - p);
+}
 
 function rgb(hex) {
   const h = hex.replace('#', '');

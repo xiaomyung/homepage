@@ -38,10 +38,16 @@
   <h2>run cycle (fast, vx=8): 10 frames sampled across one cycle</h2>
   <canvas id="stage-walk-fast" class="strip"></canvas>
 
+  <h2>celebration (goal scorer): 10 frames across one jump cycle</h2>
+  <canvas id="stage-celebrate" class="strip"></canvas>
+
+  <h2>push (dir=+1, fist forward): 10 frames held at peak</h2>
+  <canvas id="stage-push" class="strip"></canvas>
+
 <script type="module">
-  import { buildAtlas } from './atlas.js?v=77';
-  import { Renderer } from './renderer.js?v=77';
-  import { createField, createState, createSeededRng, FIELD_HEIGHT } from './physics.js?v=77';
+  import { buildAtlas } from './atlas.js?v=86';
+  import { Renderer } from './renderer.js?v=86';
+  import { createField, createState, createSeededRng, FIELD_HEIGHT } from './physics.js?v=86';
 
   const log = document.getElementById('log');
   function write(cls, msg) {
@@ -101,44 +107,78 @@
 
       const stripFieldWidth = 900;
 
-      function makeStrip(canvasId, vx, ticks) {
+      // Each strip slot uses a fresh player proxy so its anim state lives
+      // in isolation in the renderer's WeakMap. We seed the anim state
+      // directly to skip the LPF warm-up, then call _addStickman with
+      // dt=0 so the pose renders exactly as seeded.
+      function renderStrip(canvasId, slotFn, n) {
         const canvas = document.getElementById(canvasId);
         const r = new Renderer(canvas, atlas, { fieldWidth: stripFieldWidth });
         r.autoResize();
-
-        const stripState = createState(createField(stripFieldWidth), createSeededRng(2));
-        stripState.p1.stamina = 1;
-        stripState.p1.vx = vx;
-        stripState.ball.x = -500; stripState.ball.y = 0; // hide ball
-
-        const spacing = stripFieldWidth / (ticks.length + 1);
-        r.renderState = function() {
-          const prevCursor = this._poolCursor;
-          this._poolCursor = 0;
-          for (let i = 0; i < ticks.length; i++) {
-            stripState.p1.x = spacing * (i + 1) - 9;
-            stripState.p1.y = FIELD_HEIGHT / 2;
-            stripState.p1.vx = vx;
-            this._addStickman(stripState.p1, [0.82, 0.82, 0.82], ticks[i]);
-          }
-          for (let i = this._poolCursor; i < prevCursor; i++) this._pool[i].visible = false;
-          this.renderer.render(this.scene, this.camera);
-        };
-        r.renderState();
+        const spacing = stripFieldWidth / (n + 1);
+        r._poolCursor = 0;
+        for (let i = 0; i < n; i++) {
+          const x = spacing * (i + 1) - 9;
+          const y = FIELD_HEIGHT / 2;
+          const slot = slotFn(i, n);
+          const proxy = {
+            x, y,
+            vx: 0, vy: 0,
+            dir: slot.dir ?? 1,
+            pushTimer: slot.pushTimer ?? 0,
+            stamina: 1,
+          };
+          // Seed anim state directly so blends render at their forced values.
+          r._animByPlayer.set(proxy, {
+            tilt: slot.tilt ?? 0,
+            amplitude: slot.amplitude ?? 0,
+            phase: slot.phase ?? 0,
+            celebrate: slot.celebrate ?? 0,
+            celebratePhase: slot.celebratePhase ?? 0,
+            pushing: slot.pushing ?? 0,
+            pushProgress: slot.pushProgress ?? 0,
+            prevPushTimer: slot.pushTimer ?? 0,
+            lastTick: slot.tick ?? 0,
+            lastX: x, lastY: y,
+          });
+          r._addStickman(proxy, [0.82, 0.82, 0.82], slot.tick ?? 0, slot.isCelebrating === true);
+        }
+        r.renderer.render(r.scene, r.camera);
       }
 
-      // swingRate = 0.2 + speed * 0.04 (must match renderer.js)
-      function sampleCycle(speed, n) {
-        if (speed <= 0) return new Array(n).fill(0);
-        const cycleTicks = (2 * Math.PI) / (0.2 + speed * 0.04);
-        const out = [];
-        for (let i = 0; i < n; i++) out.push(Math.round((i / n) * cycleTicks));
-        return out;
+      // Walk/run strips advance phase + amplitude by replaying dt ticks
+      // of smoothing. Since derived velocity = position delta, we seed
+      // lastX so effVx = desiredVx at the first call.
+      function walkSlotFn(vx) {
+        const cycleTicks = (2 * Math.PI) / (0.2 + vx * 0.04 || 1);
+        const amplitude = Math.min(vx * 0.2, 1.0);
+        const tilt = vx > 1.2
+          ? -Math.sign(vx) * Math.min((vx - 1.2) * 0.09, 0.45) : 0;
+        return (i, n) => ({
+          phase: (i / n) * 2 * Math.PI,
+          amplitude, tilt,
+        });
       }
-      makeStrip('stage-idle', 0, sampleCycle(0, 10));
-      makeStrip('stage-walk-slow', 1.5, sampleCycle(1.5, 10));
-      makeStrip('stage-walk-fast', 8, sampleCycle(8, 10));
-      write('ok', 'idle + slow + fast strips rendered');
+
+      renderStrip('stage-idle',       walkSlotFn(0),   10);
+      renderStrip('stage-walk-slow',  walkSlotFn(1.5), 10);
+      renderStrip('stage-walk-fast',  walkSlotFn(8),   10);
+
+      // Celebration: celebrate blend=1, celebratePhase advances across one cycle.
+      renderStrip('stage-celebrate', (i, n) => ({
+        celebrate: 1,
+        celebratePhase: (i / n) * 2 * Math.PI,
+      }), 10);
+
+      // Push: scripted 3-phase boxing jab. Slot i renders the pose at
+      // pushProgress = i (0..9 of 18 total ticks) so the row shows the
+      // animation mid-way; a second row extends it further.
+      renderStrip('stage-push', (i, n) => ({
+        pushing: 1, dir: 1, pushTimer: 100,
+        pushProgress: (i / (n - 1)) * 18,
+      }), 10);
+
+      write('ok', 'idle + walk + run + celebrate + push strips rendered');
     } catch (err) {
       write('fail', `ERROR: ${err.message}`);
       console.error(err);

@@ -269,8 +269,10 @@ export function createFitnessGraph({ apiBase, pollIntervalMs = 5000 }) {
       return;
     }
 
-    // History is returned newest first (DESC by gen); reverse for left-to-right plot
-    const data = history.slice().reverse();
+    // Broker returns history oldest → newest (ASC), already stride-
+    // downsampled to at most ~512 points spanning the full run. No
+    // local reverse or resample needed — just plot left-to-right.
+    const data = history;
     const avgs = data.map((d) => d.avg);
     const tops = data.map((d) => d.top);
     const all = avgs.concat(tops);

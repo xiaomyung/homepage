@@ -630,17 +630,55 @@ function handleStats(req, res) {
   });
 }
 
+// Default bucket count for /history downsampling — keeps the payload
+// bounded regardless of how long training has run. The graph is ~800
+// CSS px wide, so 512 evenly-spaced points give sub-2px resolution
+// which is plenty for a 1px line. Client can override via ?points=N.
+const HISTORY_POINTS_DEFAULT = 512;
+const HISTORY_POINTS_MAX = 4096;
+
 function handleHistory(req, res) {
+  const url = req.url || '';
+  const qi = url.indexOf('?');
+  let points = HISTORY_POINTS_DEFAULT;
+  if (qi >= 0) {
+    const raw = new URLSearchParams(url.slice(qi + 1)).get('points');
+    if (raw !== null) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n > 0) points = Math.min(n, HISTORY_POINTS_MAX);
+    }
+  }
+  // Full history, oldest → newest. Downsampling to `points` happens
+  // below; returning ASC means the client just plots left-to-right
+  // without any reverse step.
   const rows = db.prepare(
-    `SELECT gen, avg_fitness, top_fitness, total_matches
-     FROM generations ORDER BY gen DESC LIMIT 100`,
+    `SELECT gen, avg_fitness, top_fitness
+     FROM generations ORDER BY gen ASC`,
   ).all();
-  json(res, 200, rows.map((r) => ({
+  const sampled = stridedDownsample(rows, points);
+  json(res, 200, sampled.map((r) => ({
     gen: r.gen,
     avg: r.avg_fitness,
     top: r.top_fitness,
-    total_matches: r.total_matches,
   })));
+}
+
+/** Pick at most `maxPoints` representative rows from `rows`, always
+ *  keeping the first and last entry. Uses even-stride sampling — good
+ *  enough for a ~monotone learning curve and vastly simpler than
+ *  LTTB. Runs in O(n) with no allocation beyond the result array. */
+function stridedDownsample(rows, maxPoints) {
+  const n = rows.length;
+  if (n <= maxPoints) return rows;
+  const out = new Array(maxPoints);
+  // Map output index i ∈ [0, maxPoints-1] → input index via
+  // `round(i * (n-1) / (maxPoints-1))` so indices 0 and maxPoints-1
+  // land exactly on rows[0] and rows[n-1].
+  const scale = (n - 1) / (maxPoints - 1);
+  for (let i = 0; i < maxPoints; i++) {
+    out[i] = rows[Math.round(i * scale)];
+  }
+  return out;
 }
 
 function handleConfigGet(req, res) {

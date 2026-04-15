@@ -950,3 +950,117 @@ test('both players regain full stamina when a goal is scored', () => {
   assert.equal(state.p1.exhausted, false);
   assert.equal(state.p2.exhausted, false);
 });
+
+/* ── Headless / training-mode fast path ────────────────────────
+ *
+ * `state.headless = true` is the training worker's contract: every
+ * tick of the match budget goes into active play, no pauses, no
+ * animations, no ball drop, no early match end at WIN_SCORE.
+ */
+
+test('headless scoreGoal resets pitch instantly, no pause', () => {
+  const state = freshState();
+  state.headless = true;
+  const f = state.field;
+
+  // Drain stamina + park players off-center so the reset is observable
+  state.p1.stamina = 0.2; state.p2.stamina = 0.3;
+  state.p1.x = 500; state.p1.y = 3;
+  state.p2.x = 600; state.p2.y = 40;
+
+  // Fire the ball into the left goal
+  state.ball.x = 120;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  for (let i = 0; i < 40 && state.scoreR === 0; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.scoreR, 1, 'goal should have scored');
+
+  // No pause at all
+  assert.equal(state.pauseState, null, 'headless should bypass all pauses');
+  assert.equal(state.pauseTimer, 0);
+  assert.equal(state.goalScorer, null, 'headless skips the scorer celebration pointer');
+  assert.equal(state.graceFrames, 0);
+
+  // Players teleported back to kickoff with zero velocity
+  const midY = FIELD_HEIGHT / 2;
+  assert.ok(Math.abs(state.p1.y - midY) < 1, `p1.y ≈ midY, got ${state.p1.y}`);
+  assert.ok(Math.abs(state.p2.y - midY) < 1, `p2.y ≈ midY, got ${state.p2.y}`);
+  assert.equal(state.p1.vx, 0); assert.equal(state.p1.vy, 0);
+  assert.equal(state.p2.vx, 0); assert.equal(state.p2.vy, 0);
+  assert.equal(state.p1.pushTimer, 0);
+  assert.equal(state.p1.kick.active, false);
+
+  // Ball reset to center, on the ground, stationary, unfrozen
+  assert.ok(Math.abs(state.ball.x - f.midX) < 1);
+  assert.equal(state.ball.z, 0);
+  assert.equal(state.ball.vx, 0);
+  assert.equal(state.ball.frozen, false);
+
+  // And critically: play can resume the very next tick
+  const tickBefore = state.tick;
+  tick(state, NOOP, NOOP);
+  assert.equal(state.tick, tickBefore + 1);
+  assert.equal(state.pauseState, null, 'still no pause after advancing');
+});
+
+test('headless does not end match on WIN_SCORE', () => {
+  const state = freshState();
+  state.headless = true;
+  state.scoreL = 4; // one goal short of default WIN_SCORE=5
+  const f = state.field;
+
+  state.ball.x = f.width - 120;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = 5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  for (let i = 0; i < 40 && state.scoreL < 5; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.scoreL, 5, 'fifth goal should have scored');
+  assert.equal(state.matchOver, false, 'headless must not set matchOver');
+  assert.equal(state.pauseState, null, 'headless must not set matchend pause');
+  assert.equal(state.winner, null);
+});
+
+test('headless ballOut also resets instantly', () => {
+  const state = freshState();
+  state.headless = true;
+  const f = state.field;
+  // Send the ball flying out the right touchline
+  state.ball.x = f.width - 1;
+  state.ball.y = 20;
+  state.ball.z = 0;
+  state.ball.vx = 20; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  // Park players off-center so the reset is observable
+  state.p1.x = 300; state.p1.y = 5;
+  state.p2.x = 700; state.p2.y = 45;
+
+  for (let i = 0; i < 5; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.pauseState, null, 'headless should skip reposition pause');
+  // Ball reset to midfield
+  assert.ok(Math.abs(state.ball.x - f.midX) < 1, `ball.x should be ~midX, got ${state.ball.x}`);
+  assert.equal(state.ball.vx, 0);
+});
+
+test('visual mode still runs the celebrate pause unchanged', () => {
+  // Regression: the headless branch must not leak into visual mode.
+  const state = freshState();
+  // headless defaults to false
+  const f = state.field;
+  state.ball.x = 120;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  for (let i = 0; i < 40 && state.pauseState !== 'celebrate'; i++) {
+    tick(state, NOOP, NOOP);
+  }
+  assert.equal(state.pauseState, 'celebrate', 'visual mode still celebrates');
+  assert.ok(state.goalScorer !== null, 'visual mode still flags the scorer');
+});

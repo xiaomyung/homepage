@@ -233,6 +233,13 @@ export function createState(field, rng = createSeededRng(0)) {
     winner: null,
     events: [],
     recordEvents: false,
+    // Training-mode flag. When true, `scoreGoal`/`ballOut` bypass the
+    // celebrate/reposition/waiting pause state machine entirely and
+    // instantly reset the pitch so every tick of the match budget is
+    // spent on active play — no animations, no idle frames, no
+    // WIN_SCORE early-stop. Default false so the visual showcase path
+    // stays untouched.
+    headless: false,
   };
 }
 
@@ -961,18 +968,52 @@ function recordBounce(state, axis, force) {
 
 /* ── Scoring, ball-out, reset, finalize ──────────────────────── */
 
-function scoreGoal(state, side) {
-  state.ball.frozen = true;
-  state.ball.vx = 0;
-  state.ball.vy = 0;
-  state.ball.vz = 0;
-  state.pauseState = 'celebrate';
-  state.pauseTimer = CELEBRATE_TICKS;
+/** Snap the whole pitch back to its kickoff state in one tick —
+ *  used by the headless training path after every goal or ball-out
+ *  so the match budget isn't burned on celebrate/reposition/waiting
+ *  pause frames that produce zero training signal. Teleports players
+ *  to their starting spots, zeros all velocities + pending animation
+ *  timers, drops the ball at midfield on the ground, and clears any
+ *  pause/grace state. */
+function resetToKickoff(state) {
+  const f = state.field;
+  const ball = state.ball;
+  ball.x = f.midX;
+  ball.y = FIELD_HEIGHT / 2;
+  ball.z = 0;
+  ball.vx = 0;
+  ball.vy = 0;
+  ball.vz = 0;
+  ball.frozen = false;
 
-  // Fresh legs for both sides on every goal (and therefore also on the
-  // match-ending goal). Stamina is otherwise slow-regen only during
-  // reposition, which can leave exhausted players visibly drained at
-  // kickoff for the next point.
+  const cy = FIELD_HEIGHT / 2;
+  const tx1 = f.midX - STARTING_GAP - f.playerWidth / 2;
+  const tx2 = f.midX + STARTING_GAP - f.playerWidth / 2;
+  const sides = [[state.p1, tx1], [state.p2, tx2]];
+  for (let i = 0; i < sides.length; i++) {
+    const p = sides[i][0];
+    p.x = sides[i][1];
+    p.y = cy;
+    p.vx = 0; p.vy = 0;
+    p.pushVx = 0; p.pushVy = 0;
+    p.airZ = 0;
+    p.pushTimer = 0;
+    p.kick.active = false;
+    p.kick.timer = 0;
+    p.kick.fired = false;
+  }
+
+  state.pauseState = null;
+  state.pauseTimer = 0;
+  state.goalScorer = null;
+  state.graceFrames = 0;
+  state.lastKickTick = state.tick;
+}
+
+function scoreGoal(state, side) {
+  // Fresh legs for both sides on every goal. Stamina is otherwise
+  // slow-regen only during reposition, which can leave exhausted
+  // players visibly drained at kickoff for the next point.
   state.p1.stamina = 1;
   state.p2.stamina = 1;
   state.p1.exhausted = false;
@@ -981,13 +1022,29 @@ function scoreGoal(state, side) {
   if (side === 'left') {
     // Ball into LEFT goal = RIGHT scored
     state.scoreR++;
-    state.goalScorer = state.p2;
     if (state.recordEvents) state.events.push({ type: 'goal', scorer: 'p2' });
+    if (!state.headless) state.goalScorer = state.p2;
   } else {
     state.scoreL++;
-    state.goalScorer = state.p1;
     if (state.recordEvents) state.events.push({ type: 'goal', scorer: 'p1' });
+    if (!state.headless) state.goalScorer = state.p1;
   }
+
+  if (state.headless) {
+    // Instant reset, no celebrate/matchend pause — the match budget
+    // is a wall-clock tick cap, so letting the game run to the full
+    // budget and recording whatever final score emerges beats any
+    // WIN_SCORE early-stop.
+    resetToKickoff(state);
+    return;
+  }
+
+  state.ball.frozen = true;
+  state.ball.vx = 0;
+  state.ball.vy = 0;
+  state.ball.vz = 0;
+  state.pauseState = 'celebrate';
+  state.pauseTimer = CELEBRATE_TICKS;
 
   if (state.scoreL >= WIN_SCORE || state.scoreR >= WIN_SCORE) {
     state.pauseState = 'matchend';
@@ -997,13 +1054,17 @@ function scoreGoal(state, side) {
 }
 
 function ballOut(state) {
+  if (state.recordEvents) state.events.push({ type: 'out' });
+  if (state.headless) {
+    resetToKickoff(state);
+    return;
+  }
   state.ball.frozen = true;
   state.ball.vx = 0;
   state.ball.vy = 0;
   state.ball.vz = 0;
   state.pauseState = 'reposition';
   state.pauseTimer = 0;
-  if (state.recordEvents) state.events.push({ type: 'out' });
 }
 
 function resetBall(state) {

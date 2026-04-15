@@ -140,24 +140,22 @@ function runMatch(matchup) {
   const field = createField();
   const seed = (Math.random() * 2 ** 31) >>> 0;
   const state = createState(field, createSeededRng(seed));
+  // Training mode: skip celebrate/reposition/waiting/matchend pause
+  // frames entirely, zero grace frames, no ball drop animation. Every
+  // tick of the budget goes into active play.
+  state.headless = true;
   state.graceFrames = 0;
+  state.ball.z = 0;
 
   p1Brain.loadWeights(matchup.p1.weights);
   const p2IsFallback = matchup.type === 'fallback';
   if (!p2IsFallback) p2Brain.loadWeights(matchup.p2.weights);
 
   for (let i = 0; i < matchTicks; i++) {
-    if (state.matchOver) break;
-    if (state.pauseState !== null) {
-      physicsTick(state, null, null);
-      continue;
-    }
-
     const p1Action = p1Brain.forward(buildInputs(state, 'p1', p1InputBuf));
     const p2Action = p2IsFallback
       ? fallbackAction(state, 'p2')
       : p2Brain.forward(buildInputs(state, 'p2', p2InputBuf));
-
     physicsTick(state, p1Action, p2Action);
   }
 

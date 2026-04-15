@@ -1,11 +1,11 @@
 /**
- * Football v2 — three.js renderer (non-instanced, pooled-mesh version).
+ * Football v2 — three.js renderer.
  *
- * One Mesh per visible glyph. Each atlas character has its own pre-built
- * unit-quad geometry with UVs baked in. Each frame we hide the trailing
- * range of the pool, then assign geometry/position/scale/color/offset to
- * the ~14 meshes we actually need. ~14 draw calls per frame for dynamic
- * content, plus ~12 static calls for the field and goals.
+ * Everything is solid 3D geometry: goals are cylinders, stickmen are
+ * capsules + sphere heads, ball is a sphere, particles are instanced
+ * spheres, field lines are THREE.Line segments, ground shadows are
+ * shader-filled planes. No glyph / SDF atlas / font — the old
+ * billboarded-ASCII pipeline is gone.
  *
  * Coordinate mapping:
  *   physics.x → three.js.x  (field horizontal)
@@ -15,8 +15,6 @@
 
 import * as THREE from './vendor/three.module.js';
 import { createField, FIELD_HEIGHT, FIELD_WIDTH_REF } from './physics.js?v=42';
-
-const POOL_SIZE = 400;
 
 // Physics field depth (42) is ~21× narrower than its width (900); stretch
 // render-space z so the field fills more of the canvas vertically.
@@ -132,46 +130,6 @@ const FOLLOW_ZOOM_DEAD = 1.00;
 
 /* ── Shaders ───────────────────────────────────────────────── */
 
-const VERTEX_SHADER = /* glsl */ `
-  uniform vec2 uViewOffset;
-  uniform float uRotation;
-  varying vec2 vUv;
-
-  void main() {
-    // Billboarded quad: compute world center, transform to view space,
-    // then add view-space offset + vertex position scaled uniformly and
-    // (optionally) rotated by uRotation. Rotation lets a single vertical
-    // glyph (like the pipe character) act as a limb at any angle, with
-    // the visual top anchored to the pivot the caller chose.
-    vec3 worldCenter = vec3(modelMatrix[3][0], modelMatrix[3][1], modelMatrix[3][2]);
-    vec4 viewCenter = viewMatrix * vec4(worldCenter, 1.0);
-    float sx = length(vec3(modelMatrix[0][0], modelMatrix[0][1], modelMatrix[0][2]));
-    float c = cos(uRotation);
-    float si = sin(uRotation);
-    vec2 rotated = vec2(position.x * c - position.y * si, position.x * si + position.y * c);
-    viewCenter.xy += uViewOffset + rotated * sx;
-    gl_Position = projectionMatrix * viewCenter;
-    vUv = uv;
-  }
-`;
-
-const FRAGMENT_SHADER = /* glsl */ `
-  uniform sampler2D sdfTexture;
-  uniform vec3 uColor;
-  varying vec2 vUv;
-
-  // tiny-sdf edge sits at ~0.75 normalized (cutoff 0.25).
-  const float EDGE = 0.75;
-  const float AA = 0.02;
-
-  void main() {
-    float dist = texture2D(sdfTexture, vUv).g;
-    float alpha = smoothstep(EDGE - AA, EDGE + AA, dist);
-    if (alpha < 0.01) discard;
-    gl_FragColor = vec4(uColor, alpha);
-  }
-`;
-
 // Soft drop-shadow disc, drawn flat on the xz plane under players and
 // the ball. World-space geometry (not view-space) so perspective
 // foreshortens it correctly from any camera angle. Center is opaque
@@ -205,7 +163,6 @@ const SHADOW_ALPHA_BASE    = 0.55;
 /* ── Palette (matches style.css design tokens) ─────────────── */
 
 const COLOR_TEXT = rgb('#d0d0d0');
-const COLOR_WHITE = [1, 1, 1];
 const COLOR_GREEN = rgb('#9ece6a');
 const COLOR_AMBER = rgb('#e0af68');
 const COLOR_RED = rgb('#f7768e');
@@ -213,8 +170,7 @@ const COLOR_RED = rgb('#f7768e');
 /* ── Renderer ──────────────────────────────────────────────── */
 
 export class Renderer {
-  constructor(canvas, atlas, { fieldWidth = FIELD_WIDTH_REF } = {}) {
-    this.atlas = atlas;
+  constructor(canvas, { fieldWidth = FIELD_WIDTH_REF } = {}) {
     this.fieldWidth = fieldWidth;
     this._field = createField(fieldWidth);
     this._debugCam = null;
@@ -231,64 +187,6 @@ export class Renderer {
     // Mutually exclusive: enabling one disables the other.
     this._initDebugCam();
     this._initFollowCam();
-
-    this._baseMaterial = new THREE.ShaderMaterial({
-      uniforms: {
-        sdfTexture: { value: atlas.texture },
-        uColor: { value: new THREE.Vector3(1, 1, 1) },
-        uViewOffset: { value: new THREE.Vector2(0, 0) },
-        uRotation: { value: 0 },
-      },
-      vertexShader: VERTEX_SHADER,
-      fragmentShader: FRAGMENT_SHADER,
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-    });
-
-    // Pre-build one BufferGeometry per atlas character (unit quads, UVs differ).
-    this._glyphGeometries = new Map();
-    for (const [ch, g] of atlas.glyphs) {
-      this._glyphGeometries.set(ch, this._buildGlyphGeometry(g));
-    }
-
-    // Pre-resolve the fixed characters the renderer actually uses each frame
-    // so the hot path avoids a Map lookup per glyph.
-    this._glyphO = this._glyphGeometries.get('o');
-    this._glyphPipe = this._glyphGeometries.get('|');
-    this._glyphFist = this._glyphGeometries.get('O');
-    this._glyphSparkA = this._glyphGeometries.get('*');
-    this._glyphSparkB = this._glyphGeometries.get("'");
-    this._glyphSparkC = this._glyphGeometries.get('.');
-
-    // Pool of meshes, each with its own cloned material + cached uniform refs
-    // so the hot path writes via `mesh._uColor.set(...)` directly.
-    this._pool = [];
-    const defaultGeom = this._glyphO || this._glyphGeometries.values().next().value;
-    for (let i = 0; i < POOL_SIZE; i++) {
-      const material = new THREE.ShaderMaterial({
-        uniforms: {
-          sdfTexture: { value: atlas.texture },
-          uColor: { value: new THREE.Vector3(1, 1, 1) },
-          uViewOffset: { value: new THREE.Vector2(0, 0) },
-          uRotation: { value: 0 },
-        },
-        vertexShader: VERTEX_SHADER,
-        fragmentShader: FRAGMENT_SHADER,
-        transparent: true,
-        depthTest: false,
-        depthWrite: false,
-      });
-      const mesh = new THREE.Mesh(defaultGeom, material);
-      mesh.visible = false;
-      mesh.frustumCulled = false;
-      mesh._uColor = material.uniforms.uColor.value;
-      mesh._uViewOffset = material.uniforms.uViewOffset.value;
-      mesh._uRotation = material.uniforms.uRotation;
-      this.scene.add(mesh);
-      this._pool.push(mesh);
-    }
-    this._poolCursor = 0;
 
     // Track static scene objects so dispose() can release them.
     this._staticGeometries = [];
@@ -483,18 +381,12 @@ export class Renderer {
 
   dispose() {
     if (this._resizeObserver) this._resizeObserver.disconnect();
-    for (const mesh of this._pool) mesh.material.dispose();
-    for (const geom of this._glyphGeometries.values()) geom.dispose();
     for (const geom of this._staticGeometries) geom.dispose();
     for (const mat of this._staticMaterials) mat.dispose();
-    this._baseMaterial.dispose();
     this.renderer.dispose();
   }
 
   renderState(state) {
-    const prevCursor = this._poolCursor;
-    this._poolCursor = 0;
-
     const tick = state.tick || 0;
     const celebrating = state.pauseState === 'celebrate';
     const p1Celebrating = celebrating && state.goalScorer === state.p1;
@@ -557,11 +449,6 @@ export class Renderer {
     }
     this._stepParticles();
     this._drawParticles();
-
-    // Hide any meshes that were active last frame but aren't used this frame.
-    for (let i = this._poolCursor; i < prevCursor; i++) {
-      this._pool[i].visible = false;
-    }
 
     if (this._followCam && this._followCam.active) this._stepFollowCam(state);
     else if (this._debugCam && this._debugCam.active) this._stepDebugCam();
@@ -846,32 +733,6 @@ export class Renderer {
     this.camera.position.set(fc.posX, height, midZ + backOff);
     this.camera.lookAt(fc.lookX + fc.leadX, 0, midZ);
     this.camera.updateProjectionMatrix();
-  }
-
-  /* ── Glyph geometry ─────────────────────────────────────── */
-
-  _buildGlyphGeometry(glyph) {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
-      -0.5, -0.5, 0,
-       0.5, -0.5, 0,
-       0.5,  0.5, 0,
-      -0.5,  0.5, 0,
-    ]), 3));
-    // Atlas cell UVs. canvas flipY=true → v=1 is the top of the cell image,
-    // so top vertices sample the higher v.
-    const u0 = glyph.u;
-    const u1 = glyph.u + glyph.w;
-    const vTop = 1 - glyph.v;
-    const vBot = 1 - (glyph.v + glyph.h);
-    g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array([
-      u0, vBot,
-      u1, vBot,
-      u1, vTop,
-      u0, vTop,
-    ]), 2));
-    g.setIndex([0, 1, 2, 0, 2, 3]);
-    return g;
   }
 
   /* ── Static world (field outline, midfield, goals) ──────── */
@@ -1487,17 +1348,6 @@ export class Renderer {
     }
   }
 
-  _placeGlyph(geom, x, y, z, scale, color, viewOffsetX, viewOffsetY, rotation = 0) {
-    if (!geom || this._poolCursor >= this._pool.length) return;
-    const mesh = this._pool[this._poolCursor++];
-    mesh.geometry = geom;
-    mesh.position.set(x, y, z * Z_STRETCH);
-    mesh.scale.set(scale, scale, 1);
-    mesh._uColor.set(color[0], color[1], color[2]);
-    mesh._uViewOffset.set(viewOffsetX, viewOffsetY);
-    mesh._uRotation.value = rotation;
-    mesh.visible = true;
-  }
 }
 
 /* ── Helpers ───────────────────────────────────────────────── */

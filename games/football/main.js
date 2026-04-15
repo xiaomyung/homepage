@@ -2,8 +2,7 @@
  * Football v2 — main entry point.
  *
  * Composes all the pieces:
- *   - atlas.js:     Iosevka SDF atlas (one-time at boot, IndexedDB cached)
- *   - renderer.js:  three.js scene + glyph instances
+ *   - renderer.js:  three.js scene (solid 3D geometry — no glyphs)
  *   - physics.js:   tick function (showcase runs in main thread)
  *   - nn.js:        NN forward pass for the showcase match
  *   - fallback.js:  fallback opponent / API-down fallback
@@ -17,8 +16,7 @@
  * the user clicks [start].
  */
 
-import { buildAtlas } from './atlas.js';
-import { Renderer } from './renderer.js?v=81';
+import { Renderer } from './renderer.js?v=82';
 import {
   createField,
   createState,
@@ -62,11 +60,8 @@ const p1InputBuf = new Array(18);
 const p2InputBuf = new Array(18);
 
 async function main() {
-  // Load the SDF atlas first — everything else depends on it
-  const atlas = await buildAtlas();
-
   const canvas = document.getElementById('game-canvas');
-  renderer = new Renderer(canvas, atlas);
+  renderer = new Renderer(canvas);
   renderer.autoResize();
   // Always exposed so the freecam toggle (and ad-hoc debugging) can drive it.
   window.__footballRenderer = renderer;

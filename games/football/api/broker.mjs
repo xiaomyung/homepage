@@ -408,26 +408,46 @@ function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
+/** Compute the matchup selection pools once per /matchup handler
+ *  call. Previously `pickMatchupJson` filtered the full 50-brain
+ *  population on every pick — called 40× per request, that's 2000
+ *  filter passes, which became the broker's dominant CPU cost once
+ *  workers were pushing ~6000 matches/sec. Building the pools once
+ *  up front and reusing them across all picks in the batch collapses
+ *  that cost to O(pop_size) per request. */
+function buildMatchupPools() {
+  const cfg = state.config;
+  const pop = state.population;
+  const fallbackCandidates = [];
+  const popWithFew = [];
+  for (const b of pop) {
+    if (b.fallbackMatches < cfg.min_fallback_matches) fallbackCandidates.push(b);
+    if (b.popMatches < cfg.min_pop_matches) popWithFew.push(b);
+  }
+  return { fallbackCandidates, popWithFew };
+}
+
 /** Pick a matchup and return it as a raw JSON string containing
  *  only brain IDs. Workers maintain a local weights cache (fetched
  *  from /population on start and on generation drift), so the
  *  hot-path /matchup response stays a few bytes per matchup
- *  instead of 40+ KB per brain. */
-function pickMatchupJson() {
-  const cfg = state.config;
+ *  instead of 40+ KB per brain.
+ *
+ *  `pools` is the per-request cache from `buildMatchupPools()` —
+ *  caller constructs it once, we reuse it on every pick. */
+function pickMatchupJson(pools) {
   const pop = state.population;
   state.matchupCounter += 1;
 
   if (state.matchupCounter % FALLBACK_MATCHUP_EVERY_N === 0) {
-    const candidates = pop.filter((b) => needsMoreFallback(b, cfg));
+    const candidates = pools.fallbackCandidates;
     if (candidates.length > 0) {
       const pick = pickRandom(candidates);
       return `{"type":"fallback","p1":${pick.id},"p2":null}`;
     }
   }
 
-  const popWithFew = pop.filter((b) => b.popMatches < cfg.min_pop_matches);
-  let pool = popWithFew.length > 0 ? popWithFew : pop;
+  let pool = pools.popWithFew.length > 0 ? pools.popWithFew : pop;
   if (pool.length < 2) pool = pop;
 
   const a = pickRandom(pool);
@@ -567,12 +587,13 @@ function handleMatchup(req, res) {
   // a breed and re-fetch their population cache. The matchups payload
   // is ID-only — brain weights are fetched separately via /population
   // once per generation.
+  const pools = buildMatchupPools();
   let matchupsBody;
   if (count === 0) {
-    matchupsBody = pickMatchupJson();
+    matchupsBody = pickMatchupJson(pools);
   } else {
     const parts = new Array(count);
-    for (let i = 0; i < count; i++) parts[i] = pickMatchupJson();
+    for (let i = 0; i < count; i++) parts[i] = pickMatchupJson(pools);
     matchupsBody = '[' + parts.join(',') + ']';
   }
   const body = `{"generation":${state.generation},"matchups":${matchupsBody}}`;

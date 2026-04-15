@@ -44,6 +44,15 @@ const STICKMAN_HIP_OFX      = 0.12 * STICKMAN_GLYPH_SIZE;
 const STICKMAN_HEAD_GAP_Y   = 0.23 * STICKMAN_GLYPH_SIZE;
 const STICKMAN_LIMB_HALF_H  = 0.45 * STICKMAN_GLYPH_SIZE;
 const STICKMAN_LIMB_FULL_H  = STICKMAN_LIMB_HALF_H * 2;
+// Thickness of the stickman's 3D pipe parts, in world units.
+const STICKMAN_LIMB_RADIUS  = 2.2;
+const STICKMAN_TORSO_RADIUS = 3.3;
+const STICKMAN_HEAD_RADIUS  = 4.0;
+const STICKMAN_FIST_RADIUS  = 3.0;
+// Pool sizes: each stickman uses torso(1) + 2 arms + 2 legs = 5 cylinders
+// and head(1) + up to 2 push-fists = 3 spheres, so ~10+6 per player.
+const STICKMAN_CYL_POOL     = 16;
+const STICKMAN_SPH_POOL     = 8;
 const TWO_PI = Math.PI * 2;
 
 // Celebration pose — jumping-jack with arms straight up.
@@ -334,6 +343,43 @@ export class Renderer {
     this._p2Shadow   = makeShadow();
     this._ballShadow = makeShadow();
 
+    // Stickman cylinder pool — one unit cylinder geometry (radius 1,
+    // length 1 along +y) shared by all limb meshes. Each mesh gets its
+    // own MeshLambertMaterial so color can be animated per stickman.
+    // Per frame, the mesh is positioned at the midpoint between two
+    // joints, scaled to (radius, length, radius), and rotated so local
+    // +y aligns with the joint-to-joint direction. Torso, arms, legs
+    // all share the pool; unused meshes are hidden each frame.
+    const stickmanCyl = new THREE.CylinderGeometry(1, 1, 1, 12, 1);
+    this._staticGeometries.push(stickmanCyl);
+    this._stickmanCyl = [];
+    for (let i = 0; i < STICKMAN_CYL_POOL; i++) {
+      const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+      const mesh = new THREE.Mesh(stickmanCyl, mat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      this._staticMaterials.push(mat);
+      this.scene.add(mesh);
+      this._stickmanCyl.push(mesh);
+    }
+    this._stickmanCylCursor = 0;
+
+    // Stickman sphere pool — used for heads and fists. One shared
+    // unit sphere geometry, per-mesh Lambert material for color.
+    const stickmanSph = new THREE.SphereGeometry(1, 14, 10);
+    this._staticGeometries.push(stickmanSph);
+    this._stickmanSph = [];
+    for (let i = 0; i < STICKMAN_SPH_POOL; i++) {
+      const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+      const mesh = new THREE.Mesh(stickmanSph, mat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      this._staticMaterials.push(mat);
+      this.scene.add(mesh);
+      this._stickmanSph.push(mesh);
+    }
+    this._stickmanSphCursor = 0;
+
     // Pre-allocated per-player color buffers so staminaColor can write into
     // a reused array instead of allocating [r,g,b] every frame.
     this._p1Color = [0, 0, 0];
@@ -358,6 +404,12 @@ export class Renderer {
     this._particleNext = 0;
 
     this._buildFieldLines();
+
+    // Reusable scratch Vector3 objects for the stickman hot path so
+    // per-frame animation doesn't allocate.
+    this._scratchDir = new THREE.Vector3();
+    this._scratchAxis = new THREE.Vector3();
+    this._scratchUp = new THREE.Vector3(0, 1, 0);
 
     this._resizeObserver = null;
     this._lastW = 0;
@@ -404,8 +456,18 @@ export class Renderer {
     const p2Celebrating = celebrating && state.goalScorer === state.p2;
     staminaColorInto(state.p1.stamina, this._p1Color);
     staminaColorInto(state.p2.stamina, this._p2Color);
+    const prevCylCursor = this._stickmanCylCursor;
+    const prevSphCursor = this._stickmanSphCursor;
+    this._stickmanCylCursor = 0;
+    this._stickmanSphCursor = 0;
     this._addStickman(state.p1, this._p1Color, tick, p1Celebrating);
     this._addStickman(state.p2, this._p2Color, tick, p2Celebrating);
+    for (let i = this._stickmanCylCursor; i < prevCylCursor; i++) {
+      this._stickmanCyl[i].visible = false;
+    }
+    for (let i = this._stickmanSphCursor; i < prevSphCursor; i++) {
+      this._stickmanSph[i].visible = false;
+    }
 
     // Ball — real 3D sphere in world space. Altitude comes straight
     // from physics ball.z; gravity, bounce, and all collisions live
@@ -977,23 +1039,32 @@ export class Renderer {
     this._addStatic(new THREE.LineSegments(goalLineGeom, goalLineMat), goalLineGeom);
   }
 
-  /* ── Stickman & pool ────────────────────────────────────── */
-
+  /* ── Stickman ────────────────────────────────────────────
+   *
+   * 3D pipe figure: torso + two arms + two legs as thin cylinders,
+   * head + fists as spheres, all positioned in world space. The
+   * animation pipeline is identical to the previous billboard
+   * version — walk/push/celebrate/tilt/amplitude/phase are all
+   * smoothed the same way — only the render primitive changed.
+   *
+   * Local frame for each stickman:
+   *   +x = forward (toward opposing goal; facing = +1 for left
+   *        team, -1 for right)
+   *   +y = up
+   *   +z = lateral right of the body
+   *
+   * Limbs swing in the (forward, up) plane: angle 0 hangs straight
+   * down, angle π/2 points forward, angle π points straight up
+   * (celebration). World positions are produced by scaling local.x
+   * by `facing` and adding the player's world base (x, 0, z).
+   */
   _addStickman(player, color, tick, isCelebrating) {
-    // 6-glyph billboarded figure rendered via one unified pendulum pose,
-    // with celebration and push overrides layered on top as smoothed blends.
-    // At rest (amplitude → 0) every limb hangs straight, giving a vertical
-    // Minecraft-Steve idle; speed ramps amplitude and forward lean in via
-    // a per-player low-pass filter, so transitions between standing /
-    // walking / running / direction flips / celebrating / pushing never
-    // snap.
     let x = player.x + 9;
-    const z = player.y;
+    const z = player.y * Z_STRETCH;
     const s = STICKMAN_GLYPH_SIZE;
+    const facing = player.side === 'left' ? 1 : -1;
 
-    // Fetch / init smoothed state for this player. Derived velocity comes
-    // from the frame-to-frame position delta, so any motion source (NN
-    // output, reposition walk, push) feeds the same animation pipeline.
+    // Fetch / init smoothed state for this player (same as before).
     let anim = this._animByPlayer.get(player);
     if (!anim) {
       anim = {
@@ -1014,10 +1085,13 @@ export class Renderer {
 
     const speed = Math.sqrt(effVx * effVx + effVy * effVy);
 
-    // Targets derived from derived velocity — no hard gates.
     const targetAmplitude = Math.min(speed * 0.2, 1.0);
+    // Walk tilt leans the body in the direction of motion along the
+    // field (physics x). For the forward facing stickman, "forward"
+    // is already the facing direction, so we use sign(effVx)*facing
+    // so a player running toward their opponent's goal leans forward.
     const targetTilt = speed > STICKMAN_RUN_THRESHOLD
-      ? -Math.sign(effVx) * Math.min(
+      ? Math.sign(effVx) * facing * Math.min(
           (speed - STICKMAN_RUN_THRESHOLD) * STICKMAN_TILT_PER_SPEED,
           STICKMAN_TILT_MAX,
         )
@@ -1027,9 +1101,6 @@ export class Renderer {
     const targetCelebrate = isCelebrating ? 1 : 0;
     const targetPushing   = player.pushTimer > 0 ? 1 : 0;
 
-    // Push progress counter: resets on the rising edge of pushTimer and
-    // accumulates ticks until it falls back to zero. Drives the scripted
-    // 3-phase boxing curve below.
     if (player.pushTimer > 0) {
       if (anim.prevPushTimer <= 0) anim.pushProgress = 0;
       anim.pushProgress += dt;
@@ -1041,11 +1112,7 @@ export class Renderer {
     anim.tilt      += (targetTilt      - anim.tilt)      * STICKMAN_SMOOTH;
     anim.amplitude += (targetAmplitude - anim.amplitude) * STICKMAN_SMOOTH;
     anim.celebrate += (targetCelebrate - anim.celebrate) * STICKMAN_SMOOTH;
-    // `pushing` is a binary-ish gate: 1 while the scripted curve is
-    // active, 0 otherwise. No LPF needed since the curve itself
-    // smoothly enters/exits via the raise/lower phases.
     anim.pushing = targetPushing;
-    // Wrap phases to keep Math.sin precision stable over long sessions.
     anim.phase          = (anim.phase          + swingRate       * dt) % TWO_PI;
     anim.celebratePhase = (anim.celebratePhase + CELEB_PHASE_RATE * dt) % TWO_PI;
 
@@ -1055,74 +1122,68 @@ export class Renderer {
     const pushing   = anim.pushing;
     const swing     = Math.sin(anim.phase);
 
-    // Jump bob (upward-only half-sine, gated by the celebrate blend).
     const jumpY = Math.max(0, Math.sin(anim.celebratePhase)) * CELEB_JUMP_PEAK * celeb;
-    // Walking bob blended out as celebration takes over.
     const bob = Math.abs(swing) * 0.08 * amplitude * celebInv;
 
-    // Push scripted state — one branch, every downstream effect captured.
-    // Computed before placement because dip/hop/tilt/pivot/fist all feed
-    // into positions below. Zero-valued fall-throughs keep the hot path
-    // branchless for the non-push case.
-    const pushDir = player.dir;
+    // Push scripted state — always positive forward in local frame,
+    // the facing transform applies the direction at the end.
     let pushArmAngle   = 0;
-    let pushPivotShift = 0;
     let pushBodyDip    = 0;
     let pushFistScale  = 1;
     let pushTiltOffset = 0;
     let strikeActive   = false;
     if (pushing > 0) {
       const pushT = Math.min(anim.pushProgress / PUSH_TOTAL_TICKS, 1);
-      pushArmAngle   =  pushDir * pushArmAngleAt(pushT);
-      pushPivotShift =  pushDir * pushPivotAt(pushT);
+      pushArmAngle   =  pushArmAngleAt(pushT);
       pushBodyDip    =  pushBodyDipAt(pushT);
       pushFistScale  =  pushFistScaleAt(pushT);
-      pushTiltOffset = -pushDir * pushBodyTiltAt(pushT);
-      x             +=  pushDir * pushHopAt(pushT);
+      pushTiltOffset =  pushBodyTiltAt(pushT);
+      x             +=  facing * pushHopAt(pushT);
       strikeActive   =  pushT >= PUSH_WINDUP_T && pushT <= PUSH_LOWER_T;
     }
 
-    // Walk tilt applies to the whole figure (running lean carries the
-    // hips naturally). Push tilt is upper-body-only so feet stay planted
-    // during the strike snap. Hip anchors use walkC/walkS; torso/shoulder/
-    // head use tiltC/tiltS from the combined upperTilt.
     const walkTilt  = anim.tilt;
     const upperTilt = walkTilt + pushTiltOffset;
-    const walkC = Math.cos(walkTilt);
-    const walkS = Math.sin(walkTilt);
     const tiltC = Math.cos(upperTilt);
     const tiltS = Math.sin(upperTilt);
 
-    // Hips sit exactly one full leg-length above y=0 so straight-hanging
-    // legs land their feet on the ground plane. Bob (walk cycle) and
-    // jumpY (celebration) only add upward offsets, so the foot never
-    // sinks below ground.
+    // Feet-on-ground clearance — straight legs land on y=0.
     const hipBaseY  = STICKMAN_LIMB_FULL_H + bob * s + jumpY;
     const upperHipY = hipBaseY + pushBodyDip;
 
-    // Torso / shoulders / head rotate around the hip by upperTilt.
-    const torsoCX = -STICKMAN_TORSO_HALF_H * tiltS;
-    const torsoCY = upperHipY + STICKMAN_TORSO_HALF_H * tiltC;
-    this._placeGlyph(this._glyphPipe, x, 0, z, s, color, torsoCX, torsoCY, upperTilt);
+    // Neck (top of torso) is one torso-length above the hip, rotated
+    // forward by upperTilt in the (forward, up) plane. "Forward"
+    // means local +x, which maps to world x via the facing factor.
+    const torsoH = STICKMAN_SHOULDER_OFY;
+    const neckLocalX = torsoH * tiltS;
+    const neckY      = upperHipY + torsoH * tiltC;
+    const neckX      = x + facing * neckLocalX;
 
-    const lShX = -STICKMAN_SHOULDER_OFX * tiltC - STICKMAN_SHOULDER_OFY * tiltS;
-    const lShY = upperHipY - STICKMAN_SHOULDER_OFX * tiltS + STICKMAN_SHOULDER_OFY * tiltC;
-    const rShX =  STICKMAN_SHOULDER_OFX * tiltC - STICKMAN_SHOULDER_OFY * tiltS;
-    const rShY = upperHipY + STICKMAN_SHOULDER_OFX * tiltS + STICKMAN_SHOULDER_OFY * tiltC;
+    // Shoulders: lateral to neck along world z (unrotated by tilt —
+    // the tilt rotates the body forward, leaving shoulder width intact).
+    const shoulderHalfWidth = STICKMAN_SHOULDER_OFX;
+    const lShX = neckX;
+    const lShZ = z - shoulderHalfWidth;
+    const rShX = neckX;
+    const rShZ = z + shoulderHalfWidth;
 
-    // Head sits a fixed world-space gap above the neck midpoint so its
-    // distance from the body is preserved when the torso leans forward.
-    const neckCX = (lShX + rShX) * 0.5;
-    const neckCY = (lShY + rShY) * 0.5;
-    this._placeGlyph(this._glyphO, x, 0, z, s, color, neckCX, neckCY + STICKMAN_HEAD_GAP_Y, upperTilt);
+    // Torso: cylinder from hip center to neck.
+    this._placeCyl(x, upperHipY, z, neckX, neckY, z, STICKMAN_TORSO_RADIUS, color);
 
-    // Hip anchors use walk tilt only — push lean doesn't drag the feet.
-    const lHipX = -STICKMAN_HIP_OFX * walkC;
-    const lHipY = hipBaseY - STICKMAN_HIP_OFX * walkS;
-    const rHipX =  STICKMAN_HIP_OFX * walkC;
-    const rHipY = hipBaseY + STICKMAN_HIP_OFX * walkS;
+    // Head: sphere a fixed gap above the neck (follows tilt so it
+    // stays anchored to the torso top).
+    const headCenterX = neckX + facing * STICKMAN_HEAD_GAP_Y * tiltS;
+    const headCenterY = neckY + STICKMAN_HEAD_GAP_Y * tiltC + STICKMAN_HEAD_RADIUS;
+    this._placeSph(headCenterX, headCenterY, z, STICKMAN_HEAD_RADIUS, color);
 
-    // Normal pendulum limb angles (contralateral pairing).
+    // Hips: lateral to hip center along world z.
+    const hipHalfWidth = STICKMAN_HIP_OFX;
+    const lHipZ = z - hipHalfWidth;
+    const rHipZ = z + hipHalfWidth;
+
+    // Limb angles — contralateral walk swing + celebration override
+    // (arms sweep to π = straight up, legs spread forward-back) +
+    // push override (both arms scripted to the punch curve).
     const armSwing = swing * 0.85 * amplitude;
     const legSwing = -swing * 0.7  * amplitude;
     let leftArmAngle  =  armSwing;
@@ -1130,9 +1191,6 @@ export class Renderer {
     let leftLegAngle  =  legSwing;
     let rightLegAngle = -legSwing;
 
-    // Celebration override: arms sweep outward to straight up, legs do a
-    // symmetric jumping-jack that spreads at jump apex and contracts on
-    // the ground. Both values blend in via `celeb`.
     if (celeb > 0.001) {
       const legSpread = Math.max(0, Math.sin(anim.celebratePhase)) * CELEB_LEG_SPREAD;
       leftArmAngle  = leftArmAngle  * celebInv +  Math.PI   * celeb;
@@ -1141,38 +1199,88 @@ export class Renderer {
       rightLegAngle = rightLegAngle * celebInv +  legSpread * celeb;
     }
 
-    // Push override: arm angle follows the scripted curve exactly —
-    // no LPF smearing of the explosive strike.
     if (pushing > 0) {
       leftArmAngle  = pushArmAngle;
       rightArmAngle = pushArmAngle;
     }
 
-    const lShPushX = lShX + pushPivotShift;
-    const rShPushX = rShX + pushPivotShift;
+    // Draw the four limbs — each is a cylinder from its pivot to the
+    // limb end computed by rotating (0, -limbL) by the swing angle in
+    // the (forward, up) plane. At angle=0, (0, -limbL) → (0, -limbL)
+    // (hanging straight). At angle=π/2, (0, -limbL) rotated → (limbL, 0)
+    // (forward extended). The local +x gets scaled by `facing` so
+    // both teams animate consistently relative to their own attack.
+    const L = STICKMAN_LIMB_FULL_H;
+    this._placeLimbCyl(lShX, upperHipY + torsoH * tiltC, lShZ, leftArmAngle,  L, facing, color);
+    this._placeLimbCyl(rShX, upperHipY + torsoH * tiltC, rShZ, rightArmAngle, L, facing, color);
+    this._placeLimbCyl(x,    hipBaseY,                    lHipZ, leftLegAngle,  L, facing, color);
+    this._placeLimbCyl(x,    hipBaseY,                    rHipZ, rightLegAngle, L, facing, color);
 
-    this._placeLimb(x, z, s, color, lShPushX, lShY,  leftArmAngle);
-    this._placeLimb(x, z, s, color, rShPushX, rShY,  rightArmAngle);
-    this._placeLimb(x, z, s, color, lHipX,    lHipY, leftLegAngle);
-    this._placeLimb(x, z, s, color, rHipX,    rHipY, rightLegAngle);
-
-    // Push fists — visible from windup through lower, covering the
-    // whole "glove in motion" window. Two `O` glyphs track the tips of
-    // the two extended arms, including the pivot shift. The glyph size
-    // pulses larger at strike peak via pushFistScale for impact weight.
+    // Push fists — spheres at the end of each extended arm during the
+    // strike window. Size pulses larger at strike peak via pushFistScale.
     if (strikeActive && pushing > 0) {
+      const fistR = STICKMAN_FIST_RADIUS * pushFistScale;
       const lSin = Math.sin(leftArmAngle);
       const lCos = Math.cos(leftArmAngle);
       const rSin = Math.sin(rightArmAngle);
       const rCos = Math.cos(rightArmAngle);
-      const fistSize = PUSH_FIST_SIZE * pushFistScale;
-      this._placeGlyph(this._glyphFist, x, 0, z, fistSize, color,
-        lShPushX + lSin * STICKMAN_LIMB_FULL_H,
-        lShY     - lCos * STICKMAN_LIMB_FULL_H);
-      this._placeGlyph(this._glyphFist, x, 0, z, fistSize, color,
-        rShPushX + rSin * STICKMAN_LIMB_FULL_H,
-        rShY     - rCos * STICKMAN_LIMB_FULL_H);
+      const lShoulderY = upperHipY + torsoH * tiltC;
+      this._placeSph(lShX + facing * L * lSin, lShoulderY - L * lCos, lShZ, fistR, color);
+      this._placeSph(rShX + facing * L * rSin, lShoulderY - L * rCos, rShZ, fistR, color);
     }
+  }
+
+  /** Pull a cylinder from the pool and stretch/orient it between two
+   *  world points with the given radius and color. Cylinders use a
+   *  single unit geometry (length 1 along +y) shared across the pool. */
+  _placeCyl(ax, ay, az, bx, by, bz, radius, color) {
+    if (this._stickmanCylCursor >= this._stickmanCyl.length) return;
+    const mesh = this._stickmanCyl[this._stickmanCylCursor++];
+    mesh.visible = true;
+    const dx = bx - ax, dy = by - ay, dz = bz - az;
+    const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (length < 1e-6) { mesh.visible = false; return; }
+    mesh.position.set((ax + bx) * 0.5, (ay + by) * 0.5, (az + bz) * 0.5);
+    mesh.scale.set(radius, length, radius);
+    // Orient +y axis along (dx, dy, dz). Cross(up, dir) gives the
+    // rotation axis; acos(dot) gives the angle.
+    this._scratchDir.set(dx / length, dy / length, dz / length);
+    this._scratchAxis.crossVectors(this._scratchUp, this._scratchDir);
+    const axisLen = this._scratchAxis.length();
+    if (axisLen > 1e-6) {
+      const dot = this._scratchUp.dot(this._scratchDir);
+      mesh.quaternion.setFromAxisAngle(
+        this._scratchAxis.divideScalar(axisLen),
+        Math.acos(Math.max(-1, Math.min(1, dot))),
+      );
+    } else if (this._scratchDir.y < 0) {
+      // Direction is exactly -y → 180° flip around x axis.
+      mesh.quaternion.set(1, 0, 0, 0);
+    } else {
+      mesh.quaternion.identity();
+    }
+    mesh.material.color.setRGB(color[0], color[1], color[2]);
+  }
+
+  /** Place a limb cylinder pivoting at (px, py, pz) with the given
+   *  swing angle. The limb extends by length L along
+   *  (facing*sin(angle), -cos(angle), 0) in world space. */
+  _placeLimbCyl(px, py, pz, angle, L, facing, color) {
+    const ex = px + facing * L * Math.sin(angle);
+    const ey = py - L * Math.cos(angle);
+    const ez = pz;
+    this._placeCyl(px, py, pz, ex, ey, ez, STICKMAN_LIMB_RADIUS, color);
+  }
+
+  /** Pull a sphere from the pool and place it at a world point with
+   *  the given radius and color. */
+  _placeSph(cx, cy, cz, radius, color) {
+    if (this._stickmanSphCursor >= this._stickmanSph.length) return;
+    const mesh = this._stickmanSph[this._stickmanSphCursor++];
+    mesh.visible = true;
+    mesh.position.set(cx, cy, cz);
+    mesh.scale.set(radius, radius, radius);
+    mesh.material.color.setRGB(color[0], color[1], color[2]);
   }
 
   /** Spawn a burst of splash particles at the bounce location. Count and

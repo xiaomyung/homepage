@@ -56,11 +56,19 @@ function runOneMatch() {
 
 /* ── Warmup so V8 tiers up ──────────────────────────────── */
 for (let i = 0; i < 50; i++) runOneMatch();
+if (typeof gc === 'function') gc();
 
-/* ── Full loop (NN + physics) ─────────────────────────────── */
-const fullT0 = performance.now();
-for (let i = 0; i < MATCHES; i++) runOneMatch();
-const fullMs = performance.now() - fullT0;
+/* ── Full loop × 5 back-to-back to observe variance ───── */
+const fullRuns = [];
+for (let r = 0; r < 5; r++) {
+  if (typeof gc === 'function') gc();
+  const t0 = performance.now();
+  for (let i = 0; i < MATCHES; i++) runOneMatch();
+  fullRuns.push(performance.now() - t0);
+}
+const fullMs = fullRuns.reduce((a, b) => a + b, 0) / fullRuns.length;
+const fullMin = Math.min(...fullRuns);
+const fullMax = Math.max(...fullRuns);
 
 /* ── Physics-only (same state progression, no NN) ─────────── */
 // Uses the pre-computed last-action vectors so physics still gets
@@ -79,6 +87,7 @@ function runOneMatchPhysicsOnly() {
   return state;
 }
 for (let i = 0; i < 50; i++) runOneMatchPhysicsOnly();
+if (typeof gc === 'function') gc();
 const physT0 = performance.now();
 for (let i = 0; i < MATCHES; i++) runOneMatchPhysicsOnly();
 const physMs = performance.now() - physT0;
@@ -99,6 +108,7 @@ function runOneMatchNNOnly() {
   return state;
 }
 for (let i = 0; i < 50; i++) runOneMatchNNOnly();
+if (typeof gc === 'function') gc();
 const nnT0 = performance.now();
 for (let i = 0; i < MATCHES; i++) runOneMatchNNOnly();
 const nnMs = performance.now() - nnT0;
@@ -119,6 +129,7 @@ function runOneMatchBuildOnly() {
   return state;
 }
 for (let i = 0; i < 50; i++) runOneMatchBuildOnly();
+if (typeof gc === 'function') gc();
 const buildT0 = performance.now();
 for (let i = 0; i < MATCHES; i++) runOneMatchBuildOnly();
 const buildMs = performance.now() - buildT0;
@@ -132,7 +143,13 @@ const fmt = (ms, label) => {
 };
 
 console.log(`--- profile (${MATCHES} matches × ${MATCH_TICKS} ticks, stride ${NN_ACTION_STRIDE}) ---`);
-fmt(fullMs,  'full loop (NN+buildIn+phys)');
+console.log('full loop × 5 runs (back-to-back, same V8 process):');
+for (let r = 0; r < fullRuns.length; r++) {
+  fmt(fullRuns[r], `  run ${r + 1}`);
+}
+console.log(`  min/avg/max                  ${fullMin.toFixed(0).padStart(5)} / ${fullMs.toFixed(0).padStart(5)} / ${fullMax.toFixed(0).padStart(5)} ms  (spread ${(100 * (fullMax - fullMin) / fullMs).toFixed(0)}%)`);
+console.log('');
+fmt(fullMs,  'full loop (avg of 5)');
 fmt(physMs,  'physicsTick only');
 fmt(nnMs,    'NN forward + buildInputs');
 fmt(buildMs, 'buildInputs only');

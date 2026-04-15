@@ -1,22 +1,15 @@
 """
 Football v2 — Python port of games/football/physics.js.
 
-Line-for-line translation with bit-identical PRNG and operation order.
-Used by:
+Line-for-line translation with bit-identical PRNG and operation order. Used by:
   - build_warm_start.py to run fallback-vs-fallback matches for imitation data
   - local_test.py to run CLI training smoke tests without a browser
 
-Parity against physics.js is enforced by test_parity.py (spawns Node to run
-the JS version on the same scenario and asserts tick-by-tick state match
-to within float tolerance).
+Parity against physics.js is enforced by tests/test_parity.py (spawns Node to
+run the JS version on the same scenario, tick-by-tick comparison to 1e-9
+tolerance; transcendentals may drift one ULP, hence 1e-6 on kick paths).
 
-The only floating-point drift tolerated is in transcendentals (log, cos, sqrt)
-at the last ULP; all integer arithmetic, LCG, and collision logic must match
-exactly. If the parity test fails, this file is wrong — the JS version is
-canonical.
-
-Uses plain Python dicts as state containers (not dataclasses) so JSON
-round-tripping and ad-hoc construction are trivial.
+If the parity test fails, this file is wrong — the JS version is canonical.
 """
 
 import math
@@ -49,6 +42,7 @@ OUT_OF_BOUNDS_MARGIN = 50
 MAX_PLAYER_SPEED = 10
 PLAYER_INERTIA = 0.7
 MOVE_THRESHOLD = 0.1
+MOVE_THRESHOLD_SQ = MOVE_THRESHOLD * MOVE_THRESHOLD
 STARTING_GAP = 40
 PLAYER_WIDTH = 18
 PLAYER_HEIGHT = 6
@@ -77,6 +71,7 @@ AIRKICK_REACH_Y = 24
 AIRKICK_MAX_Z = 20
 AIRKICK_MS = 350
 AIRKICK_PEAK_FRAC = 0.4
+AIRKICK_DZ_THRESHOLD = 0.5
 KICK_WINDUP_MS = 96
 KICK_RECOVERY_MS = 288
 KICK_DIR_MIN_LEN = 0.01
@@ -98,6 +93,7 @@ PUSH_VICTIM_STAMINA_MULT = 3
 # Goal
 GOAL_BACK_OFFSET = 30
 GOAL_DEPTH = 54
+GOAL_LINE_INSET = 6
 GOAL_MOUTH_Z = 20
 GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - 20) / 2
 GOAL_MOUTH_Y_MAX = (FIELD_HEIGHT + 20) / 2
@@ -118,11 +114,10 @@ def create_seeded_rng(seed: int):
     """LCG PRNG matching the JS createSeededRng() exactly.
 
     JS: state = (Math.imul(state, 1664525) + 1013904223) >>> 0
-    Py: state = ((state * 1664525) & 0xFFFFFFFF + 1013904223) & 0xFFFFFFFF
+    Py: state = ((state * 1664525) + 1013904223) & 0xFFFFFFFF
 
-    Modular arithmetic is the same regardless of signed/unsigned interp, so
-    (a * b) mod 2^32 is bit-identical between the two. Transcendentals are
-    not involved in the LCG itself.
+    (a * b + c) mod 2^32 is bit-identical regardless of signed/unsigned
+    interpretation, so the LCG output streams match.
     """
     state = [(seed & 0xFFFFFFFF) or 1]
 
@@ -157,14 +152,14 @@ def create_field(width: float = FIELD_WIDTH_REF) -> dict:
         "goalLRight": goal_l_right,
         "goalRLeft": goal_r_left,
         "goalRRight": goal_r_right,
-        "goalLineL": goal_l_right - 6,
-        "goalLineR": goal_r_left + 6,
+        "goalLineL": goal_l_right - GOAL_LINE_INSET,
+        "goalLineR": goal_r_left + GOAL_LINE_INSET,
         "goalMouthYMin": GOAL_MOUTH_Y_MIN,
         "goalMouthYMax": GOAL_MOUTH_Y_MAX,
         "goalMouthZMax": GOAL_MOUTH_Z,
         "midX": width / 2,
-        "aiLimitL": goal_l_left + 6,
-        "aiLimitR": goal_r_right - 6,
+        "aiLimitL": goal_l_left + GOAL_LINE_INSET,
+        "aiLimitR": goal_r_right - GOAL_LINE_INSET,
     }
 
 
@@ -184,7 +179,18 @@ def _create_player(side: str, field: dict) -> dict:
         "pushVy": 0,
         "stamina": 1,
         "exhausted": False,
-        "kick": None,
+        # Pre-allocated kick slot, gated by `.active`.
+        "kick": {
+            "active": False,
+            "phase": "windup",
+            "timer": 0,
+            "airZ": 0,
+            "fired": False,
+            "dx": 0,
+            "dy": 0,
+            "dz": 0,
+            "power": 0,
+        },
         "pushTimer": 0,
         "dir": 1 if side == "left" else -1,
         "airZ": 0,
@@ -219,13 +225,15 @@ def create_state(field: dict, rng=None) -> dict:
         "matchOver": False,
         "winner": None,
         "events": [],
+        "recordEvents": False,
     }
 
 
 # ── Main tick ──────────────────────────────────────────────────
 
 def tick(state: dict, p1_act: Optional[list], p2_act: Optional[list]) -> dict:
-    state["events"] = []
+    if state["recordEvents"]:
+        state["events"].clear()
     state["tick"] += 1
 
     if state["matchOver"]:
@@ -278,33 +286,36 @@ def _apply_regen_and_exhaustion(p: dict) -> None:
     p["stamina"] = min(1, p["stamina"] + STAMINA_REGEN)
 
 
-# ── Action application ────────────────────────────────────────
+# ── Action dispatch ───────────────────────────────────────────
 
+# Action layout: [moveX, moveY, kick, kickDx, kickDy, kickDz, kickPower, push, pushPower]
 def _apply_action(state: dict, p: dict, out: list) -> None:
-    if p["exhausted"]:
-        p["vx"] = 0
-        p["vy"] = 0
-        return
-
+    # In-flight kicks must always tick forward to completion — even if the
+    # player became exhausted during the kick.
     if _advance_kick(state, p):
         return
 
+    # Push cooldown decrements unconditionally so a push issued right before
+    # a kick doesn't get frozen at max for the kick's duration.
     if p["pushTimer"] > 0:
         p["pushTimer"] -= TICK_MS
         if p["pushTimer"] < 0:
             p["pushTimer"] = 0
         return
 
-    move_x, move_y, kick, kick_dx, kick_dy, kick_dz, kick_power, push, push_power = out
+    if p["exhausted"]:
+        p["vx"] = 0
+        p["vy"] = 0
+        return
 
-    _apply_movement(state, p, move_x, move_y)
+    _apply_movement(state, p, out[0], out[1])
 
-    if push > 0:
+    if out[7] > 0:
         opp = state["p2"] if p is state["p1"] else state["p1"]
-        _try_push(state, p, opp, push_power)
+        _try_push(state, p, opp, out[8])
 
-    if kick > 0 and _can_kick(state, p):
-        _start_kick(state, p, kick_dx, kick_dy, kick_dz, kick_power)
+    if out[2] > 0 and _can_kick(state, p):
+        _start_kick(p, out[3], out[4], out[5], out[6])
 
 
 # ── Movement ───────────────────────────────────────────────────
@@ -330,8 +341,8 @@ def _apply_movement(state: dict, p: dict, move_x: float, move_y: float) -> None:
     p["vx"] += (target_vx - p["vx"]) * blend
     p["vy"] += (target_vy - p["vy"]) * blend
 
-    speed = math.sqrt(p["vx"] * p["vx"] + p["vy"] * p["vy"])
-    if speed > MOVE_THRESHOLD:
+    speed_sq = p["vx"] * p["vx"] + p["vy"] * p["vy"]
+    if speed_sq > MOVE_THRESHOLD_SQ:
         p["x"] += p["vx"]
         p["y"] += p["vy"]
         p["dir"] = 1 if p["vx"] > 0 else -1
@@ -355,8 +366,6 @@ def _apply_push_physics(p: dict) -> None:
         p["pushVy"] = 0
 
 
-# ── Stamina from displacement ─────────────────────────────────
-
 def _charge_stamina_from_displacement(p: dict, pre_x: float, pre_y: float) -> None:
     dx = p["x"] - pre_x
     dy = p["y"] - pre_y
@@ -368,22 +377,26 @@ def _charge_stamina_from_displacement(p: dict, pre_x: float, pre_y: float) -> No
         p["stamina"] = 0
 
 
-# ── Clamp and collide ─────────────────────────────────────────
+# ── Field bounds & goal-frame collision ──────────────────────
+
+def _clamp_player_to_field(p: dict, f: dict) -> None:
+    if p["x"] < 0:
+        p["x"] = 0
+    elif p["x"] > f["width"] - f["playerWidth"]:
+        p["x"] = f["width"] - f["playerWidth"]
+    if p["y"] < 0:
+        p["y"] = 0
+    elif p["y"] > FIELD_HEIGHT - PLAYER_HEIGHT:
+        p["y"] = FIELD_HEIGHT - PLAYER_HEIGHT
+
 
 def _clamp_and_collide(state: dict, p: dict) -> None:
     f = state["field"]
-    pw = f["playerWidth"]
-    if p["x"] < 0:
-        p["x"] = 0
-    if p["x"] > f["width"] - pw:
-        p["x"] = f["width"] - pw
-    if p["y"] < 0:
-        p["y"] = 0
-    if p["y"] > FIELD_HEIGHT - PLAYER_HEIGHT:
-        p["y"] = FIELD_HEIGHT - PLAYER_HEIGHT
-
-    _resolve_goal_collision(p, pw, f["goalLLeft"], f["goalLRight"], f)
-    _resolve_goal_collision(p, pw, f["goalRLeft"], f["goalRRight"], f)
+    _clamp_player_to_field(p, f)
+    _resolve_goal_collision(p, f["playerWidth"], f["goalLLeft"], f["goalLRight"], f)
+    _resolve_goal_collision(p, f["playerWidth"], f["goalRLeft"], f["goalRRight"], f)
+    # Goal resolution can push the player past a field edge; re-clamp.
+    _clamp_player_to_field(p, f)
 
 
 def _resolve_goal_collision(p: dict, pw: float, gxL: float, gxR: float, f: dict) -> None:
@@ -412,10 +425,10 @@ def _resolve_goal_collision(p: dict, pw: float, gxL: float, gxR: float, f: dict)
         p["pushVy"] = 0
 
 
-# ── Kick ──────────────────────────────────────────────────────
+# ── Kick state machine ────────────────────────────────────────
 
 def _can_kick(state: dict, p: dict) -> bool:
-    if p["kick"] is not None:
+    if p["kick"]["active"]:
         return False
     f = state["field"]
     center = p["x"] + f["playerWidth"] / 2
@@ -424,112 +437,109 @@ def _can_kick(state: dict, p: dict) -> bool:
     return close_x and close_y
 
 
-def _start_kick(state: dict, p: dict, dx: float, dy: float, dz: float, power: float) -> None:
+def _start_kick(p: dict, dx: float, dy: float, dz: float, power: float) -> None:
     kick_dx = _clamp(dx, -1, 1)
     kick_dy = _clamp(dy, -1, 1)
     kick_dz = _clamp(dz, -1, 1)
     kick_power = (_clamp(power, -1, 1) + 1) / 2
+    k = p["kick"]
+    k["active"] = True
+    k["timer"] = 0
+    k["fired"] = False
+    k["dx"] = kick_dx
+    k["dy"] = kick_dy
+    k["dz"] = kick_dz
+    k["power"] = kick_power
 
-    if dz > 0.5:
-        jump_frac = (dz - 0.5) * 2
-        p["kick"] = {
-            "phase": "airkick",
-            "timer": 0,
-            "airZ": jump_frac * AIRKICK_MAX_Z,
-            "fired": False,
-            "dx": kick_dx,
-            "dy": kick_dy,
-            "dz": kick_dz,
-            "power": kick_power,
-        }
+    if dz > AIRKICK_DZ_THRESHOLD:
+        jump_frac = (dz - AIRKICK_DZ_THRESHOLD) * 2
+        k["phase"] = "airkick"
+        k["airZ"] = jump_frac * AIRKICK_MAX_Z
         p["stamina"] = max(0, p["stamina"] - STAMINA_AIRKICK_DRAIN)
     else:
-        p["kick"] = {
-            "phase": "windup",
-            "timer": 0,
-            "airZ": 0,
-            "fired": False,
-            "dx": kick_dx,
-            "dy": kick_dy,
-            "dz": kick_dz,
-            "power": kick_power,
-        }
+        k["phase"] = "windup"
+        k["airZ"] = 0
 
 
 def _advance_kick(state: dict, p: dict) -> bool:
-    if p["kick"] is None:
+    k = p["kick"]
+    if not k["active"]:
         return False
-    p["kick"]["timer"] += TICK_MS
+    k["timer"] += TICK_MS
 
-    if p["kick"]["phase"] == "airkick":
-        phase = min(p["kick"]["timer"] / AIRKICK_MS, 1)
-        p["airZ"] = math.sin(phase * math.pi) * p["kick"]["airZ"]
-        if not p["kick"]["fired"] and phase >= AIRKICK_PEAK_FRAC:
-            p["kick"]["fired"] = True
+    if k["phase"] == "airkick":
+        anim_frac = min(k["timer"] / AIRKICK_MS, 1)
+        p["airZ"] = math.sin(anim_frac * math.pi) * k["airZ"]
+        if not k["fired"] and anim_frac >= AIRKICK_PEAK_FRAC:
+            k["fired"] = True
             _execute_kick(state, p)
-        if phase >= 1:
+        if anim_frac >= 1:
             p["airZ"] = 0
-            p["kick"] = None
+            k["active"] = False
         return True
 
-    if not p["kick"]["fired"] and p["kick"]["timer"] >= KICK_WINDUP_MS:
-        p["kick"]["fired"] = True
+    if not k["fired"] and k["timer"] >= KICK_WINDUP_MS:
+        k["fired"] = True
         _execute_kick(state, p)
-    if p["kick"]["timer"] >= KICK_RECOVERY_MS:
-        p["kick"] = None
+    if k["timer"] >= KICK_RECOVERY_MS:
+        k["active"] = False
     return True
 
 
 def _execute_kick(state: dict, p: dict) -> None:
     f = state["field"]
     ball = state["ball"]
+    k = p["kick"]
     which = "p1" if p is state["p1"] else "p2"
-    is_airkick = p["kick"]["phase"] == "airkick"
+    is_airkick = k["phase"] == "airkick"
 
     if is_airkick and ball["z"] <= 1:
-        state["events"].append({"type": "kick_missed", "player": which, "reason": "airkick_ground_ball"})
+        if state["recordEvents"]:
+            state["events"].append({"type": "kick_missed", "player": which, "reason": "airkick_ground_ball"})
         return
     if not is_airkick and ball["z"] > PLAYER_HEIGHT:
-        state["events"].append({"type": "kick_missed", "player": which, "reason": "ground_kick_high_ball"})
+        if state["recordEvents"]:
+            state["events"].append({"type": "kick_missed", "player": which, "reason": "ground_kick_high_ball"})
         return
 
     if is_airkick:
         center = p["x"] + f["playerWidth"] / 2
         reach_x = f["playerWidth"] * AIRKICK_REACH_X_MULT
         if abs(ball["x"] - center) > reach_x or abs(ball["y"] - p["y"]) > AIRKICK_REACH_Y:
-            state["events"].append({"type": "kick_missed", "player": which, "reason": "airkick_out_of_range"})
+            if state["recordEvents"]:
+                state["events"].append({"type": "kick_missed", "player": which, "reason": "airkick_out_of_range"})
             return
 
-    raw_power = max(MIN_KICK_POWER, p["kick"]["power"])
-    effective_max_power = MAX_KICK_POWER * max(MIN_KICK_STAMINA, p["stamina"])
-    force = raw_power * effective_max_power
+    raw_power = max(MIN_KICK_POWER, k["power"])
+    force = raw_power * MAX_KICK_POWER * max(MIN_KICK_STAMINA, p["stamina"])
 
-    dx = p["kick"]["dx"]
-    dy = p["kick"]["dy"]
-    dz = p["kick"]["dz"]
+    dx = k["dx"]
+    dy = k["dy"]
+    dz = k["dz"]
 
-    length = math.sqrt(dx * dx + dy * dy + dz * dz)
-    if length < KICK_DIR_MIN_LEN:
+    raw_len = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if raw_len < KICK_DIR_MIN_LEN:
+        # NN didn't commit — pick a random direction from the seeded stream
         dx = state["rng"]() * 2 - 1
         dy = state["rng"]() * 2 - 1
         dz = state["rng"]() * 0.5
-        rlen = math.sqrt(dx * dx + dy * dy + dz * dz) or 1
-        dx /= rlen
-        dy /= rlen
-        dz /= rlen
+        rand_len = math.sqrt(dx * dx + dy * dy + dz * dz) or 1
+        dx /= rand_len
+        dy /= rand_len
+        dz /= rand_len
     else:
-        dx /= length
-        dy /= length
-        dz /= length
+        dx /= raw_len
+        dy /= raw_len
+        dz /= raw_len
 
     noise = raw_power * raw_power * KICK_NOISE_SCALE
     dx += gauss_random(state["rng"]) * noise
     dy += gauss_random(state["rng"]) * noise
     dz += gauss_random(state["rng"]) * noise * KICK_NOISE_VERT
-    len2 = math.sqrt(dx * dx + dy * dy + dz * dz) or 1
-    dx /= len2
-    dy /= len2
-    dz /= len2
+    noisy_len = math.sqrt(dx * dx + dy * dy + dz * dz) or 1
+    dx /= noisy_len
+    dy /= noisy_len
+    dz /= noisy_len
 
     ball["vx"] = dx * force
     ball["vy"] = dy * force
@@ -539,37 +549,37 @@ def _execute_kick(state: dict, p: dict) -> None:
     p["stamina"] = max(0, p["stamina"] - STAMINA_KICK_DRAIN * raw_power)
     state["lastKickTick"] = state["tick"]
 
-    ball_speed = math.sqrt(ball["vx"] * ball["vx"] + ball["vy"] * ball["vy"])
-    state["events"].append({
-        "type": "kick",
-        "player": which,
-        "power": raw_power,
-        "speed": ball_speed,
-        "wasted": ball_speed < WASTED_KICK_SPEED,
-    })
+    if state["recordEvents"]:
+        ball_speed = math.sqrt(ball["vx"] * ball["vx"] + ball["vy"] * ball["vy"])
+        state["events"].append({
+            "type": "kick",
+            "player": which,
+            "power": raw_power,
+            "speed": ball_speed,
+            "wasted": ball_speed < WASTED_KICK_SPEED,
+        })
 
 
 # ── Push ──────────────────────────────────────────────────────
 
-def _try_push(state: dict, pusher: dict, victim: dict, power_norm: float) -> dict:
+def _try_push(state: dict, pusher: dict, victim: dict, power_norm: float) -> None:
     f = state["field"]
-    ca = pusher["x"] + f["playerWidth"] / 2
-    cb = victim["x"] + f["playerWidth"] / 2
+    pusher_center_x = pusher["x"] + f["playerWidth"] / 2
+    victim_center_x = victim["x"] + f["playerWidth"] / 2
 
-    if pusher["kick"] is not None:
-        return {"landed": False, "reason": "pusher_kicking"}
+    if pusher["kick"]["active"]:
+        return
     if pusher["pushTimer"] > 0:
-        return {"landed": False, "reason": "pusher_cooldown"}
-    if abs(ca - cb) > PUSH_RANGE_X:
-        return {"landed": False, "reason": "out_of_range_x"}
+        return
+    if abs(pusher_center_x - victim_center_x) > PUSH_RANGE_X:
+        return
     if abs(pusher["y"] - victim["y"]) > PUSH_RANGE_Y:
-        return {"landed": False, "reason": "out_of_range_y"}
+        return
 
     power01 = (_clamp(power_norm, -1, 1) + 1) / 2
-    effective_max_push = MAX_PUSH_FORCE * max(MIN_PUSH_STAMINA, pusher["stamina"])
-    force = power01 * effective_max_push
+    force = power01 * MAX_PUSH_FORCE * max(MIN_PUSH_STAMINA, pusher["stamina"])
 
-    pusher["dir"] = 1 if ca < cb else -1
+    pusher["dir"] = 1 if pusher_center_x < victim_center_x else -1
     pusher["pushTimer"] = PUSH_ANIM_MS
 
     victim["pushVx"] = pusher["dir"] * force
@@ -580,9 +590,9 @@ def _try_push(state: dict, pusher: dict, victim: dict, power_norm: float) -> dic
         0, victim["stamina"] - PUSH_STAMINA_COST * power01 * PUSH_VICTIM_STAMINA_MULT
     )
 
-    pusher_which = "p1" if pusher is state["p1"] else "p2"
-    state["events"].append({"type": "push", "pusher": pusher_which, "force": force})
-    return {"landed": True, "force": force}
+    if state["recordEvents"]:
+        pusher_which = "p1" if pusher is state["p1"] else "p2"
+        state["events"].append({"type": "push", "pusher": pusher_which, "force": force})
 
 
 # ── Ball physics ──────────────────────────────────────────────
@@ -591,14 +601,7 @@ def _update_ball(state: dict) -> None:
     ball = state["ball"]
     if ball["frozen"]:
         return
-
-    moving = (
-        ball["vx"] * ball["vx"] > 0
-        or ball["vy"] * ball["vy"] > 0
-        or ball["z"] > 0
-        or ball["vz"] > 0
-    )
-    if not moving:
+    if ball["vx"] == 0 and ball["vy"] == 0 and ball["z"] == 0 and ball["vz"] == 0:
         return
 
     ball["x"] += ball["vx"]
@@ -621,7 +624,7 @@ def _update_ball(state: dict) -> None:
     if ball["y"] < BALL_RADIUS:
         ball["y"] = BALL_RADIUS
         ball["vy"] = abs(ball["vy"]) * WALL_BOUNCE_DAMP
-    if ball["y"] > FIELD_HEIGHT - BALL_RADIUS:
+    elif ball["y"] > FIELD_HEIGHT - BALL_RADIUS:
         ball["y"] = FIELD_HEIGHT - BALL_RADIUS
         ball["vy"] = -abs(ball["vy"]) * WALL_BOUNCE_DAMP
 
@@ -653,8 +656,8 @@ def _check_ball_score_or_out(state: dict) -> None:
     if not crossed_l and not crossed_r:
         return
 
-    fully_past_line_l = ball["x"] + BALL_RADIUS <= f["goalLineL"]
-    fully_past_line_r = ball["x"] - BALL_RADIUS >= f["goalLineR"]
+    fully_past_l = ball["x"] + BALL_RADIUS <= f["goalLineL"]
+    fully_past_r = ball["x"] - BALL_RADIUS >= f["goalLineR"]
     within_box_l_x = ball["x"] >= f["goalLLeft"]
     within_box_r_x = ball["x"] <= f["goalRRight"]
     within_mouth_y = (
@@ -663,15 +666,15 @@ def _check_ball_score_or_out(state: dict) -> None:
     )
     below_crossbar = ball["z"] + BALL_RADIUS <= f["goalMouthZMax"]
 
-    goal_l = crossed_l and fully_past_line_l and within_box_l_x and within_mouth_y and below_crossbar
-    goal_r = crossed_r and fully_past_line_r and within_box_r_x and within_mouth_y and below_crossbar
+    goal_l = crossed_l and fully_past_l and within_box_l_x and within_mouth_y and below_crossbar
+    goal_r = crossed_r and fully_past_r and within_box_r_x and within_mouth_y and below_crossbar
 
     if goal_l or goal_r:
         _score_goal(state, "left" if goal_l else "right")
         return
 
-    # Past the line but not a valid goal. If ball is still in the mouth (y/z)
-    # it may be mid-cross — let it continue. Otherwise bounce off post/crossbar.
+    # Past the line but not a goal. If still in the mouth (y/z) the ball is
+    # mid-cross — let it continue. Otherwise it hit a post/crossbar; bounce.
     if within_mouth_y and below_crossbar:
         return
 
@@ -684,6 +687,8 @@ def _check_ball_score_or_out(state: dict) -> None:
         ball["vz"] = -ball["vz"] * BOUNCE_RETAIN
 
 
+# ── Scoring, ball-out, reset, finalize ─────────────────────────
+
 def _score_goal(state: dict, side: str) -> None:
     state["ball"]["frozen"] = True
     state["ball"]["vx"] = 0
@@ -695,11 +700,13 @@ def _score_goal(state: dict, side: str) -> None:
     if side == "left":
         state["scoreR"] += 1
         state["goalScorer"] = state["p2"]
-        state["events"].append({"type": "goal", "scorer": "p2"})
+        if state["recordEvents"]:
+            state["events"].append({"type": "goal", "scorer": "p2"})
     else:
         state["scoreL"] += 1
         state["goalScorer"] = state["p1"]
-        state["events"].append({"type": "goal", "scorer": "p1"})
+        if state["recordEvents"]:
+            state["events"].append({"type": "goal", "scorer": "p1"})
 
     if state["scoreL"] >= WIN_SCORE or state["scoreR"] >= WIN_SCORE:
         state["pauseState"] = "matchend"
@@ -714,7 +721,8 @@ def _ball_out(state: dict) -> None:
     state["ball"]["vz"] = 0
     state["pauseState"] = "reposition"
     state["pauseTimer"] = 0
-    state["events"].append({"type": "out"})
+    if state["recordEvents"]:
+        state["events"].append({"type": "out"})
 
 
 def _reset_ball(state: dict) -> None:
@@ -730,36 +738,12 @@ def _reset_ball(state: dict) -> None:
     state["lastKickTick"] = state["tick"]
 
 
-def _reset_player(state: dict, p: dict) -> None:
-    f = state["field"]
-    p["x"] = (
-        f["midX"] - STARTING_GAP - f["playerWidth"] / 2
-        if p["side"] == "left"
-        else f["midX"] + STARTING_GAP - f["playerWidth"] / 2
-    )
-    p["y"] = FIELD_HEIGHT / 2
-    p["vx"] = 0
-    p["vy"] = 0
-    p["pushVx"] = 0
-    p["pushVy"] = 0
-    p["stamina"] = 1
-    p["exhausted"] = False
-    p["kick"] = None
-    p["pushTimer"] = 0
-    p["airZ"] = 0
-    p["dir"] = 1 if p["side"] == "left" else -1
-
-
-def _reset_match(state: dict) -> None:
-    state["scoreL"] = 0
-    state["scoreR"] = 0
-    _reset_player(state, state["p1"])
-    _reset_player(state, state["p2"])
-    _reset_ball(state)
+def _finalize_match(state: dict) -> None:
+    """Terminal state after the matchend pause. Callers poll matchOver and
+    discard the state, so no reset work is needed."""
+    state["matchOver"] = True
     state["pauseState"] = None
     state["pauseTimer"] = 0
-    state["goalScorer"] = None
-    state["matchOver"] = True
 
 
 # ── Pause state machine ───────────────────────────────────────
@@ -768,7 +752,7 @@ def _advance_pause(state: dict) -> None:
     if state["pauseState"] == "matchend":
         state["pauseTimer"] -= 1
         if state["pauseTimer"] <= 0:
-            _reset_match(state)
+            _finalize_match(state)
         return
 
     if state["pauseState"] == "celebrate":
@@ -781,30 +765,20 @@ def _advance_pause(state: dict) -> None:
 
     if state["pauseState"] == "reposition":
         f = state["field"]
+        tx1 = f["midX"] - STARTING_GAP - f["playerWidth"] / 2
+        tx2 = f["midX"] + STARTING_GAP - f["playerWidth"] / 2
+        cy = FIELD_HEIGHT / 2
+
         state["p1"]["stamina"] = min(1, state["p1"]["stamina"] + STAMINA_REGEN)
         state["p2"]["stamina"] = min(1, state["p2"]["stamina"] + STAMINA_REGEN)
-        for p in (state["p1"], state["p2"]):
-            tx = (
-                f["midX"] - STARTING_GAP - f["playerWidth"] / 2
-                if p["side"] == "left"
-                else f["midX"] + STARTING_GAP - f["playerWidth"] / 2
-            )
-            ty = FIELD_HEIGHT / 2
-            dx = tx - p["x"]
-            dy = ty - p["y"]
-            abs_dx = abs(dx)
-            abs_dy = abs(dy)
-            if abs_dx > REPOSITION_TOL or abs_dy > REPOSITION_TOL:
-                sign_x = 1 if dx > 0 else (-1 if dx < 0 else 0)
-                sign_y = 1 if dy > 0 else (-1 if dy < 0 else 0)
-                p["x"] += sign_x * min(abs_dx * 0.1, REPOSITION_SPEED)
-                p["y"] += sign_y * min(abs_dy * 0.1, REPOSITION_SPEED * 0.5)
-            else:
-                p["x"] = tx
-                p["y"] = ty
+        _step_reposition(state["p1"], tx1, cy)
+        _step_reposition(state["p2"], tx2, cy)
+
         if (
-            abs(state["p1"]["x"] - (f["midX"] - STARTING_GAP - f["playerWidth"] / 2)) < REPOSITION_TOL
-            and abs(state["p2"]["x"] - (f["midX"] + STARTING_GAP - f["playerWidth"] / 2)) < REPOSITION_TOL
+            abs(state["p1"]["x"] - tx1) < REPOSITION_TOL
+            and abs(state["p2"]["x"] - tx2) < REPOSITION_TOL
+            and abs(state["p1"]["y"] - cy) < REPOSITION_TOL
+            and abs(state["p2"]["y"] - cy) < REPOSITION_TOL
         ):
             state["pauseState"] = "waiting"
             state["pauseTimer"] = RESPAWN_DELAY_TICKS
@@ -817,11 +791,27 @@ def _advance_pause(state: dict) -> None:
             state["pauseState"] = None
 
 
+def _step_reposition(p: dict, tx: float, ty: float) -> None:
+    dx = tx - p["x"]
+    dy = ty - p["y"]
+    abs_dx = abs(dx)
+    abs_dy = abs(dy)
+    if abs_dx > REPOSITION_TOL or abs_dy > REPOSITION_TOL:
+        sign_x = 1 if dx > 0 else (-1 if dx < 0 else 0)
+        sign_y = 1 if dy > 0 else (-1 if dy < 0 else 0)
+        p["x"] += sign_x * min(abs_dx * 0.1, REPOSITION_SPEED)
+        p["y"] += sign_y * min(abs_dy * 0.1, REPOSITION_SPEED * 0.5)
+    else:
+        p["x"] = tx
+        p["y"] = ty
+
+
 # ── NN input builder ──────────────────────────────────────────
 
-def build_inputs(state: dict, which: str) -> list:
+def build_inputs(state: dict, which: str, out: Optional[list] = None) -> list:
     """18-dim normalized input vector, bit-identical to physics.js buildInputs()."""
-    out = [0.0] * 18
+    if out is None:
+        out = [0.0] * 18
     f = state["field"]
     p = state[which]
     opp = state["p2"] if which == "p1" else state["p1"]

@@ -445,6 +445,17 @@ export class Renderer {
     ]);
     this._addStatic(new THREE.Line(midGeom, mutedMat), midGeom);
 
+    // Center circle + center dot.
+    const midZ = (zFar + zNear) / 2;
+    const centerR = FIELD_HEIGHT * Z_STRETCH * 0.22;  // ~22% of depth radius
+    this._addArc(w / 2, midZ, centerR, 0, TWO_PI, 48, mutedMat);
+    this._addArc(w / 2, midZ, centerR * 0.06, 0, TWO_PI, 12, mutedMat);
+
+    // Penalty arcs ("D"s) protruding from each goal line into the field.
+    const arcR = centerR * 0.55;
+    this._addArc(f.goalLineL, midZ, arcR, -Math.PI / 2, Math.PI / 2, 24, mutedMat);
+    this._addArc(f.goalLineR, midZ, arcR, Math.PI / 2, 3 * Math.PI / 2, 24, mutedMat);
+
     const goalDepth = f.goalLRight - f.goalLLeft;
     const goalWidth = (f.goalMouthYMax - f.goalMouthYMin) * Z_STRETCH;
     const goalHeight = f.goalMouthZMax * 2.25;
@@ -460,6 +471,23 @@ export class Renderer {
   _addStatic(obj, geometry) {
     this.scene.add(obj);
     if (geometry) this._staticGeometries.push(geometry);
+  }
+
+  /** Add an XZ-plane arc (or full circle) centered at (cx, cz) from
+   *  `aStart` to `aEnd` radians, sampled with `segments` line segments.
+   *  For full circles, aEnd = aStart + 2π. */
+  _addArc(cx, cz, radius, aStart, aEnd, segments, material) {
+    const points = [];
+    for (let i = 0; i <= segments; i++) {
+      const a = aStart + (i / segments) * (aEnd - aStart);
+      points.push(new THREE.Vector3(
+        cx + Math.cos(a) * radius,
+        0,
+        cz + Math.sin(a) * radius,
+      ));
+    }
+    const geom = new THREE.BufferGeometry().setFromPoints(points);
+    this._addStatic(new THREE.Line(geom, material), geom);
   }
 
   _addGoal(centerX, centerZ, depth, width, height, dir, mat, netMat, goalLineMat) {

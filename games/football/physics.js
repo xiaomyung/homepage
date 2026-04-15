@@ -944,6 +944,15 @@ function scoreGoal(state, side) {
   state.pauseState = 'celebrate';
   state.pauseTimer = CELEBRATE_TICKS;
 
+  // Fresh legs for both sides on every goal (and therefore also on the
+  // match-ending goal). Stamina is otherwise slow-regen only during
+  // reposition, which can leave exhausted players visibly drained at
+  // kickoff for the next point.
+  state.p1.stamina = 1;
+  state.p2.stamina = 1;
+  state.p1.exhausted = false;
+  state.p2.exhausted = false;
+
   if (side === 'left') {
     // Ball into LEFT goal = RIGHT scored
     state.scoreR++;

@@ -49,16 +49,22 @@ const STICKMAN_TILT_MAX = 0.45;
 // Body-local glyph offsets, pre-multiplied by STICKMAN_GLYPH_SIZE so the
 // hot path does zero multiplies to materialise them. All measured from
 // the hip center, which is itself placed at hipBaseY = 0.10 * s + bob.
-const STICKMAN_TORSO_HALF_H = 0.50 * STICKMAN_GLYPH_SIZE;
-const STICKMAN_SHOULDER_OFX = 0.15 * STICKMAN_GLYPH_SIZE;
+const STICKMAN_SHOULDER_OFX = 0.216 * STICKMAN_GLYPH_SIZE;
 const STICKMAN_SHOULDER_OFY = 0.92 * STICKMAN_GLYPH_SIZE;
 const STICKMAN_HIP_OFX      = 0.12 * STICKMAN_GLYPH_SIZE;
-const STICKMAN_HEAD_GAP_Y   = 0.23 * STICKMAN_GLYPH_SIZE;
+const STICKMAN_HEAD_GAP_Y   = 0.13041 * STICKMAN_GLYPH_SIZE;
 const STICKMAN_LIMB_HALF_H  = 0.45 * STICKMAN_GLYPH_SIZE;
 const STICKMAN_LIMB_FULL_H  = STICKMAN_LIMB_HALF_H * 2;
 // Thickness of the stickman's 3D pipe parts, in world units.
-const STICKMAN_LIMB_RADIUS  = 2.2;
+const STICKMAN_LEG_RADIUS   = 2.2;
+// Arms are thinner than legs — 20% reduction from the leg radius.
+const STICKMAN_ARM_RADIUS   = STICKMAN_LEG_RADIUS * 0.8;
 const STICKMAN_TORSO_RADIUS = 3.3;
+// Stamina fill capsule is inset inside the outline shell, creating a
+// visible "shell wall" (the outline appears thicker inward while the
+// outer silhouette is unchanged). Delta is in world units.
+const STICKMAN_TORSO_SHELL_THICKNESS = 1.0;
+const STICKMAN_TORSO_FILL_RADIUS = STICKMAN_TORSO_RADIUS - STICKMAN_TORSO_SHELL_THICKNESS;
 const STICKMAN_HEAD_RADIUS  = 4.0;
 const STICKMAN_FIST_RADIUS  = 3.0;
 // Sphere pool for heads + push fists: 1 head + up to 2 fists per
@@ -140,6 +146,13 @@ const AIRKICK_BACK_TILT    = 0.55;                        // rad — body leans 
 // than PLAYER_WIDTH.
 const BALL_VISUAL_RADIUS = 4.224;
 
+// Stamina indicator tuning — see the three-mesh breakdown in the
+// torso-pool construction block below for how these values are used.
+const STAMINA_OUTLINE_OPACITY = 0.55;
+// Keep a sliver visible at stamina=0 so exhausted players don't
+// vanish completely into the outline.
+const STAMINA_FLOOR = 0.04;
+
 // Splash particles for ball bounces. Pool holds up to PARTICLE_POOL slots,
 // filled via a rolling index so old particles are recycled automatically.
 // Count and velocity per bounce scale with the incoming-velocity magnitude
@@ -213,10 +226,13 @@ const SHADOW_ALPHA_BASE    = 0.55;
 
 /* ── Palette (matches style.css design tokens) ─────────────── */
 
-const COLOR_TEXT = rgb('#d0d0d0');
-const COLOR_GREEN = rgb('#9ece6a');
-const COLOR_AMBER = rgb('#e0af68');
-const COLOR_RED = rgb('#f7768e');
+const COLOR_TEXT  = rgb('#d0d0d0');
+// Stamina gradient for the torso fill + disc — red at empty, amber
+// at half, green at full. Hex values mirror style.css `--red`,
+// `--amber`, `--green` exactly.
+const COLOR_STAM_LOW  = rgb('#f7768e');
+const COLOR_STAM_MID  = rgb('#e0af68');
+const COLOR_STAM_HIGH = rgb('#9ece6a');
 
 /* ── Renderer ──────────────────────────────────────────────── */
 
@@ -311,32 +327,144 @@ export class Renderer {
     this._p2Shadow   = makeShadow();
     this._ballShadow = makeShadow();
 
-    // Stickman pipe parts — torsos and limbs each use their own
+    // Stickman pipe parts — torsos, arms, and legs each use their own
     // fixed-length CapsuleGeometry so the hemispherical caps stay
     // perfectly round (no stretching). Joint-to-joint distances are
     // constant per part type by construction, so meshes are placed
     // at midpoints and rotated but never scaled along their length.
-    // Per-mesh Lambert materials carry per-stickman color.
+    // Every stickman part uses the same monochrome color (COLOR_TEXT).
+    //
+    // The torso is drawn as THREE co-located meshes per stickman:
+    //   outline — semi-transparent shell at the outer radius, always
+    //             visible, DoubleSide so the inner capsule wall shows
+    //             through for a readable 3D "glass shell" depth cue.
+    //   fill    — opaque solid at a smaller radius (inset inward, so
+    //             the outline shell reads as having real wall
+    //             thickness), clipped above the stamina-height plane.
+    //             FrontSide so only the outer shell of the fill
+    //             capsule is lit, matching the head/limb lighting.
+    //   disc    — a flat horizontal disc at the fill cut, sized to the
+    //             fill capsule's internal cross-section radius so it
+    //             caps the hollow without ever poking outside the
+    //             hemispherical caps.
+    // All three materials are MeshLambertMaterial so every lit part of
+    // the stickman — head, arms, legs, torso shell, torso fill, disc —
+    // shares the same lighting response and reads as one monochrome
+    // figure.
     const torsoBodyLen = STICKMAN_SHOULDER_OFY - 2 * STICKMAN_TORSO_RADIUS;
-    const limbBodyLen  = STICKMAN_LIMB_FULL_H  - 2 * STICKMAN_LIMB_RADIUS;
-    const stickmanTorsoGeom = new THREE.CapsuleGeometry(STICKMAN_TORSO_RADIUS, torsoBodyLen, 4, 12);
-    const stickmanLimbGeom  = new THREE.CapsuleGeometry(STICKMAN_LIMB_RADIUS,  limbBodyLen,  4, 10);
-    this._staticGeometries.push(stickmanTorsoGeom, stickmanLimbGeom);
-    this._stickmanTorso = [];
-    this._stickmanLimb  = [];
-    const makeStickmanMesh = (geom, list) => {
+    // Fill capsule spans the same hip→neck distance (== SHOULDER_OFY)
+    // as the outline but at a smaller radius, so its body segment is
+    // longer to compensate.
+    const torsoFillBodyLen = STICKMAN_SHOULDER_OFY - 2 * STICKMAN_TORSO_FILL_RADIUS;
+    const armBodyLen = STICKMAN_LIMB_FULL_H - 2 * STICKMAN_ARM_RADIUS;
+    const legBodyLen = STICKMAN_LIMB_FULL_H - 2 * STICKMAN_LEG_RADIUS;
+    const stickmanTorsoGeom     = new THREE.CapsuleGeometry(STICKMAN_TORSO_RADIUS,      torsoBodyLen,     4, 12);
+    const stickmanTorsoFillGeom = new THREE.CapsuleGeometry(STICKMAN_TORSO_FILL_RADIUS, torsoFillBodyLen, 4, 12);
+    const stickmanArmGeom       = new THREE.CapsuleGeometry(STICKMAN_ARM_RADIUS,        armBodyLen,       4, 10);
+    const stickmanLegGeom       = new THREE.CapsuleGeometry(STICKMAN_LEG_RADIUS,        legBodyLen,       4, 10);
+    this._staticGeometries.push(stickmanTorsoGeom, stickmanTorsoFillGeom, stickmanArmGeom, stickmanLegGeom);
+
+    // Fill-capsule dimensions drive the disc scaling math in _placeTorso
+    // (the disc caps the FILL, not the outline).
+    this._fillBodyHalf  = torsoFillBodyLen / 2;
+    this._fillCapRadius = STICKMAN_TORSO_FILL_RADIUS;
+
+    // Stamina indicator needs per-material clipping planes, which
+    // three.js only honors when local clipping is enabled globally.
+    this.renderer.localClippingEnabled = true;
+    this._stickmanTorsoOutline = [];
+    this._stickmanTorsoFill = [];
+    this._stickmanTorsoDisc = [];
+    this._stickmanTorsoFillPlanes = [];
+    this._stickmanArm = [];
+    this._stickmanLeg = [];
+
+    // Water-surface disc geometry — circle in the XZ plane, sized to
+    // the fill capsule's cap radius. Each disc mesh scales this at
+    // frame time to match the capsule's cross-section at the current
+    // fill height. Re-used by all pooled disc meshes.
+    const discGeom = new THREE.CircleGeometry(STICKMAN_TORSO_FILL_RADIUS, 18);
+    discGeom.rotateX(-Math.PI / 2);
+    this._staticGeometries.push(discGeom);
+
+    const makeArmMesh = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-      const mesh = new THREE.Mesh(geom, mat);
+      const mesh = new THREE.Mesh(stickmanArmGeom, mat);
       mesh.visible = false;
       mesh.frustumCulled = false;
       this._staticMaterials.push(mat);
       this.scene.add(mesh);
-      list.push(mesh);
+      this._stickmanArm.push(mesh);
     };
-    for (let i = 0; i < 4;  i++) makeStickmanMesh(stickmanTorsoGeom, this._stickmanTorso);
-    for (let i = 0; i < 12; i++) makeStickmanMesh(stickmanLimbGeom,  this._stickmanLimb);
+    const makeLegMesh = () => {
+      const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+      const mesh = new THREE.Mesh(stickmanLegGeom, mat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      this._staticMaterials.push(mat);
+      this.scene.add(mesh);
+      this._stickmanLeg.push(mesh);
+    };
+    const makeTorsoOutlineMesh = () => {
+      const mat = new THREE.MeshLambertMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: STAMINA_OUTLINE_OPACITY,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(stickmanTorsoGeom, mat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      // Draw outline AFTER fill so the transparent shell alpha-blends
+      // over the opaque fill below the stamina line.
+      mesh.renderOrder = 2;
+      this._staticMaterials.push(mat);
+      this.scene.add(mesh);
+      this._stickmanTorsoOutline.push(mesh);
+    };
+    const makeTorsoFillMesh = () => {
+      // Each fill mesh gets its own clipping plane instance so the
+      // four pooled torsos can have independent fill levels.
+      const plane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
+      const mat = new THREE.MeshLambertMaterial({
+        color: 0xffffff,
+        clippingPlanes: [plane],
+      });
+      const mesh = new THREE.Mesh(stickmanTorsoFillGeom, mat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      mesh.renderOrder = 1;
+      this._staticMaterials.push(mat);
+      this.scene.add(mesh);
+      this._stickmanTorsoFill.push(mesh);
+      this._stickmanTorsoFillPlanes.push(plane);
+    };
+    const makeTorsoDiscMesh = () => {
+      const mat = new THREE.MeshLambertMaterial({
+        color: 0xffffff,
+        side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(discGeom, mat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      mesh.renderOrder = 1;
+      this._staticMaterials.push(mat);
+      this.scene.add(mesh);
+      this._stickmanTorsoDisc.push(mesh);
+    };
+    for (let i = 0; i < 4; i++) {
+      makeTorsoOutlineMesh();
+      makeTorsoFillMesh();
+      makeTorsoDiscMesh();
+    }
+    // Two players × 2 arms/legs = 4 of each on screen. Pool of 8
+    // leaves headroom for future multi-stickman scenes.
+    for (let i = 0; i < 8; i++) makeArmMesh();
+    for (let i = 0; i < 8; i++) makeLegMesh();
     this._stickmanTorsoCursor = 0;
-    this._stickmanLimbCursor = 0;
+    this._stickmanArmCursor = 0;
+    this._stickmanLegCursor = 0;
 
     // Stickman sphere pool — used for heads and fists. One shared
     // unit sphere geometry, per-mesh Lambert material for color.
@@ -354,10 +482,6 @@ export class Renderer {
     }
     this._stickmanSphCursor = 0;
 
-    // Pre-allocated per-player color buffers so staminaColor can write into
-    // a reused array instead of allocating [r,g,b] every frame.
-    this._p1Color = [0, 0, 0];
-    this._p2Color = [0, 0, 0];
 
     // Smoothed animation state per player (tilt, amplitude, phase, lastTick).
     // Keyed by the player state object so every stickman on this renderer
@@ -413,6 +537,10 @@ export class Renderer {
     this._scratchDir = new THREE.Vector3();
     this._scratchAxis = new THREE.Vector3();
     this._scratchUp = new THREE.Vector3(0, 1, 0);
+    // Scratch [r,g,b] buffer for the per-frame stamina gradient. Reused
+    // across both stickmen since each frame's writes are consumed
+    // before the next _placeTorso call overwrites it.
+    this._staminaColorBuf = [0, 0, 0];
 
     this._resizeObserver = null;
     this._lastW = 0;
@@ -451,21 +579,26 @@ export class Renderer {
     const celebrating = state.pauseState === 'celebrate';
     const p1Celebrating = celebrating && state.goalScorer === state.p1;
     const p2Celebrating = celebrating && state.goalScorer === state.p2;
-    staminaColorInto(state.p1.stamina, this._p1Color);
-    staminaColorInto(state.p2.stamina, this._p2Color);
     const prevTorsoCursor = this._stickmanTorsoCursor;
-    const prevLimbCursor  = this._stickmanLimbCursor;
+    const prevArmCursor   = this._stickmanArmCursor;
+    const prevLegCursor   = this._stickmanLegCursor;
     const prevSphCursor   = this._stickmanSphCursor;
     this._stickmanTorsoCursor = 0;
-    this._stickmanLimbCursor  = 0;
+    this._stickmanArmCursor   = 0;
+    this._stickmanLegCursor   = 0;
     this._stickmanSphCursor   = 0;
-    this._addStickman(state.p1, this._p1Color, tick, p1Celebrating);
-    this._addStickman(state.p2, this._p2Color, tick, p2Celebrating);
+    this._addStickman(state.p1, COLOR_TEXT, tick, p1Celebrating);
+    this._addStickman(state.p2, COLOR_TEXT, tick, p2Celebrating);
     for (let i = this._stickmanTorsoCursor; i < prevTorsoCursor; i++) {
-      this._stickmanTorso[i].visible = false;
+      this._stickmanTorsoOutline[i].visible = false;
+      this._stickmanTorsoFill[i].visible = false;
+      this._stickmanTorsoDisc[i].visible = false;
     }
-    for (let i = this._stickmanLimbCursor; i < prevLimbCursor; i++) {
-      this._stickmanLimb[i].visible = false;
+    for (let i = this._stickmanArmCursor; i < prevArmCursor; i++) {
+      this._stickmanArm[i].visible = false;
+    }
+    for (let i = this._stickmanLegCursor; i < prevLegCursor; i++) {
+      this._stickmanLeg[i].visible = false;
     }
     for (let i = this._stickmanSphCursor; i < prevSphCursor; i++) {
       this._stickmanSph[i].visible = false;
@@ -1297,7 +1430,7 @@ export class Renderer {
     const rShZ = neckZ + lateralZ * shoulderHalfWidth;
 
     // Torso: capsule from hip center to neck (both move with baseX/Z).
-    this._placeTorso(baseX, upperHipY, baseZ, neckX, neckY, neckZ, color);
+    this._placeTorso(baseX, upperHipY, baseZ, neckX, neckY, neckZ, color, player.stamina);
 
     // Head: sphere a fixed gap above the neck, following the tilt so
     // it stays anchored to the torso top.
@@ -1354,10 +1487,10 @@ export class Renderer {
     // (forwardX, forwardZ), so at angle=0 the limb hangs straight
     // down and at angle=π/2 it points along +forward.
     const shoulderY = upperHipY + torsoH * tiltC;
-    this._placeLimb(lShX, shoulderY, lShZ, leftArmAngle,  forwardX, forwardZ, color);
-    this._placeLimb(rShX, shoulderY, rShZ, rightArmAngle, forwardX, forwardZ, color);
-    this._placeLimb(lHipX, hipBaseY, lHipZ, leftLegAngle,  forwardX, forwardZ, color);
-    this._placeLimb(rHipX, hipBaseY, rHipZ, rightLegAngle, forwardX, forwardZ, color);
+    this._placeArm(lShX, shoulderY, lShZ, leftArmAngle,  forwardX, forwardZ, color);
+    this._placeArm(rShX, shoulderY, rShZ, rightArmAngle, forwardX, forwardZ, color);
+    this._placeLeg(lHipX, hipBaseY, lHipZ, leftLegAngle,  forwardX, forwardZ, color);
+    this._placeLeg(rHipX, hipBaseY, rHipZ, rightLegAngle, forwardX, forwardZ, color);
 
     // Push fists — spheres at the end of each extended arm during the
     // strike window. Size pulses larger at strike peak via pushFistScale.
@@ -1408,29 +1541,68 @@ export class Renderer {
     mesh.material.color.setRGB(color[0], color[1], color[2]);
   }
 
-  /** Pull a torso capsule from the pool and orient it between hip
-   *  and neck. Joint distance is always SHOULDER_OFY by construction,
-   *  matching the pre-built capsule length. */
-  _placeTorso(ax, ay, az, bx, by, bz, color) {
-    if (this._stickmanTorsoCursor >= this._stickmanTorso.length) return;
-    const mesh = this._stickmanTorso[this._stickmanTorsoCursor++];
-    this._orientBetween(mesh, ax, ay, az, bx, by, bz, color);
+  /** Pull a torso capsule triple (outline + fill + disc) from the
+   *  pool, orient the outline+fill between hip and neck, update the
+   *  fill mesh's clipping plane so the solid fill covers the bottom
+   *  `staminaFrac` of the torso, and size the cut disc so it never
+   *  pokes out of the capsule's hemispherical caps. The outline stays
+   *  in the monochrome body color; the fill + disc are tinted with a
+   *  red→amber→green gradient driven by `staminaFrac`. */
+  _placeTorso(ax, ay, az, bx, by, bz, color, staminaFrac) {
+    const idx = this._stickmanTorsoCursor;
+    if (idx >= this._stickmanTorsoOutline.length) return;
+    this._stickmanTorsoCursor++;
+    const outline = this._stickmanTorsoOutline[idx];
+    const fill    = this._stickmanTorsoFill[idx];
+    const plane   = this._stickmanTorsoFillPlanes[idx];
+
+    const tint = staminaColorInto(this._staminaColorBuf, staminaFrac);
+    this._orientBetween(outline, ax, ay, az, bx, by, bz, color);
+    this._orientBetween(fill,    ax, ay, az, bx, by, bz, tint);
+    const fillWorldY = updateStaminaClipPlane(plane, ay, by, staminaFrac);
+
+    const disc = this._stickmanTorsoDisc[idx];
+    const midY = (ay + by) * 0.5;
+    const discR = staminaDiscRadius(
+      fillWorldY - midY,
+      this._fillBodyHalf,
+      this._fillCapRadius,
+    );
+    if (discR > 0) {
+      disc.visible = true;
+      disc.position.set((ax + bx) * 0.5, fillWorldY, (az + bz) * 0.5);
+      const s = (discR / this._fillCapRadius) * 0.995;
+      disc.scale.set(s, 1, s);
+      disc.material.color.setRGB(tint[0], tint[1], tint[2]);
+    } else {
+      disc.visible = false;
+    }
   }
 
-  /** Pull a limb capsule from the pool and pivot it at (px, py, pz)
-   *  with the given swing angle. The limb extends by LIMB_FULL_H
-   *  along (forwardX*sin(angle), -cos(angle), forwardZ*sin(angle)),
-   *  where (forwardX, forwardZ) is the player's heading-based
-   *  forward unit vector in world xz. */
-  _placeLimb(px, py, pz, angle, forwardX, forwardZ, color) {
-    if (this._stickmanLimbCursor >= this._stickmanLimb.length) return;
-    const mesh = this._stickmanLimb[this._stickmanLimbCursor++];
+  /** Pull a limb capsule from the given pool and pivot it at
+   *  (px, py, pz) with the given swing angle. The limb extends by
+   *  LIMB_FULL_H along (forwardX*sin(angle), -cos(angle),
+   *  forwardZ*sin(angle)), where (forwardX, forwardZ) is the player's
+   *  heading-based forward unit vector in world xz. Arms and legs use
+   *  separate pools (different capsule radii) but the placement math
+   *  is identical. */
+  _placeLimbFromPool(pool, cursorKey, px, py, pz, angle, forwardX, forwardZ, color) {
+    if (this[cursorKey] >= pool.length) return;
+    const mesh = pool[this[cursorKey]++];
     const L = STICKMAN_LIMB_FULL_H;
     const sinA = Math.sin(angle);
     const ex = px + forwardX * L * sinA;
     const ey = py - L * Math.cos(angle);
     const ez = pz + forwardZ * L * sinA;
     this._orientBetween(mesh, px, py, pz, ex, ey, ez, color);
+  }
+
+  _placeArm(px, py, pz, angle, forwardX, forwardZ, color) {
+    this._placeLimbFromPool(this._stickmanArm, '_stickmanArmCursor', px, py, pz, angle, forwardX, forwardZ, color);
+  }
+
+  _placeLeg(px, py, pz, angle, forwardX, forwardZ, color) {
+    this._placeLimbFromPool(this._stickmanLeg, '_stickmanLegCursor', px, py, pz, angle, forwardX, forwardZ, color);
   }
 
   /** Pull a sphere from the pool and place it at a world point with
@@ -1778,6 +1950,49 @@ function airkickTiltAt(t) {
   return -AIRKICK_BACK_TILT * (1 - easeInOut(p));
 }
 
+/**
+ * Cross-section radius of the torso capsule at a given local-y
+ * offset from its center. Returns:
+ *   - `capRadius` throughout the cylindrical middle (|y| <= bodyHalf)
+ *   - shrinks to 0 at the tips inside the hemispherical caps
+ *   - 0 if the offset is outside the capsule entirely
+ *
+ * Used by `_placeTorso` to size the fill-surface disc so it never
+ * pokes out of the capsule silhouette. Exported for unit tests so
+ * the cap region math can be validated without instantiating a
+ * Renderer.
+ */
+export function staminaDiscRadius(yLocalOffset, bodyHalf, capRadius) {
+  const absY = yLocalOffset < 0 ? -yLocalOffset : yLocalOffset;
+  if (absY >= bodyHalf + capRadius) return 0;
+  if (absY <= bodyHalf) return capRadius;
+  const distInCap = absY - bodyHalf;
+  const rSq = capRadius * capRadius - distInCap * distInCap;
+  return rSq > 0 ? Math.sqrt(rSq) : 0;
+}
+
+/**
+ * Set `plane` to a world-horizontal clipping plane whose y-level
+ * sits at `staminaFrac` of the way from `ay` to `by`. The resulting
+ * plane equation is `-y + fillY = 0`, so three.js keeps all points
+ * where `y <= fillY` (the bottom portion of the torso) and clips
+ * everything above. `ay` and `by` are the two torso endpoint y
+ * coordinates — the function auto-sorts them, so it doesn't matter
+ * which one is the hip and which is the neck. `staminaFrac` is
+ * clamped to [STAMINA_FLOOR, 1] so exhausted players don't vanish.
+ * Exposed as a named export purely so the unit tests can exercise
+ * the clamp + interpolation math without instantiating a Renderer.
+ */
+export function updateStaminaClipPlane(plane, ay, by, staminaFrac) {
+  const hipY  = ay < by ? ay : by;
+  const neckY = ay < by ? by : ay;
+  const clamped = staminaFrac < STAMINA_FLOOR ? STAMINA_FLOOR
+                : staminaFrac > 1 ? 1 : staminaFrac;
+  const fillWorldY = hipY + (neckY - hipY) * clamped;
+  plane.setComponents(0, -1, 0, fillWorldY);
+  return fillWorldY;
+}
+
 function easeInOut(p) {
   return p < 0.5 ? 2 * p * p : 1 - (2 * (1 - p)) * (1 - p);
 }
@@ -1795,21 +2010,23 @@ function rgb(hex) {
   ];
 }
 
-function staminaColorInto(stamina, out) {
-  const s = stamina < 0 ? 0 : (stamina > 1 ? 1 : stamina);
-  if (s >= 0.5) {
-    const t = (s - 0.5) * 2;
-    lerpInto(COLOR_AMBER, COLOR_GREEN, t, out);
-    return;
+/**
+ * Blend LOW → MID → HIGH as `t` goes 0 → 0.5 → 1. Writes the result
+ * into `out` (length-3 [r,g,b] array) to avoid per-frame allocation.
+ * `t` is clamped to [0, 1].
+ */
+function staminaColorInto(out, t) {
+  const clamped = t < 0 ? 0 : t > 1 ? 1 : t;
+  let a, b, k;
+  if (clamped < 0.5) {
+    a = COLOR_STAM_LOW; b = COLOR_STAM_MID; k = clamped * 2;
+  } else {
+    a = COLOR_STAM_MID; b = COLOR_STAM_HIGH; k = (clamped - 0.5) * 2;
   }
-  const t = s * 2;
-  lerpInto(COLOR_RED, COLOR_AMBER, t, out);
-}
-
-function lerpInto(a, b, t, out) {
-  out[0] = a[0] + (b[0] - a[0]) * t;
-  out[1] = a[1] + (b[1] - a[1]) * t;
-  out[2] = a[2] + (b[2] - a[2]) * t;
+  out[0] = a[0] + (b[0] - a[0]) * k;
+  out[1] = a[1] + (b[1] - a[1]) * k;
+  out[2] = a[2] + (b[2] - a[2]) * k;
+  return out;
 }
 
 /**

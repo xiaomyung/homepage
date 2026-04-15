@@ -70,6 +70,10 @@
 <div class="note">Both players parked with walk amplitude = 1.0 and phase cycling through a full TWO_PI so arm + leg swing is visible.</div>
 <div class="strip"><canvas class="strip-main" id="s-walk"></canvas></div>
 
+<h2>stamina fill (cycling 0 → 1)</h2>
+<div class="note">Player stamina sweeps 0 → 1 → 0 repeatedly. Torso body capsule fills from hip to neck; above the fill line only the Fresnel-rim silhouette survives. Limbs, head, and fists stay monochrome solid throughout.</div>
+<div class="strip"><canvas class="strip-main" id="s-stamina"></canvas></div>
+
 <h2>heading rotation (angle cycling)</h2>
 <div class="note">Heading rotates continuously through a full circle. Shoulders / hips / head / limbs stay in lock-step under the rotating local frame.</div>
 <div class="strip"><canvas class="strip-main" id="s-head"></canvas></div>
@@ -99,7 +103,7 @@
 <div class="strip"><canvas class="strip-main" id="s-goal-burst"></canvas></div>
 
 <script type="module">
-import { Renderer } from './renderer.js?v=91';
+import { Renderer } from './renderer.js?v=97';
 import {
   createField,
   createState,
@@ -207,6 +211,37 @@ try {
         a.amplitude = 1; a.tilt = 0;
         a.pushing = 0; a.celebrate = 0;
         a.phase = phase;
+      }
+    });
+  })();
+
+  // ── Stamina fill cycle ─────────────────────────────────────
+  // Both players parked. Stamina sweeps 0 → 1 → 0 so the torso
+  // fill bar is exercised across its whole range; walk anim is
+  // pinned to neutral so the only visual change per frame is the
+  // fill line height.
+  (() => {
+    const state = makeState();
+    state.p1.x = 200; state.p1.y = 27;
+    state.p2.x = 700; state.p2.y = 27;
+    const r = mountCloseup('s-stamina', state, state.p1);
+    r.renderState(state);  // prime anim map
+    // Cycle period in ticks — ~3s at 60fps.
+    const PERIOD = 180;
+    let t = 0;
+    animate(r, state, () => {
+      t = (t + 1) % PERIOD;
+      // Triangle wave: 0 → 1 over PERIOD/2, 1 → 0 over PERIOD/2.
+      const u = t / PERIOD * 2;
+      const stamina = u <= 1 ? u : 2 - u;
+      state.p1.stamina = stamina;
+      state.p2.stamina = 1 - stamina;  // mirrored, so both fills move
+      // Pin walk anim to neutral so the pose doesn't distract.
+      for (const p of [state.p1, state.p2]) {
+        const a = r._animByPlayer.get(p);
+        if (!a) continue;
+        a.amplitude = 0; a.tilt = 0;
+        a.pushing = 0; a.celebrate = 0;
       }
     });
   })();

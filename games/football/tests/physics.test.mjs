@@ -913,3 +913,40 @@ test('kick state machine fires impact at windup end and clears at duration end',
   for (let i = 0; i < totalTicks; i++) tick(state, NOOP, NOOP);
   assert.equal(state.p1.kick.active, false, 'kick should deactivate after KICK_DURATION_MS');
 });
+
+/* ── Stamina reset on goal ──────────────────────────────────────
+ *
+ * Fresh legs for both sides on every goal so neither player starts
+ * the next point visibly drained. Also covers the match-ending goal
+ * since scoreGoal is the single path for both cases.
+ */
+
+test('both players regain full stamina when a goal is scored', () => {
+  const state = freshState();
+  const f = state.field;
+
+  // Pre-drain both players so the reset is observable.
+  state.p1.stamina = 0.15;
+  state.p2.stamina = 0.22;
+  state.p1.exhausted = true;
+  state.p2.exhausted = true;
+
+  // Fire a ball straight into the left goal mouth.
+  state.ball.x = 120;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = -5;
+  state.ball.vy = 0;
+  state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  for (let i = 0; i < 40 && state.pauseState !== 'celebrate'; i++) {
+    tick(state, NOOP, NOOP);
+  }
+  assert.equal(state.pauseState, 'celebrate', 'goal should have triggered celebrate pause');
+
+  assert.equal(state.p1.stamina, 1, 'p1 stamina must reset to full on goal');
+  assert.equal(state.p2.stamina, 1, 'p2 stamina must reset to full on goal');
+  assert.equal(state.p1.exhausted, false);
+  assert.equal(state.p2.exhausted, false);
+});

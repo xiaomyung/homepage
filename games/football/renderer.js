@@ -26,8 +26,25 @@ const Z_STRETCH = 4.7;
 const HORIZONTAL_MARGIN = 1.15;
 
 const STICKMAN_GLYPH_SIZE = 22;
+// Per-frame LPF coefficient for smoothing animation state (tilt, amplitude).
+// ~0.15 → time constant ≈ 100ms at 60 fps.
+const STICKMAN_SMOOTH = 0.15;
+// Forward-lean tuning: the run threshold above which the body starts to
+// lean in the direction of motion, and the slope + clamp for the lean angle.
+const STICKMAN_RUN_THRESHOLD = 1.2;
+const STICKMAN_TILT_PER_SPEED = 0.09;
+const STICKMAN_TILT_MAX = 0.45;
+// Body-local glyph offsets, pre-multiplied by STICKMAN_GLYPH_SIZE so the
+// hot path does zero multiplies to materialise them. All measured from
+// the hip center, which is itself placed at hipBaseY = 0.10 * s + bob.
+const STICKMAN_TORSO_HALF_H = 0.50 * STICKMAN_GLYPH_SIZE;
+const STICKMAN_SHOULDER_OFX = 0.15 * STICKMAN_GLYPH_SIZE;
+const STICKMAN_SHOULDER_OFY = 0.92 * STICKMAN_GLYPH_SIZE;
+const STICKMAN_HIP_OFX      = 0.12 * STICKMAN_GLYPH_SIZE;
+const STICKMAN_HEAD_GAP_Y   = 0.23 * STICKMAN_GLYPH_SIZE;
+const STICKMAN_LIMB_HALF_H  = 0.45 * STICKMAN_GLYPH_SIZE;
+const TWO_PI = Math.PI * 2;
 const BALL_GLYPH_SIZE = 24;
-const WALK_ANIM_SPEED_THRESHOLD = 0.3;
 
 const CAMERA_FOV = 60;
 const CAMERA_TILT_DEG = 55;
@@ -120,11 +137,7 @@ export class Renderer {
     // Pre-resolve the fixed characters the renderer actually uses each frame
     // so the hot path avoids a Map lookup per glyph.
     this._glyphO = this._glyphGeometries.get('o');
-    this._glyphSlash = this._glyphGeometries.get('/');
-    this._glyphBackslash = this._glyphGeometries.get('\\');
     this._glyphPipe = this._glyphGeometries.get('|');
-    this._glyphLParen = this._glyphGeometries.get('(');
-    this._glyphRParen = this._glyphGeometries.get(')');
 
     // Pool of meshes, each with its own cloned material + cached uniform refs
     // so the hot path writes via `mesh._uColor.set(...)` directly.
@@ -159,6 +172,13 @@ export class Renderer {
     // a reused array instead of allocating [r,g,b] every frame.
     this._p1Color = [0, 0, 0];
     this._p2Color = [0, 0, 0];
+
+    // Smoothed animation state per player (tilt, amplitude, phase, lastTick).
+    // Keyed by the player state object so every stickman on this renderer
+    // evolves its own pose without cross-talk. Tilt and amplitude are
+    // low-pass filtered toward their speed-derived targets; phase is
+    // accumulated with the current swing rate so rate changes never snap.
+    this._animByPlayer = new WeakMap();
 
     // Track static scene objects so dispose() can release them.
     this._staticGeometries = [];
@@ -417,60 +437,87 @@ export class Renderer {
   /* ── Stickman & pool ────────────────────────────────────── */
 
   _addStickman(player, color, tick) {
-    // 6-glyph billboarded figure (head, torso, 2 arms, 2 legs). Limbs
-    // pivot continuously from their shoulder/hip using sin/cos of a phase
-    // that scales with player speed. Glyph character per limb is picked
-    // by angle bucket (pipe near-vertical, slash/backslash when tilted).
+    // 6-glyph billboarded figure rendered via one unified pendulum pose.
+    // At rest (amplitude → 0) every limb hangs straight, giving a vertical
+    // Minecraft-Steve idle; speed ramps amplitude and forward lean in
+    // smoothly via a per-player low-pass filter, so transitions between
+    // standing / walking / running / direction flips never snap.
     const x = player.x + 9;
     const z = player.y;
     const s = STICKMAN_GLYPH_SIZE;
 
-    const speed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
-    const walking = speed > WALK_ANIM_SPEED_THRESHOLD;
+    const vx = player.vx;
+    const vy = player.vy;
+    const speed = Math.sqrt(vx * vx + vy * vy);
 
-    // Swing rate and amplitude both scale with speed: slow walk = slow
-    // narrow swing, run = fast wide swing. At speed 1 the cycle is
-    // ~3.5s, at speed 10 it's ~0.35s. Amplitude ramps from near-zero at
-    // threshold up to full Minecraft-Steve swing around speed 8.
-    const swingRate = walking ? speed * 0.03 : 0;
-    const phase = tick * swingRate;
-    const swing = walking ? Math.sin(phase) : 0;
-    // Amplitude ramps cleanly with speed — tiny at a stroll, full at run.
-    const amplitude = walking ? Math.min(speed * 0.2, 1.0) : 0;
+    // Targets derived directly from current speed — no hard gates.
+    const targetAmplitude = Math.min(speed * 0.2, 1.0);
+    const targetTilt = speed > STICKMAN_RUN_THRESHOLD
+      ? -Math.sign(vx) * Math.min(
+          (speed - STICKMAN_RUN_THRESHOLD) * STICKMAN_TILT_PER_SPEED,
+          STICKMAN_TILT_MAX,
+        )
+      : 0;
+    const swingRate = 0.2 + speed * 0.04;
 
-    // Body bob — peaks when feet are planted under the body (twice per
-    // cycle). Amplitude also scales so low-speed walks barely bob.
-    const bob = walking ? Math.abs(swing) * 0.08 * amplitude : 0;
-
-    const headY     = s * (1.40 + bob);
-    const shoulderY = s * (0.80 + bob);
-    const torsoMidY = s * (0.45 + bob);
-    const hipY      = s * (0.10 + bob);
-    const legRestY  = s * (-0.22);
-
-    // Head + torso
-    this._placeGlyph(this._glyphO,    x, 0, z, s, color, 0, headY);
-    this._placeGlyph(this._glyphPipe, x, 0, z, s, color, 0, torsoMidY);
-
-    if (walking) {
-      // Pendulum limbs. Max swings at running speed (amplitude=1):
-      //   arms ±29°, legs ±20°. Walking is narrower because of amplitude.
-      // Contralateral rule: left leg + right arm move together — that
-      // falls out naturally because legAngle = -armAngle, and the left
-      // and right sides of each pair use opposite-signed angles.
-      const armAngle = swing * 0.5 * amplitude;
-      const legAngle = -swing * 0.35 * amplitude;
-      this._placeLimb(x, z, s, color, -s * 0.15, shoulderY,  armAngle);
-      this._placeLimb(x, z, s, color,  s * 0.15, shoulderY, -armAngle);
-      this._placeLimb(x, z, s, color, -s * 0.12, hipY,       legAngle);
-      this._placeLimb(x, z, s, color,  s * 0.12, hipY,      -legAngle);
-    } else {
-      // Idle: arms hang as (|) parens at the sides; legs as /\ stance.
-      this._placeGlyph(this._glyphLParen,    x, 0, z, s, color, -s * 0.48, torsoMidY);
-      this._placeGlyph(this._glyphRParen,    x, 0, z, s, color,  s * 0.48, torsoMidY);
-      this._placeGlyph(this._glyphSlash,     x, 0, z, s, color, -s * 0.22, legRestY);
-      this._placeGlyph(this._glyphBackslash, x, 0, z, s, color,  s * 0.22, legRestY);
+    // Fetch / init smoothed state for this player.
+    let anim = this._animByPlayer.get(player);
+    if (!anim) {
+      anim = { tilt: targetTilt, amplitude: targetAmplitude, phase: 0, lastTick: tick };
+      this._animByPlayer.set(player, anim);
     }
+    const dt = tick > anim.lastTick ? tick - anim.lastTick : 0;
+    anim.lastTick = tick;
+    anim.tilt      += (targetTilt      - anim.tilt)      * STICKMAN_SMOOTH;
+    anim.amplitude += (targetAmplitude - anim.amplitude) * STICKMAN_SMOOTH;
+    // Wrap phase to keep Math.sin precision stable over long sessions.
+    anim.phase = (anim.phase + swingRate * dt) % TWO_PI;
+
+    const tilt      = anim.tilt;
+    const amplitude = anim.amplitude;
+    const swing     = Math.sin(anim.phase);
+
+    // Body bob scales with amplitude so it fades in/out with the swing.
+    const bob = Math.abs(swing) * 0.08 * amplitude;
+
+    const tiltC = Math.cos(tilt);
+    const tiltS = Math.sin(tilt);
+    const hipBaseY = s * 0.10 + bob * s;
+
+    // Rotate body-local offset (dx, dy) around the hip by `tilt` (CCW).
+    // Inlined at every call site below to avoid allocating closures each
+    // frame. hipY adds the hip base offset; hipX is just the rotated dx.
+
+    const torsoCX = -STICKMAN_TORSO_HALF_H * tiltS;
+    const torsoCY = hipBaseY + STICKMAN_TORSO_HALF_H * tiltC;
+    this._placeGlyph(this._glyphPipe, x, 0, z, s, color, torsoCX, torsoCY, tilt);
+
+    const lShX = -STICKMAN_SHOULDER_OFX * tiltC - STICKMAN_SHOULDER_OFY * tiltS;
+    const lShY = hipBaseY - STICKMAN_SHOULDER_OFX * tiltS + STICKMAN_SHOULDER_OFY * tiltC;
+    const rShX =  STICKMAN_SHOULDER_OFX * tiltC - STICKMAN_SHOULDER_OFY * tiltS;
+    const rShY = hipBaseY + STICKMAN_SHOULDER_OFX * tiltS + STICKMAN_SHOULDER_OFY * tiltC;
+
+    // Head sits a fixed world-space gap above the neck midpoint so its
+    // distance from the body is preserved when the torso leans forward.
+    // The head glyph itself still rotates by `tilt` so it reads as part
+    // of the body.
+    const neckCX = (lShX + rShX) * 0.5;
+    const neckCY = (lShY + rShY) * 0.5;
+    this._placeGlyph(this._glyphO, x, 0, z, s, color, neckCX, neckCY + STICKMAN_HEAD_GAP_Y, tilt);
+
+    const lHipX = -STICKMAN_HIP_OFX * tiltC;
+    const lHipY = hipBaseY - STICKMAN_HIP_OFX * tiltS;
+    const rHipX =  STICKMAN_HIP_OFX * tiltC;
+    const rHipY = hipBaseY + STICKMAN_HIP_OFX * tiltS;
+
+    // Pendulum limbs. Contralateral rule (left leg + right arm forward)
+    // falls out of `legAngle = -armAngle` with mirrored left/right signs.
+    const armAngle = swing * 0.85 * amplitude;
+    const legAngle = -swing * 0.7  * amplitude;
+    this._placeLimb(x, z, s, color, lShX,  lShY,   armAngle);
+    this._placeLimb(x, z, s, color, rShX,  rShY,  -armAngle);
+    this._placeLimb(x, z, s, color, lHipX, lHipY,  legAngle);
+    this._placeLimb(x, z, s, color, rHipX, rHipY, -legAngle);
   }
 
   /** Place a single glyph that represents a limb pivoting at (pivotX,
@@ -481,13 +528,11 @@ export class Renderer {
   _placeLimb(x, z, s, color, pivotX, pivotY, angle) {
     // True pendulum: a single pipe glyph rotated in the shader so its
     // visual top is anchored exactly at (pivotX, pivotY) for every angle.
-    // Glyph center = pivot + halfH * (sin(angle), -cos(angle)).
-    // Verified: after rotating a unit quad by `angle` and placing its
-    // center there, the rotated (0, +halfH) vertex lands exactly at the
-    // pivot. Smooth motion, no character swaps, no detached attachments.
-    const halfH = s * 0.45;
-    const cx = pivotX + Math.sin(angle) * halfH;
-    const cy = pivotY - Math.cos(angle) * halfH;
+    // Glyph center = pivot + halfH * (sin(angle), -cos(angle)). After
+    // rotating a unit quad by `angle` and placing its center there, the
+    // rotated (0, +halfH) vertex lands exactly at the pivot.
+    const cx = pivotX + Math.sin(angle) * STICKMAN_LIMB_HALF_H;
+    const cy = pivotY - Math.cos(angle) * STICKMAN_LIMB_HALF_H;
     this._placeGlyph(this._glyphPipe, x, 0, z, s, color, cx, cy, angle);
   }
 

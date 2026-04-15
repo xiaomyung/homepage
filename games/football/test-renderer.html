@@ -39,9 +39,9 @@
   <canvas id="stage-walk-fast" class="strip"></canvas>
 
 <script type="module">
-  import { buildAtlas } from './atlas.js?v=69';
-  import { Renderer } from './renderer.js?v=69';
-  import { createField, createState, createSeededRng, FIELD_HEIGHT } from './physics.js?v=69';
+  import { buildAtlas } from './atlas.js?v=77';
+  import { Renderer } from './renderer.js?v=77';
+  import { createField, createState, createSeededRng, FIELD_HEIGHT } from './physics.js?v=77';
 
   const log = document.getElementById('log');
   function write(cls, msg) {
@@ -127,10 +127,10 @@
         r.renderState();
       }
 
-      // swingRate = speed * 0.03; full cycle = 2π/rate ticks
+      // swingRate = 0.2 + speed * 0.04 (must match renderer.js)
       function sampleCycle(speed, n) {
         if (speed <= 0) return new Array(n).fill(0);
-        const cycleTicks = (2 * Math.PI) / (speed * 0.03);
+        const cycleTicks = (2 * Math.PI) / (0.2 + speed * 0.04);
         const out = [];
         for (let i = 0; i < n; i++) out.push(Math.round((i / n) * cycleTicks));
         return out;

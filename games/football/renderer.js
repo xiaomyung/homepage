@@ -14,7 +14,7 @@
  */
 
 import * as THREE from './vendor/three.module.js';
-import { createField, FIELD_HEIGHT, FIELD_WIDTH_REF } from './physics.js?v=38';
+import { createField, FIELD_HEIGHT, FIELD_WIDTH_REF } from './physics.js?v=39';
 
 const POOL_SIZE = 400;
 
@@ -80,7 +80,7 @@ const PUSH_FWD_TILT       = 0.42;                        // rad — body leans f
 // visual; visual is still larger than the physics hitbox for
 // readability, same tradeoff as the stickman glyph being bigger
 // than PLAYER_WIDTH.
-const BALL_VISUAL_RADIUS = 3.84;
+const BALL_VISUAL_RADIUS = 4.224;
 
 // Splash particles for ball bounces. Pool holds up to PARTICLE_POOL slots,
 // filled via a rolling index so old particles are recycled automatically.

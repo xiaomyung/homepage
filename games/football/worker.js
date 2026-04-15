@@ -28,13 +28,14 @@ import { NeuralNet, WEIGHT_COUNT } from './nn.js';
 import { fallbackAction } from './fallback.js';
 
 // Fetch this many matchups per /matchup GET. Amortizes HTTP latency +
-// JSON decode across many matches — at ~60 matches/sec per worker, a
-// batch of 20 means one /matchup fetch every ~330ms instead of one per
-// match. Bigger batches lose less work to breeding staleness but waste
-// more on cache-miss rebuilds.
-const MATCHUP_BATCH_SIZE = 20;
-// Post this many results per /results POST.
-const RESULT_BATCH_SIZE = 20;
+// JSON decode across many matches. The main loop also *prefetches*
+// the next batch while the current one is being processed, so the
+// worker's critical path never waits for HTTP — bigger batches trade
+// freshness for wire efficiency, prefetch hides the latency either way.
+const MATCHUP_BATCH_SIZE = 40;
+// Post this many results per /results POST. Fire-and-forget (no
+// await) so the worker never blocks on the broker's response.
+const RESULT_BATCH_SIZE = 40;
 const DEFAULT_MATCH_TICKS = 1500; // ~24s of simulated play at 16ms/tick
 
 let running = false;
@@ -79,19 +80,22 @@ async function main() {
     // Use defaults if /config is unreachable
   }
 
-  const results = [];
+  let results = [];
   let simsSinceReport = 0;
   let reportStart = Date.now();
 
+  // Prefetch pattern: fire the NEXT /matchup fetch the moment the
+  // current batch starts processing, so the HTTP round-trip overlaps
+  // with compute instead of stalling the worker loop. `pendingFetch`
+  // is a Promise<matchup[]> that resolves to the next batch.
+  let pendingFetch = safeFetchBatch();
+
   while (running) {
-    let matchups;
-    try {
-      matchups = await fetchMatchupBatch(MATCHUP_BATCH_SIZE);
-    } catch {
-      // Broker unreachable — back off briefly and retry.
-      await sleep(1000);
-      continue;
-    }
+    const matchups = await pendingFetch;
+    // Kick off the next GET immediately so it races with this batch's
+    // compute instead of starting after the batch completes.
+    pendingFetch = safeFetchBatch();
+
     if (!matchups || matchups.length === 0) {
       await sleep(100);
       continue;
@@ -103,28 +107,42 @@ async function main() {
       simsSinceReport++;
 
       if (results.length >= RESULT_BATCH_SIZE) {
-        try {
-          await postResults(results);
-        } catch {
-          /* drop on failure — broker is eventually consistent */
-        }
+        // Fire-and-forget: hand the batch off to a detached POST and
+        // replace the buffer so the hot loop never waits for HTTP.
+        // Silent-drop on failure — the broker is eventually consistent.
+        const toSend = results;
+        results = [];
+        postResults(toSend).catch(() => {});
         const elapsed = (Date.now() - reportStart) / 1000;
         const simsPerSec = simsSinceReport / Math.max(0.001, elapsed);
-        self.postMessage({ type: 'batch', posted: results.length, simsPerSec });
-        results.length = 0;
+        self.postMessage({ type: 'batch', posted: toSend.length, simsPerSec });
         simsSinceReport = 0;
         reportStart = Date.now();
       }
     }
   }
 
-  // Flush any remaining results on shutdown
+  // Flush any remaining results on shutdown — awaited so the final
+  // batch actually lands before the worker exits.
   if (results.length > 0) {
     try {
       await postResults(results);
     } catch {
       /* drop on shutdown */
     }
+  }
+}
+
+/** Wrap fetchMatchupBatch with failure back-off so the main loop can
+ *  await it directly without a surrounding try/catch on every call. */
+async function safeFetchBatch() {
+  try {
+    return await fetchMatchupBatch(MATCHUP_BATCH_SIZE);
+  } catch {
+    // Broker unreachable — brief pause then the main loop will loop
+    // around and ask us to fetch again.
+    await sleep(1000);
+    return null;
   }
 }
 

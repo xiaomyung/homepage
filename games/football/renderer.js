@@ -49,9 +49,9 @@ const STICKMAN_LIMB_RADIUS  = 2.2;
 const STICKMAN_TORSO_RADIUS = 3.3;
 const STICKMAN_HEAD_RADIUS  = 4.0;
 const STICKMAN_FIST_RADIUS  = 3.0;
-// Pool sizes: each stickman uses torso(1) + 2 arms + 2 legs = 5 cylinders
-// and head(1) + up to 2 push-fists = 3 spheres, so ~10+6 per player.
-const STICKMAN_CYL_POOL     = 16;
+// Sphere pool for heads + push fists: 1 head + up to 2 fists per
+// stickman × 2 stickmen + spare. (Torso and limb pools are sized
+// inline alongside their geometries.)
 const STICKMAN_SPH_POOL     = 8;
 const TWO_PI = Math.PI * 2;
 
@@ -343,26 +343,32 @@ export class Renderer {
     this._p2Shadow   = makeShadow();
     this._ballShadow = makeShadow();
 
-    // Stickman cylinder pool — one unit cylinder geometry (radius 1,
-    // length 1 along +y) shared by all limb meshes. Each mesh gets its
-    // own MeshLambertMaterial so color can be animated per stickman.
-    // Per frame, the mesh is positioned at the midpoint between two
-    // joints, scaled to (radius, length, radius), and rotated so local
-    // +y aligns with the joint-to-joint direction. Torso, arms, legs
-    // all share the pool; unused meshes are hidden each frame.
-    const stickmanCyl = new THREE.CylinderGeometry(1, 1, 1, 12, 1);
-    this._staticGeometries.push(stickmanCyl);
-    this._stickmanCyl = [];
-    for (let i = 0; i < STICKMAN_CYL_POOL; i++) {
+    // Stickman pipe parts — torsos and limbs each use their own
+    // fixed-length CapsuleGeometry so the hemispherical caps stay
+    // perfectly round (no stretching). Joint-to-joint distances are
+    // constant per part type by construction, so meshes are placed
+    // at midpoints and rotated but never scaled along their length.
+    // Per-mesh Lambert materials carry per-stickman color.
+    const torsoBodyLen = STICKMAN_SHOULDER_OFY - 2 * STICKMAN_TORSO_RADIUS;
+    const limbBodyLen  = STICKMAN_LIMB_FULL_H  - 2 * STICKMAN_LIMB_RADIUS;
+    const stickmanTorsoGeom = new THREE.CapsuleGeometry(STICKMAN_TORSO_RADIUS, torsoBodyLen, 4, 12);
+    const stickmanLimbGeom  = new THREE.CapsuleGeometry(STICKMAN_LIMB_RADIUS,  limbBodyLen,  4, 10);
+    this._staticGeometries.push(stickmanTorsoGeom, stickmanLimbGeom);
+    this._stickmanTorso = [];
+    this._stickmanLimb  = [];
+    const makeStickmanMesh = (geom, list) => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-      const mesh = new THREE.Mesh(stickmanCyl, mat);
+      const mesh = new THREE.Mesh(geom, mat);
       mesh.visible = false;
       mesh.frustumCulled = false;
       this._staticMaterials.push(mat);
       this.scene.add(mesh);
-      this._stickmanCyl.push(mesh);
-    }
-    this._stickmanCylCursor = 0;
+      list.push(mesh);
+    };
+    for (let i = 0; i < 4;  i++) makeStickmanMesh(stickmanTorsoGeom, this._stickmanTorso);
+    for (let i = 0; i < 12; i++) makeStickmanMesh(stickmanLimbGeom,  this._stickmanLimb);
+    this._stickmanTorsoCursor = 0;
+    this._stickmanLimbCursor = 0;
 
     // Stickman sphere pool — used for heads and fists. One shared
     // unit sphere geometry, per-mesh Lambert material for color.
@@ -456,14 +462,19 @@ export class Renderer {
     const p2Celebrating = celebrating && state.goalScorer === state.p2;
     staminaColorInto(state.p1.stamina, this._p1Color);
     staminaColorInto(state.p2.stamina, this._p2Color);
-    const prevCylCursor = this._stickmanCylCursor;
-    const prevSphCursor = this._stickmanSphCursor;
-    this._stickmanCylCursor = 0;
-    this._stickmanSphCursor = 0;
+    const prevTorsoCursor = this._stickmanTorsoCursor;
+    const prevLimbCursor  = this._stickmanLimbCursor;
+    const prevSphCursor   = this._stickmanSphCursor;
+    this._stickmanTorsoCursor = 0;
+    this._stickmanLimbCursor  = 0;
+    this._stickmanSphCursor   = 0;
     this._addStickman(state.p1, this._p1Color, tick, p1Celebrating);
     this._addStickman(state.p2, this._p2Color, tick, p2Celebrating);
-    for (let i = this._stickmanCylCursor; i < prevCylCursor; i++) {
-      this._stickmanCyl[i].visible = false;
+    for (let i = this._stickmanTorsoCursor; i < prevTorsoCursor; i++) {
+      this._stickmanTorso[i].visible = false;
+    }
+    for (let i = this._stickmanLimbCursor; i < prevLimbCursor; i++) {
+      this._stickmanLimb[i].visible = false;
     }
     for (let i = this._stickmanSphCursor; i < prevSphCursor; i++) {
       this._stickmanSph[i].visible = false;
@@ -1167,8 +1178,8 @@ export class Renderer {
     const rShX = neckX;
     const rShZ = z + shoulderHalfWidth;
 
-    // Torso: cylinder from hip center to neck.
-    this._placeCyl(x, upperHipY, z, neckX, neckY, z, STICKMAN_TORSO_RADIUS, color);
+    // Torso: capsule from hip center to neck.
+    this._placeTorso(x, upperHipY, z, neckX, neckY, z, color);
 
     // Head: sphere a fixed gap above the neck (follows tilt so it
     // stays anchored to the torso top).
@@ -1204,46 +1215,44 @@ export class Renderer {
       rightArmAngle = pushArmAngle;
     }
 
-    // Draw the four limbs — each is a cylinder from its pivot to the
-    // limb end computed by rotating (0, -limbL) by the swing angle in
-    // the (forward, up) plane. At angle=0, (0, -limbL) → (0, -limbL)
-    // (hanging straight). At angle=π/2, (0, -limbL) rotated → (limbL, 0)
-    // (forward extended). The local +x gets scaled by `facing` so
-    // both teams animate consistently relative to their own attack.
-    const L = STICKMAN_LIMB_FULL_H;
-    this._placeLimbCyl(lShX, upperHipY + torsoH * tiltC, lShZ, leftArmAngle,  L, facing, color);
-    this._placeLimbCyl(rShX, upperHipY + torsoH * tiltC, rShZ, rightArmAngle, L, facing, color);
-    this._placeLimbCyl(x,    hipBaseY,                    lHipZ, leftLegAngle,  L, facing, color);
-    this._placeLimbCyl(x,    hipBaseY,                    rHipZ, rightLegAngle, L, facing, color);
+    // Draw the four limbs — each is a fixed-length capsule pivoted at
+    // its joint and rotated by the swing angle in the (forward, up)
+    // plane. At angle=0 the limb hangs straight down; at angle=π/2
+    // it points forward; at angle=π straight up (celebration). The
+    // local +x is scaled by `facing` so both teams animate
+    // consistently relative to their own attack direction.
+    const shoulderY = upperHipY + torsoH * tiltC;
+    this._placeLimb(lShX, shoulderY, lShZ, leftArmAngle,  facing, color);
+    this._placeLimb(rShX, shoulderY, rShZ, rightArmAngle, facing, color);
+    this._placeLimb(x,    hipBaseY,  lHipZ, leftLegAngle,  facing, color);
+    this._placeLimb(x,    hipBaseY,  rHipZ, rightLegAngle, facing, color);
 
     // Push fists — spheres at the end of each extended arm during the
     // strike window. Size pulses larger at strike peak via pushFistScale.
     if (strikeActive && pushing > 0) {
       const fistR = STICKMAN_FIST_RADIUS * pushFistScale;
+      const L = STICKMAN_LIMB_FULL_H;
       const lSin = Math.sin(leftArmAngle);
       const lCos = Math.cos(leftArmAngle);
       const rSin = Math.sin(rightArmAngle);
       const rCos = Math.cos(rightArmAngle);
-      const lShoulderY = upperHipY + torsoH * tiltC;
-      this._placeSph(lShX + facing * L * lSin, lShoulderY - L * lCos, lShZ, fistR, color);
-      this._placeSph(rShX + facing * L * rSin, lShoulderY - L * rCos, rShZ, fistR, color);
+      this._placeSph(lShX + facing * L * lSin, shoulderY - L * lCos, lShZ, fistR, color);
+      this._placeSph(rShX + facing * L * rSin, shoulderY - L * rCos, rShZ, fistR, color);
     }
   }
 
-  /** Pull a cylinder from the pool and stretch/orient it between two
-   *  world points with the given radius and color. Cylinders use a
-   *  single unit geometry (length 1 along +y) shared across the pool. */
-  _placeCyl(ax, ay, az, bx, by, bz, radius, color) {
-    if (this._stickmanCylCursor >= this._stickmanCyl.length) return;
-    const mesh = this._stickmanCyl[this._stickmanCylCursor++];
+  /** Orient `mesh` so its local +y axis points from A toward B and
+   *  sets its midpoint position + color. The mesh is assumed to be a
+   *  fixed-length capsule whose geometric length equals |B - A|
+   *  (torso or limb); no non-uniform scaling is applied so the
+   *  hemispherical caps stay perfectly round. */
+  _orientBetween(mesh, ax, ay, az, bx, by, bz, color) {
     mesh.visible = true;
     const dx = bx - ax, dy = by - ay, dz = bz - az;
     const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
     if (length < 1e-6) { mesh.visible = false; return; }
     mesh.position.set((ax + bx) * 0.5, (ay + by) * 0.5, (az + bz) * 0.5);
-    mesh.scale.set(radius, length, radius);
-    // Orient +y axis along (dx, dy, dz). Cross(up, dir) gives the
-    // rotation axis; acos(dot) gives the angle.
+    mesh.scale.set(1, 1, 1);
     this._scratchDir.set(dx / length, dy / length, dz / length);
     this._scratchAxis.crossVectors(this._scratchUp, this._scratchDir);
     const axisLen = this._scratchAxis.length();
@@ -1254,7 +1263,6 @@ export class Renderer {
         Math.acos(Math.max(-1, Math.min(1, dot))),
       );
     } else if (this._scratchDir.y < 0) {
-      // Direction is exactly -y → 180° flip around x axis.
       mesh.quaternion.set(1, 0, 0, 0);
     } else {
       mesh.quaternion.identity();
@@ -1262,14 +1270,26 @@ export class Renderer {
     mesh.material.color.setRGB(color[0], color[1], color[2]);
   }
 
-  /** Place a limb cylinder pivoting at (px, py, pz) with the given
-   *  swing angle. The limb extends by length L along
-   *  (facing*sin(angle), -cos(angle), 0) in world space. */
-  _placeLimbCyl(px, py, pz, angle, L, facing, color) {
+  /** Pull a torso capsule from the pool and orient it between hip
+   *  and neck. Joint distance is always SHOULDER_OFY by construction,
+   *  matching the pre-built capsule length. */
+  _placeTorso(ax, ay, az, bx, by, bz, color) {
+    if (this._stickmanTorsoCursor >= this._stickmanTorso.length) return;
+    const mesh = this._stickmanTorso[this._stickmanTorsoCursor++];
+    this._orientBetween(mesh, ax, ay, az, bx, by, bz, color);
+  }
+
+  /** Pull a limb capsule from the pool and pivot it at (px, py, pz)
+   *  with the given swing angle. The limb extends by LIMB_FULL_H
+   *  along (facing*sin(angle), -cos(angle), 0). */
+  _placeLimb(px, py, pz, angle, facing, color) {
+    if (this._stickmanLimbCursor >= this._stickmanLimb.length) return;
+    const mesh = this._stickmanLimb[this._stickmanLimbCursor++];
+    const L = STICKMAN_LIMB_FULL_H;
     const ex = px + facing * L * Math.sin(angle);
     const ey = py - L * Math.cos(angle);
     const ez = pz;
-    this._placeCyl(px, py, pz, ex, ey, ez, STICKMAN_LIMB_RADIUS, color);
+    this._orientBetween(mesh, px, py, pz, ex, ey, ez, color);
   }
 
   /** Pull a sphere from the pool and place it at a world point with
@@ -1406,22 +1426,6 @@ export class Renderer {
         0, p.z * 0.5,
       );
     }
-  }
-
-  /** Place a single glyph that represents a limb pivoting at (pivotX,
-   *  pivotY). The visual TOP of the glyph stays exactly at the pivot
-   *  point — only the character itself changes slant as the swing angle
-   *  grows. This mimics a pendulum fixed at the top: the shoulder/hip
-   *  attachment never moves, only the bottom of the limb. */
-  _placeLimb(x, z, s, color, pivotX, pivotY, angle) {
-    // True pendulum: a single pipe glyph rotated in the shader so its
-    // visual top is anchored exactly at (pivotX, pivotY) for every angle.
-    // Glyph center = pivot + halfH * (sin(angle), -cos(angle)). After
-    // rotating a unit quad by `angle` and placing its center there, the
-    // rotated (0, +halfH) vertex lands exactly at the pivot.
-    const cx = pivotX + Math.sin(angle) * STICKMAN_LIMB_HALF_H;
-    const cy = pivotY - Math.cos(angle) * STICKMAN_LIMB_HALF_H;
-    this._placeGlyph(this._glyphPipe, x, 0, z, s, color, cx, cy, angle);
   }
 
   _placeGlyph(geom, x, y, z, scale, color, viewOffsetX, viewOffsetY, rotation = 0) {

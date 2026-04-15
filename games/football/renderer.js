@@ -210,20 +210,29 @@ export class Renderer {
     this.scene.add(fill);
 
     // Dedicated ball mesh: a real 3D sphere in world space at
-    // (ball.x, ball.z, ball.y * Z_STRETCH). Physics collision still
-    // uses BALL_RADIUS (~1.7 world units); visual sphere is larger
-    // for readability — same mismatch as stickman-glyph vs PLAYER_WIDTH.
-    const ballGeom = new THREE.SphereGeometry(1, 20, 14);
+    // (ball.x, ball.z, ball.y * Z_STRETCH). Physics collision uses
+    // BALL_RADIUS; visual sphere is larger for readability. A
+    // procedurally-generated CanvasTexture paints ~12 dark panels
+    // at icosahedron-vertex positions so the rotation (applied from
+    // the ball's velocity each frame) is visible at a glance.
+    const ballGeom = new THREE.SphereGeometry(1, 24, 16);
     const ballMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(COLOR_TEXT[0], COLOR_TEXT[1], COLOR_TEXT[2]),
+      color: 0xffffff,
       roughness: 0.55,
       metalness: 0.05,
+      map: buildBallTexture(),
     });
     this._ballMesh = new THREE.Mesh(ballGeom, ballMat);
     this._ballMesh.frustumCulled = false;
     this._staticGeometries.push(ballGeom);
     this._staticMaterials.push(ballMat);
+    if (ballMat.map) this._staticMaterials.push(ballMat.map);
     this.scene.add(this._ballMesh);
+    // Ball orientation is integrated per frame from linear velocity
+    // (rolling without slipping on the ground). Reused scratch
+    // objects avoid per-frame allocation.
+    this._ballSpinAxis = new THREE.Vector3();
+    this._ballSpinQuat = new THREE.Quaternion();
 
     // Ground shadows — a soft dark disc per entity, laid flat on the
     // xz-plane just above y=0 so it doesn't z-fight the field lines.
@@ -421,6 +430,22 @@ export class Renderer {
       state.ball.y * Z_STRETCH,
     );
     this._ballMesh.scale.set(BALL_VISUAL_RADIUS, BALL_VISUAL_RADIUS, BALL_VISUAL_RADIUS);
+    // Ball rotation: rolling-without-slipping angular velocity from
+    // linear velocity. For a ball on the ground moving with velocity
+    // v, the no-slip condition gives ω = (v_z / R, 0, -v_x / R)
+    // where world_z is field-depth (physics y scaled by Z_STRETCH)
+    // and world_x is physics x. In the air the same formula is used
+    // so the ball keeps spinning visibly — physically it's wrong but
+    // reads as motion. Integrated per frame (dt = 1 tick).
+    const R = BALL_VISUAL_RADIUS;
+    const omegaX = (state.ball.vy * Z_STRETCH) / R;
+    const omegaZ = -state.ball.vx / R;
+    const omegaMag = Math.sqrt(omegaX * omegaX + omegaZ * omegaZ);
+    if (omegaMag > 1e-5) {
+      this._ballSpinAxis.set(omegaX / omegaMag, 0, omegaZ / omegaMag);
+      this._ballSpinQuat.setFromAxisAngle(this._ballSpinAxis, omegaMag);
+      this._ballMesh.quaternion.premultiply(this._ballSpinQuat);
+    }
 
     // Ground shadows — stamped on the xz-plane, sized per-entity.
     // Ball shadow is anchored to the ball's x/y (physics plane) so it
@@ -1501,4 +1526,43 @@ function lerpInto(a, b, t, out) {
   out[0] = a[0] + (b[0] - a[0]) * t;
   out[1] = a[1] + (b[1] - a[1]) * t;
   out[2] = a[2] + (b[2] - a[2]) * t;
+}
+
+/**
+ * Build a procedural CanvasTexture for the soccer ball — off-white
+ * base with ~12 dark circles placed at icosahedron-vertex (u, v)
+ * coordinates so the pattern roughly tiles the sphere the way a
+ * real football's panels do. Used for rolling-spin visibility; the
+ * exact icosahedron distortion doesn't matter, only that rotation
+ * is readable at a glance.
+ */
+function buildBallTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ececec';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#222222';
+  // 12 icosahedron-ish positions in UV space: 2 poles + 5 upper ring
+  // + 5 lower ring. Equirectangular mapping distorts near the poles
+  // but the rolling spin stays clearly visible.
+  const verts = [
+    [0.50, 0.97],                    // north pole
+    [0.50, 0.03],                    // south pole
+    [0.05, 0.70], [0.25, 0.70], [0.45, 0.70], [0.65, 0.70], [0.85, 0.70],
+    [0.15, 0.30], [0.35, 0.30], [0.55, 0.30], [0.75, 0.30], [0.95, 0.30],
+  ];
+  const r = 30;
+  for (const [u, v] of verts) {
+    const x = u * canvas.width;
+    const y = (1 - v) * canvas.height;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
 }

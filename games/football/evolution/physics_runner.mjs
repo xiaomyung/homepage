@@ -27,8 +27,9 @@ process.stdin.on('end', () => {
   const scenario = JSON.parse(input);
   const field = createField(scenario.fieldWidth ?? 900);
   const state = createState(field, createSeededRng(scenario.seed));
+  // The parity harness compares events tick-by-tick, so opt in.
+  state.recordEvents = true;
 
-  // Optional initial state overrides
   if (scenario.initialOverrides) {
     applyOverrides(state, scenario.initialOverrides);
   }

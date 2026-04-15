@@ -61,6 +61,8 @@ def run_js(scenario: dict) -> list:
 def run_py(scenario: dict) -> list:
     field = create_field(scenario.get("fieldWidth", 900))
     state = create_state(field, create_seeded_rng(scenario["seed"]))
+    # The parity harness compares events tick-by-tick, so opt in.
+    state["recordEvents"] = True
     overrides = scenario.get("initialOverrides", {})
     if "p1" in overrides:
         state["p1"].update(overrides["p1"])

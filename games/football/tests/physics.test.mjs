@@ -1,8 +1,7 @@
 /**
- * Phase 2 unit tests for physics.js — covers all 4 bug fixes plus determinism.
+ * Unit tests for physics.js — covers the 4 v1-bug fixes, field containment,
+ * strict goal scoring, and determinism. All tests use a seeded PRNG.
  * Run with: node --test games/football/tests/physics.test.mjs
- *
- * All tests inject a seeded PRNG so match outcomes are reproducible.
  */
 
 import { test } from 'node:test';
@@ -14,31 +13,27 @@ import {
   tick,
   buildInputs,
   FIELD_HEIGHT,
-  MAX_PLAYER_SPEED,
+  PLAYER_HEIGHT,
   BALL_RADIUS,
 } from '../physics.js';
 
-/* ── Test helpers ────────────────────────────────────────────── */
-
-/** Standard no-op action vector — player stands still. */
 const NOOP = [0, 0, -1, 0, 0, 0, 0, -1, 0];
 
-/** Action vector for pure horizontal movement at full speed. */
 function moveAction(mx, my = 0) {
   return [mx, my, -1, 0, 0, 0, 0, -1, 0];
 }
 
-/** Action vector for a push attempt at given power. */
 function pushAction(power = 1) {
   return [0, 0, -1, 0, 0, 0, 0, 1, power];
 }
 
-/** Fresh state with seeded RNG and grace frames zeroed for goal-line tests. */
+/** Fresh state with seeded RNG, grace frames zeroed, and events enabled. */
 function freshState(seed = 42) {
   const field = createField();
   const rng = createSeededRng(seed);
   const state = createState(field, rng);
   state.graceFrames = 0;
+  state.recordEvents = true;
   return state;
 }
 
@@ -156,8 +151,6 @@ test('player cannot cross the bottom field border (body fully inside)', () => {
     tick(state, moveAction(0, 1), NOOP);
   }
   // p1.y is the top of the player body; bottom is p1.y + PLAYER_HEIGHT.
-  // Bottom must stay inside the field.
-  const PLAYER_HEIGHT = 6;
   assert.ok(
     state.p1.y + PLAYER_HEIGHT <= FIELD_HEIGHT + 0.01,
     `p1 bottom escaped field: y=${state.p1.y}, bottom=${state.p1.y + PLAYER_HEIGHT}`
@@ -181,9 +174,11 @@ test('ball bounces off top and bottom walls, never leaves via those borders', ()
       `ball escaped top/bottom at tick ${i}: y=${state.ball.y}`
     );
   }
-  // Ball must still be in play (top/bottom never cause OOB)
-  assert.ok(!state.ball.frozen || !state.events.some(e => e.type === 'out'),
-    'ball should not be OOB from top/bottom borders');
+  // Ball must not have been OOB'd (top/bottom borders bounce, never out)
+  assert.ok(
+    !state.events.some(e => e.type === 'out'),
+    'ball should not be OOB from top/bottom borders'
+  );
 });
 
 /* ── Test 3: push always lands when in range (fix #3) ──────── */

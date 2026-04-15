@@ -14,7 +14,15 @@ export const FIELD_HEIGHT = 54.6;
 const CEILING = 100;
 
 export const TICK_MS = 16;
+// Visual-mode mercy rule — if no kick for 10 wall-clock seconds, drop
+// a fresh ball at midfield so the match doesn't sit motionless for the
+// viewer. Players keep their positions; only the ball resets.
 const STALL_TICKS = Math.ceil(10000 / TICK_MS);
+// Headless-mode stall cutoff — much shorter (3 wall-clock seconds)
+// because untouched matches waste training budget. When it fires we
+// do a full kickoff reset (both players teleported back) so every
+// match segment starts from a clean, identical state.
+const STALL_TICKS_HEADLESS = Math.ceil(3000 / TICK_MS);
 
 // Ball
 const GRAVITY = 0.3;
@@ -303,9 +311,18 @@ export function tick(state, p1Act, p2Act) {
   resolveBallGoalBox(state, goalBox(field, 'left'));
   resolveBallGoalBox(state, goalBox(field, 'right'));
 
-  if (state.tick - state.lastKickTick > STALL_TICKS) {
-    resetBall(state);
-    state.lastKickTick = state.tick;
+  const stallLimit = state.headless ? STALL_TICKS_HEADLESS : STALL_TICKS;
+  if (state.tick - state.lastKickTick > stallLimit) {
+    if (state.headless) {
+      // Full kickoff reset — both players teleported, velocities
+      // zeroed, ball on ground at midfield — so stale segments
+      // cycle cleanly rather than dribbling the ball back into a
+      // stuck configuration.
+      resetToKickoff(state);
+    } else {
+      resetBall(state);
+      state.lastKickTick = state.tick;
+    }
   }
 
   return state;

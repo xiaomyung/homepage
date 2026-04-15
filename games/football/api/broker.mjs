@@ -52,8 +52,6 @@ const FALLBACK_MATCHUP_EVERY_N = 4;
 // Showcase: 1 in 5 is best-vs-fallback.
 const SHOWCASE_FALLBACK_EVERY_N = 5;
 const SHOWCASE_RECENT_WINDOW = 20;
-// Blowout bonus threshold: margin above this counts as extra fitness.
-const BLOWOUT_MARGIN = 2;
 
 const SURNAMES = [
   'Messi', 'Ronaldo', 'Neymar', 'Mbappe', 'Salah', 'Bruyne', 'Haaland',
@@ -73,14 +71,11 @@ CREATE TABLE IF NOT EXISTS brains (
     weights         TEXT    NOT NULL,
     pop_matches     INTEGER NOT NULL DEFAULT 0,
     pop_goal_diff   REAL    NOT NULL DEFAULT 0,
-    blowout_bonus   REAL    NOT NULL DEFAULT 0,
     fallback_matches INTEGER NOT NULL DEFAULT 0,
     fallback_wins   INTEGER NOT NULL DEFAULT 0,
     fallback_draws  INTEGER NOT NULL DEFAULT 0,
-    fallback_losses INTEGER NOT NULL DEFAULT 0,
     fitness         REAL    NOT NULL DEFAULT 0,
-    is_frozen_seed  INTEGER NOT NULL DEFAULT 0,
-    created_tick    INTEGER NOT NULL DEFAULT 0
+    is_frozen_seed  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_brains_gen ON brains(generation);
@@ -140,12 +135,28 @@ const CONFIG_KEYS = {
 
 const state = {
   population: [],       // array of brain objects (camelCase internals)
+  populationById: [],   // brain.id → brain, O(1) lookup used by recordResult
   generation: 0,
   totalMatches: 0,
   config: {},
   matchupCounter: 0,
   showcaseCounter: 0,
+  // Dirty flag set whenever a result mutates brain stats. Consumers
+  // (handleStats, tryBreed) recompute fitness lazily only when true so
+  // the per-poll /stats cost drops from O(pop) fitness walks to a
+  // single no-op check.
+  fitnessDirty: true,
 };
+
+/** Keep `state.populationById` in step with `state.population`. Call
+ *  after any assignment that rebuilds the population (boot, reset,
+ *  breed). Ids are dense and start at 0, so an array indexed by id is
+ *  cheaper than a Map for O(1) lookup. */
+function refreshPopulationIndex() {
+  const idx = [];
+  for (const b of state.population) idx[b.id] = b;
+  state.populationById = idx;
+}
 
 let db = null;
 
@@ -183,27 +194,33 @@ function loadPopulation() {
   const maxGen = currentGeneration();
   if (maxGen === 0) return [];
   const rows = db.prepare(
-    `SELECT id, name, weights, pop_matches, pop_goal_diff, blowout_bonus,
-            fallback_matches, fallback_wins, fallback_draws, fallback_losses,
+    `SELECT id, name, weights, pop_matches, pop_goal_diff,
+            fallback_matches, fallback_wins, fallback_draws,
             fitness, is_frozen_seed
      FROM brains
      WHERE generation = ?
      ORDER BY id`,
   ).all(maxGen);
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    weights: new Float64Array(JSON.parse(r.weights)),
-    popMatches: r.pop_matches,
-    popGoalDiff: r.pop_goal_diff,
-    blowoutBonus: r.blowout_bonus,
-    fallbackMatches: r.fallback_matches,
-    fallbackWins: r.fallback_wins,
-    fallbackDraws: r.fallback_draws,
-    fallbackLosses: r.fallback_losses,
-    fitness: r.fitness,
-    isFrozenSeed: !!r.is_frozen_seed,
-  }));
+  return rows.map((r) => {
+    // Cache the JSON-encoded weight array once per brain so hot-path
+    // /matchup responses can splice it into the response body as a
+    // raw string fragment without re-serializing 1233 floats each time.
+    const weightsJson = r.weights;
+    const weights = new Float64Array(JSON.parse(r.weights));
+    return {
+      id: r.id,
+      name: r.name,
+      weights,
+      _weightsJson: weightsJson,
+      popMatches: r.pop_matches,
+      popGoalDiff: r.pop_goal_diff,
+      fallbackMatches: r.fallback_matches,
+      fallbackWins: r.fallback_wins,
+      fallbackDraws: r.fallback_draws,
+      fitness: r.fitness,
+      isFrozenSeed: !!r.is_frozen_seed,
+    };
+  });
 }
 
 function savePopulation(generation) {
@@ -212,16 +229,20 @@ function savePopulation(generation) {
   const ins = db.prepare(
     `INSERT INTO brains (
         id, generation, name, weights,
-        pop_matches, pop_goal_diff, blowout_bonus,
-        fallback_matches, fallback_wins, fallback_draws, fallback_losses,
+        pop_matches, pop_goal_diff,
+        fallback_matches, fallback_wins, fallback_draws,
         fitness, is_frozen_seed
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const b of state.population) {
+    // Use the cached weightsJson string when available to avoid
+    // re-serializing on every save (breed / reset).
+    const weightsStr = b._weightsJson || JSON.stringify(Array.from(b.weights));
+    if (!b._weightsJson) b._weightsJson = weightsStr;
     ins.run(
-      b.id, generation, b.name, JSON.stringify(Array.from(b.weights)),
-      b.popMatches, b.popGoalDiff, b.blowoutBonus,
-      b.fallbackMatches, b.fallbackWins, b.fallbackDraws, b.fallbackLosses,
+      b.id, generation, b.name, weightsStr,
+      b.popMatches, b.popGoalDiff,
+      b.fallbackMatches, b.fallbackWins, b.fallbackDraws,
       b.fitness, b.isFrozenSeed ? 1 : 0,
     );
   }
@@ -235,21 +256,23 @@ function randomSurname() {
 
 function newBrain(id, weights, isFrozenSeed = false) {
   const base = freshBrain(weights);
-  // freshBrain should return the canonical default shape, but we defensively
-  // fill in every field so downstream code never sees undefined.
+  const w = base.weights instanceof Float64Array
+    ? base.weights
+    : new Float64Array(weights);
   return {
     id,
     name: randomSurname(),
-    weights: base.weights instanceof Float64Array
-      ? base.weights
-      : new Float64Array(weights),
+    weights: w,
+    // Pre-serialize weights to a JSON string fragment exactly once
+    // per brain, when it enters the population. /matchup responses
+    // splice this string in directly — avoids re-running JSON.stringify
+    // on a 1233-element numeric array for every request.
+    _weightsJson: JSON.stringify(Array.from(w)),
     popMatches: base.popMatches ?? 0,
     popGoalDiff: base.popGoalDiff ?? 0,
-    blowoutBonus: base.blowoutBonus ?? 0,
     fallbackMatches: base.fallbackMatches ?? 0,
     fallbackWins: base.fallbackWins ?? 0,
     fallbackDraws: base.fallbackDraws ?? 0,
-    fallbackLosses: base.fallbackLosses ?? 0,
     fitness: base.fitness ?? 0,
     isFrozenSeed,
   };
@@ -282,12 +305,14 @@ function initState() {
   state.totalMatches = countTotalMatches();
   state.matchupCounter = 0;
   state.showcaseCounter = 0;
+  state.fitnessDirty = true;
 
   if (state.population.length === 0) {
     state.population = initPopulationFromWarmStart(state.config);
     state.generation = 1;
     savePopulation(state.generation);
   }
+  refreshPopulationIndex();
 }
 
 // ── Fitness / breeding ────────────────────────────────────────
@@ -304,6 +329,14 @@ function recomputeAllFitness(pop, fw) {
   for (const b of pop) b.fitness = computeFitness(b, fw);
 }
 
+/** Lazy recompute — no-op unless a result has arrived since the last
+ *  call. `fitnessDirty` is set by `recordResult`, cleared here. */
+function ensureFitnessFresh() {
+  if (!state.fitnessDirty) return;
+  recomputeAllFitness(state.population, fitnessWeightsFromConfig(state.config));
+  state.fitnessDirty = false;
+}
+
 function allBrainsReadyToBreed(pop, cfg) {
   for (const b of pop) {
     if (b.popMatches < cfg.min_pop_matches) return false;
@@ -317,8 +350,7 @@ function tryBreed() {
   const pop = state.population;
   if (!allBrainsReadyToBreed(pop, cfg)) return false;
 
-  const fw = fitnessWeightsFromConfig(cfg);
-  recomputeAllFitness(pop, fw);
+  ensureFitnessFresh();
 
   let sum = 0;
   let top = -Infinity;
@@ -335,7 +367,7 @@ function tryBreed() {
   ).run(state.generation, avg, top, state.totalMatches);
 
   const rng = createGaRng((Math.random() * 2 ** 31) >>> 0);
-  const newPop = breedNextGeneration(pop, {
+  const bred = breedNextGeneration(pop, {
     size: cfg.population_size,
     elitism: cfg.elitism,
     tournamentK: cfg.tournament_k,
@@ -345,19 +377,23 @@ function tryBreed() {
     rng,
   });
 
-  // Preserve the frozen seed at index 0.
+  // Wrap each bred brain in `newBrain` so the pre-serialized
+  // _weightsJson cache is populated uniformly for every member. The
+  // frozen seed always takes slot 0.
   const seedBrain = pop.find((b) => b.isFrozenSeed);
-  if (seedBrain) {
-    newPop[0] = newBrain(0, new Float64Array(seedBrain.weights), true);
-  }
-  for (let i = 0; i < newPop.length; i++) {
-    newPop[i].id = i;
-    newPop[i].name = randomSurname();
-    if (i !== 0) newPop[i].isFrozenSeed = false;
+  const newPop = new Array(bred.length);
+  for (let i = 0; i < bred.length; i++) {
+    if (i === 0 && seedBrain) {
+      newPop[0] = newBrain(0, new Float64Array(seedBrain.weights), true);
+    } else {
+      newPop[i] = newBrain(i, bred[i].weights, false);
+    }
   }
 
   state.population = newPop;
   state.generation += 1;
+  refreshPopulationIndex();
+  state.fitnessDirty = true;
   savePopulation(state.generation);
   return true;
 }
@@ -372,15 +408,17 @@ function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-function brainView(brain) {
-  return {
-    id: brain.id,
-    name: brain.name,
-    weights: Array.from(brain.weights),
-  };
+/** Build a brain JSON fragment as a raw string — weights are already
+ *  pre-serialized on the brain, so this is O(1) per brain instead of
+ *  O(1233) per brain with an Array.from + JSON.stringify. */
+function brainFragment(brain) {
+  return `{"id":${brain.id},"name":${JSON.stringify(brain.name)},"weights":${brain._weightsJson}}`;
 }
 
-function pickMatchup() {
+/** Pick a matchup and return it as a raw JSON string. Used by
+ *  handleMatchup to splice brain weights into the response body
+ *  without ever re-JSON-encoding the 1233-float array. */
+function pickMatchupJson() {
   const cfg = state.config;
   const pop = state.population;
   state.matchupCounter += 1;
@@ -388,11 +426,8 @@ function pickMatchup() {
   if (state.matchupCounter % FALLBACK_MATCHUP_EVERY_N === 0) {
     const candidates = pop.filter((b) => needsMoreFallback(b, cfg));
     if (candidates.length > 0) {
-      return {
-        type: 'fallback',
-        p1: brainView(pickRandom(candidates)),
-        p2: null,
-      };
+      const pick = pickRandom(candidates);
+      return `{"type":"fallback","p1":${brainFragment(pick)},"p2":null}`;
     }
   }
 
@@ -405,10 +440,17 @@ function pickMatchup() {
   for (let attempts = 0; b.id === a.id && attempts < 5; attempts++) {
     b = pickRandom(pool);
   }
+  return `{"type":"pop","p1":${brainFragment(a)},"p2":${brainFragment(b)}}`;
+}
+
+/** Showcase brains keep a structured return so the existing
+ *  scoreboard JSON shape stays stable — showcase is called ~1/min,
+ *  not on the hot matchup path, so the Array.from cost is immaterial. */
+function brainView(brain) {
   return {
-    type: 'pop',
-    p1: brainView(a),
-    p2: brainView(b),
+    id: brain.id,
+    name: brain.name,
+    weights: Array.from(brain.weights),
   };
 }
 
@@ -443,10 +485,8 @@ function pickShowcase() {
 // ── Result recording ──────────────────────────────────────────
 
 function recordResult(result) {
-  const byId = new Map();
-  for (const b of state.population) byId.set(b.id, b);
-
-  const p1 = byId.get(result.p1_id);
+  const byId = state.populationById;
+  const p1 = byId[result.p1_id];
   if (!p1) return; // stale result from a previous generation — silently drop
 
   const goalsP1 = Number(result.goals_p1) | 0;
@@ -457,19 +497,18 @@ function recordResult(result) {
     p1.fallbackMatches += 1;
     if (goalsP1 > goalsP2) p1.fallbackWins += 1;
     else if (goalsP1 === goalsP2) p1.fallbackDraws += 1;
-    else p1.fallbackLosses += 1;
+    // No explicit loss counter — losses are (matches - wins - draws).
   } else {
-    const p2 = byId.get(result.p2_id);
+    const p2 = byId[result.p2_id];
     if (!p2) return;
     p1.popMatches += 1;
     p1.popGoalDiff += diff;
-    if (diff >= BLOWOUT_MARGIN + 1) p1.blowoutBonus += diff - BLOWOUT_MARGIN;
     p2.popMatches += 1;
-    p2.popGoalDiff += -diff;
-    if (-diff >= BLOWOUT_MARGIN + 1) p2.blowoutBonus += -diff - BLOWOUT_MARGIN;
+    p2.popGoalDiff -= diff;
   }
 
   state.totalMatches += 1;
+  state.fitnessDirty = true;
 }
 
 // ── HTTP helpers ──────────────────────────────────────────────
@@ -529,13 +568,23 @@ function handleMatchup(req, res) {
       if (Number.isFinite(n) && n > 0) count = Math.min(n, MATCHUP_BATCH_MAX);
     }
   }
+  // Build the response body by string concatenation of pre-serialized
+  // brain fragments — zero JSON.stringify calls on the 1233-float
+  // weight arrays, which is the broker's hottest CPU cost.
+  let body;
   if (count === 0) {
-    json(res, 200, pickMatchup());
-    return;
+    body = pickMatchupJson();
+  } else {
+    const parts = new Array(count);
+    for (let i = 0; i < count; i++) parts[i] = pickMatchupJson();
+    body = '[' + parts.join(',') + ']';
   }
-  const batch = new Array(count);
-  for (let i = 0; i < count; i++) batch[i] = pickMatchup();
-  json(res, 200, batch);
+  const buf = Buffer.from(body);
+  res.writeHead(200, {
+    'Content-Type': 'application/json',
+    'Content-Length': buf.length,
+  });
+  res.end(buf);
 }
 
 async function handleResults(req, res) {
@@ -557,9 +606,8 @@ function handleShowcase(req, res) {
 }
 
 function handleStats(req, res) {
+  ensureFitnessFresh();
   const pop = state.population;
-  const fw = fitnessWeightsFromConfig(state.config);
-  recomputeAllFitness(pop, fw);
   let sum = 0;
   let top = -Infinity;
   let fbWins = 0;
@@ -632,6 +680,8 @@ function handleReset(req, res) {
   state.totalMatches = 0;
   state.matchupCounter = 0;
   state.showcaseCounter = 0;
+  state.fitnessDirty = true;
+  refreshPopulationIndex();
   savePopulation(state.generation);
   json(res, 200, { ok: true, generation: state.generation });
 }

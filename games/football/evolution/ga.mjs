@@ -219,11 +219,9 @@ export function freshBrain(weights) {
     fitness: 0,
     popMatches: 0,
     popGoalDiff: 0,
-    blowoutBonus: 0,
     fallbackMatches: 0,
     fallbackWins: 0,
     fallbackDraws: 0,
-    fallbackLosses: 0,
   };
 }
 

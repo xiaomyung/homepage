@@ -101,6 +101,13 @@ const GOAL_BAR_RADIUS = 1.2;
 const CAMERA_FOV = 60;
 const CAMERA_TILT_DEG = 55;
 
+// Follow-cam zoom multipliers — smaller = closer. The cam smoothly
+// interpolates between LIVE (tight tracking) and DEAD (whole-field
+// overview) when the game enters a celebration / OOB / match-end
+// pause, and back to LIVE when play resumes.
+const FOLLOW_ZOOM_LIVE = 0.60;
+const FOLLOW_ZOOM_DEAD = 1.00;
+
 /* ── Shaders ───────────────────────────────────────────────── */
 
 const VERTEX_SHADER = /* glsl */ `
@@ -554,6 +561,7 @@ export class Renderer {
       posX: 0,     velX: 0,  // rail position
       lookX: 0,    lookVX: 0, // lookAt target x
       leadX: 0,    leadVX: 0, // smoothed lead offset (sign = ball's half)
+      zoom: FOLLOW_ZOOM_LIVE, zoomV: 0, // smoothed zoom (dead-ball widens)
     };
   }
 
@@ -577,9 +585,6 @@ export class Renderer {
 
   _stepFollowCam(state) {
     const fc = this._followCam;
-    // Player x positions come through a +9 offset in _addStickman;
-    // here we just use the raw physics x since the framing tolerance
-    // is well above that shift.
     const ballX = state.ball.x;
     const p1X = state.p1.x;
     const p2X = state.p2.x;
@@ -592,46 +597,67 @@ export class Renderer {
     const midX = this.fieldWidth / 2;
     const ballSide = ballX > midX ? 1 : (ballX < midX ? -1 : 0);
 
+    // Dead-ball detection: celebrate / matchend / reposition / waiting
+    // pauses, plus the OOB respawn grace window, plus the terminal
+    // matchOver flag. During any of these the zoom widens smoothly
+    // toward FOLLOW_ZOOM_DEAD AND the rail/lookAt springs are retargeted
+    // to the centered showcase pose. When play resumes, everything
+    // springs back to the live action target.
+    const deadBall = state.matchOver
+      || state.pauseState !== null
+      || (state.graceFrames | 0) > 0;
+    const zoomTarget   = deadBall ? FOLLOW_ZOOM_DEAD : FOLLOW_ZOOM_LIVE;
+    const posTarget    = deadBall ? midX : actionX;
+    const lookTarget   = deadBall ? midX : actionX;
+    const sideForLead  = deadBall ? 0 : ballSide;
+
     // Critically-damped spring coefficients (per frame @ 60Hz).
-    // stiffness k ≈ 0.015 → response time ~1.3s; c = 2*sqrt(k) for
-    // critical damping, which prevents overshoot on ball direction
-    // flips and gives a smooth accel/decel curve.
+    // stiffness k → response time; c = 2*sqrt(k) for critical
+    // damping, which prevents overshoot and gives a smooth
+    // accel/decel curve across direction flips.
     const K_POS  = 0.012;
     const C_POS  = 2 * Math.sqrt(K_POS);
     const K_LOOK = 0.020;
     const C_LOOK = 2 * Math.sqrt(K_LOOK);
     const K_LEAD = 0.008;
     const C_LEAD = 2 * Math.sqrt(K_LEAD);
-
-    // Follow-cam zoom: ~60% of the showcase distance so players +
-    // ball fill more of the frame. Lead magnitude scales with that.
-    const ZOOM = 0.60;
-    const { distance, height, backOff } = this._computeDistance(ZOOM);
-    // Lead magnitude: offset the lookAt by a fraction of the
-    // camera-to-target horizontal span so the target sits roughly
-    // at the 1/3 line of the screen.
-    const LEAD_FRACTION = 0.22;
-    const leadTarget = ballSide * distance * LEAD_FRACTION;
+    // Zoom transitions slower than position — about 1.5–2s to fully
+    // widen on a goal, then the same to tighten back when play resumes.
+    const K_ZOOM = 0.004;
+    const C_ZOOM = 2 * Math.sqrt(K_ZOOM);
 
     if (!fc.initialized) {
-      fc.posX = actionX;
+      fc.posX = posTarget;
       fc.velX = 0;
-      fc.lookX = actionX;
+      fc.lookX = lookTarget;
       fc.lookVX = 0;
-      fc.leadX = leadTarget;
+      // Snap-start the zoom & lead from the current target so the
+      // first frame doesn't pop.
+      fc.zoom = zoomTarget;
+      fc.zoomV = 0;
+      const { distance: d0 } = this._computeDistance(fc.zoom);
+      fc.leadX = sideForLead * d0 * 0.22;
       fc.leadVX = 0;
       fc.initialized = true;
     }
 
-    // Spring integration — applies accel toward target, friction
-    // proportional to velocity. Damping ratio = 1 (critically damped).
+    // Spring integration — accel toward target, friction proportional
+    // to velocity, damping ratio = 1 (critically damped).
     const stepSpring = (pos, vel, target, k, c) => {
       const accel = (target - pos) * k - vel * c;
       const newVel = vel + accel;
       return [pos + newVel, newVel];
     };
-    [fc.posX,  fc.velX]  = stepSpring(fc.posX,  fc.velX,  actionX,    K_POS,  C_POS);
-    [fc.lookX, fc.lookVX] = stepSpring(fc.lookX, fc.lookVX, actionX,   K_LOOK, C_LOOK);
+    [fc.zoom, fc.zoomV] = stepSpring(fc.zoom, fc.zoomV, zoomTarget, K_ZOOM, C_ZOOM);
+
+    // Compute distance from the *smoothed* zoom so the whole view
+    // (position, lead magnitude) pans out together.
+    const { distance, height, backOff } = this._computeDistance(fc.zoom);
+    const LEAD_FRACTION = 0.22;
+    const leadTarget = sideForLead * distance * LEAD_FRACTION;
+
+    [fc.posX,  fc.velX]  = stepSpring(fc.posX,  fc.velX,  posTarget,  K_POS,  C_POS);
+    [fc.lookX, fc.lookVX] = stepSpring(fc.lookX, fc.lookVX, lookTarget, K_LOOK, C_LOOK);
     [fc.leadX, fc.leadVX] = stepSpring(fc.leadX, fc.leadVX, leadTarget, K_LEAD, C_LEAD);
 
     const midZ = (FIELD_HEIGHT * Z_STRETCH) / 2;

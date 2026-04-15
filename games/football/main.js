@@ -29,6 +29,7 @@ import {
 } from './physics.js?v=46';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
+import { createTrainingOrchestrator } from './training-orchestrator.js';
 import {
   createScoreboard,
   createStartStopButton,
@@ -59,7 +60,7 @@ let scoreboard = null;
 let startStopBtn = null;
 let statsPanel = null;
 let configControls = null;
-let workers = [];
+let orchestrator = null;
 let currentMatch = null;
 // Reused NN input buffers — avoid per-tick allocation in buildInputs().
 const p1InputBuf = new Array(NN_INPUT_SIZE);
@@ -77,15 +78,24 @@ async function main() {
   createFitnessGraph({ apiBase: API_BASE });
   configControls = createConfigControls();
 
+  orchestrator = createTrainingOrchestrator({
+    apiBase: API_BASE,
+    workerUrl: new URL('./worker.js?v=10', import.meta.url),
+    onStats: ({ simsPerSec }) => statsPanel?.setSimsPerSec(simsPerSec),
+  });
+
   startStopBtn = createStartStopButton({
-    onStart: () => startWorkers(configControls.getWorkerCount()),
-    onStop: () => stopWorkers(),
+    onStart: () => { void orchestrator.start(configControls.getWorkerCount()); },
+    onStop:  () => { void orchestrator.stop(); statsPanel?.setSimsPerSec(0); },
   });
 
   configControls.onWorkerCountChange((n) => {
     if (startStopBtn.isRunning()) {
-      // Rebuild worker pool to the new size
-      startWorkers(n);
+      // Rebuild worker pool to the new size by restarting the orchestrator.
+      void (async () => {
+        await orchestrator.stop();
+        await orchestrator.start(n);
+      })();
     }
   });
 
@@ -97,18 +107,15 @@ async function main() {
   let followCamCtl = null;
   freeCamCtl = createFreeCamToggle({ renderer, onChange: () => followCamCtl?.refresh() });
   followCamCtl = createFollowCamToggle({ renderer, onChange: () => freeCamCtl?.refresh() });
-  createResetButton({
-    apiBase: API_BASE,
-    onReset: () => {
-      // Force next showcase to pick up the reset population
-      currentMatch = null;
-      nextShowcase();
-    },
-  });
+  // The reset button hard-reloads the page after the broker restarts,
+  // so no onReset callback is needed — the showcase rebuilds from
+  // scratch on the new page load.
+  createResetButton({ apiBase: API_BASE });
 
   installAutoPause(() => {
     if (startStopBtn.isRunning()) {
-      stopWorkers();
+      void orchestrator.stop();
+      statsPanel?.setSimsPerSec(0);
       startStopBtn.setRunning(false);
     }
   });
@@ -212,34 +219,6 @@ function frame() {
     SHOWCASE_MATCH_MS / 1000,
   );
   renderer.renderState(state);
-}
-
-/* ── Worker pool ──────────────────────────────────────── */
-
-function startWorkers(count) {
-  stopWorkers();
-  for (let i = 0; i < count; i++) {
-    const worker = new Worker(new URL('./worker.js?v=9', import.meta.url), { type: 'module' });
-    worker.onmessage = (ev) => {
-      const msg = ev.data;
-      if (msg.type === 'batch') {
-        statsPanel?.setSimsPerSec(msg.simsPerSec * workers.length);
-      } else if (msg.type === 'error') {
-        console.error('[football worker]', msg.message);
-      }
-    };
-    worker.postMessage({ type: 'start', apiBase: API_BASE });
-    workers.push(worker);
-  }
-}
-
-function stopWorkers() {
-  for (const w of workers) {
-    try { w.postMessage({ type: 'stop' }); } catch { /* ignore */ }
-    try { w.terminate(); } catch { /* ignore */ }
-  }
-  workers = [];
-  statsPanel?.setSimsPerSec(0);
 }
 
 /* ── Go ──────────────────────────────────────────────── */

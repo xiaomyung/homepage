@@ -7,11 +7,19 @@
  * `server.listen()` is gated behind a main-module check, so
  * importing the module is side-effect-free.
  *
- * Focus: the pieces that the recent perf refactor actually touches —
- * lazy weights JSON caching, matchup pool memoisation, and the
- * fallback-vs-pop matchup rotation. Every assertion here would fail
- * if a real bug were introduced in those functions; there are no
- * tautologies.
+ * The post-refactor broker is a pure state store: matchmaking moved
+ * to the client (matchmaker.js has its own test file). The broker's
+ * remaining responsibilities are:
+ *
+ *   1. Populate + serve full-snapshot brain weights (/population).
+ *   2. Aggregate per-brain stats from client-posted match results.
+ *   3. Detect breed thresholds and trigger GA breeding.
+ *   4. Persist + load snapshots atomically (no UNIQUE-constraint
+ *      crashes as generations turn over).
+ *
+ * Every assertion below targets one of those four contracts. No
+ * tautologies — each test would fail if a real regression were
+ * introduced in the code under test.
  */
 
 import { test } from 'node:test';
@@ -19,14 +27,14 @@ import assert from 'node:assert/strict';
 import {
   newBrain,
   getWeightsJson,
-  buildMatchupPools,
-  pickMatchupJson,
+  _recordResult,
+  _tryBreed,
   _state,
   refreshPopulationIndex,
   _savePopulation,
   _loadPopulation,
   _reopenDbForTest,
-  FALLBACK_MATCHUP_EVERY_N,
+  _cancelPendingSaveForTest,
 } from '../api/broker.mjs';
 import { WEIGHT_COUNT } from '../evolution/ga.mjs';
 import { unlinkSync, existsSync } from 'node:fs';
@@ -35,9 +43,6 @@ import { join } from 'node:path';
 
 /* ── Fixtures ─────────────────────────────────────────────── */
 
-/** Build a deterministic population of N brains whose weights are
- *  detectable: brain `id` uses the scalar `id + 1` in every slot so
- *  we can verify per-brain JSON serialisation without ambiguity. */
 function fakePopulation(n) {
   const pop = [];
   for (let i = 0; i < n; i++) {
@@ -47,17 +52,25 @@ function fakePopulation(n) {
   return pop;
 }
 
-/** Install a fake population + config into the broker state. Tests
- *  that need custom match-count thresholds should also set
- *  `_state.config` directly, which is why it's exposed. */
 function installPopulation(pop, config = {}) {
   _state.population = pop;
   _state.config = {
     min_pop_matches: 10,
     min_fallback_matches: 5,
+    mutation_rate: 0.1,
+    mutation_std: 0.1,
+    mutation_decay: 0.995,
+    tournament_k: 5,
+    elitism: 5,
+    random_injection_rate: 0.06,
+    population_size: pop.length,
+    fitness_w_pop: 0.4,
+    fitness_w_fallback: 0.6,
+    fitness_max_goal_diff: 3.0,
     ...config,
   };
-  _state.matchupCounter = 0;
+  _state.totalMatches = 0;
+  _state.fitnessDirty = true;
   refreshPopulationIndex();
 }
 
@@ -77,35 +90,23 @@ test('newBrain starts with null _weightsJson — no eager serialisation', () => 
 test('getWeightsJson materialises and caches on first call', () => {
   const w = new Float64Array(WEIGHT_COUNT).fill(-0.25);
   const b = newBrain(0, w);
-
-  assert.equal(b._weightsJson, null, 'precondition: cache empty');
+  assert.equal(b._weightsJson, null);
 
   const first = getWeightsJson(b);
   assert.equal(typeof first, 'string');
   const parsed = JSON.parse(first);
-  assert.equal(Array.isArray(parsed), true);
   assert.equal(parsed.length, WEIGHT_COUNT);
   assert.equal(parsed[0], -0.25);
-  assert.equal(parsed[parsed.length - 1], -0.25);
 
   // Cache populated
   assert.equal(b._weightsJson, first);
 
-  // Second call returns the SAME string reference — proves the
-  // cache hits instead of re-serialising.
+  // Strict identity proves the cache was hit, not recomputed.
   const second = getWeightsJson(b);
-  assert.equal(second, first);
-  // Strict identity: both strings point to the same heap entry.
-  // (String equality can't prove "didn't recompute" — identity can.)
   assert.strictEqual(second, b._weightsJson);
 });
 
 test('getWeightsJson survives a Float64Array roundtrip to numeric equality', () => {
-  // Pick a pattern of values that includes negatives and decimals
-  // that can trip JSON formatting. `+ 0.7` keeps sin() away from
-  // exactly zero — JSON.stringify writes -0 as "0" and JSON.parse
-  // returns +0, which is distinct from -0 under Object.is but
-  // equivalent under === (and both evaluate to 0 in physics use).
   const w = new Float64Array(WEIGHT_COUNT);
   for (let i = 0; i < WEIGHT_COUNT; i++) {
     w[i] = Math.sin(i * 0.13 + 0.7) * (i % 3 === 0 ? -1 : 1);
@@ -115,11 +116,6 @@ test('getWeightsJson survives a Float64Array roundtrip to numeric equality', () 
   const reconstructed = new Float64Array(JSON.parse(json));
   assert.equal(reconstructed.length, WEIGHT_COUNT);
   for (let i = 0; i < WEIGHT_COUNT; i++) {
-    // JSON.parse round-trips doubles exactly thanks to the
-    // 17-significant-digit formatting V8 uses by default. Any
-    // codepath that drops precision (e.g. Float32 coercion) would
-    // break this assertion for at least one sample. Use `===` so
-    // +0/-0 compare equal — JSON can't roundtrip the zero sign.
     assert.ok(
       reconstructed[i] === w[i],
       `mismatch at index ${i}: got ${reconstructed[i]}, want ${w[i]}`,
@@ -127,113 +123,175 @@ test('getWeightsJson survives a Float64Array roundtrip to numeric equality', () 
   }
 });
 
-/* ── buildMatchupPools ─────────────────────────────────────── */
+/* ── recordResult: per-match aggregation ─────────────────── */
 
-test('buildMatchupPools classifies brains by pop-match deficit', () => {
-  const pop = fakePopulation(10);
-  // First 3 brains have plenty of pop matches; the rest are fresh.
-  for (let i = 0; i < 3; i++) pop[i].popMatches = 20;
-  installPopulation(pop, { min_pop_matches: 10, min_fallback_matches: 5 });
-
-  const pools = buildMatchupPools();
-  assert.equal(pools.popWithFew.length, 7, 'brains with fewer than 10 pop matches should be in popWithFew');
-  const popWithFewIds = pools.popWithFew.map((b) => b.id).sort((a, b) => a - b);
-  assert.deepEqual(popWithFewIds, [3, 4, 5, 6, 7, 8, 9]);
+test('recordResult records a pop match for both sides', () => {
+  installPopulation(fakePopulation(5));
+  _recordResult({ p1_id: 1, p2_id: 2, goals_p1: 3, goals_p2: 1 });
+  assert.equal(_state.population[1].popMatches, 1);
+  assert.equal(_state.population[1].popGoalDiff, 2);
+  assert.equal(_state.population[2].popMatches, 1);
+  assert.equal(_state.population[2].popGoalDiff, -2);
+  assert.equal(_state.totalMatches, 1);
+  assert.equal(_state.fitnessDirty, true,
+    'recordResult must mark fitness dirty so /stats recomputes lazily');
 });
 
-test('buildMatchupPools classifies brains by fallback-match deficit', () => {
-  const pop = fakePopulation(10);
-  for (let i = 0; i < 4; i++) pop[i].fallbackMatches = 10;
-  installPopulation(pop, { min_pop_matches: 10, min_fallback_matches: 5 });
-
-  const pools = buildMatchupPools();
-  assert.equal(pools.fallbackCandidates.length, 6, 'brains with <5 fallback matches must need more');
-  const ids = pools.fallbackCandidates.map((b) => b.id).sort((a, b) => a - b);
-  assert.deepEqual(ids, [4, 5, 6, 7, 8, 9]);
+test('recordResult records a fallback match for p1 only', () => {
+  installPopulation(fakePopulation(5));
+  _recordResult({ p1_id: 3, p2_id: null, goals_p1: 2, goals_p2: 0 });
+  assert.equal(_state.population[3].fallbackMatches, 1);
+  assert.equal(_state.population[3].fallbackWins, 1);
+  // Every other brain untouched
+  assert.equal(_state.population[0].fallbackMatches, 0);
 });
 
-test('buildMatchupPools returns empty candidate sets when every brain is saturated', () => {
-  const pop = fakePopulation(5);
-  for (const b of pop) { b.popMatches = 100; b.fallbackMatches = 100; }
-  installPopulation(pop);
-  const pools = buildMatchupPools();
-  assert.equal(pools.popWithFew.length, 0);
-  assert.equal(pools.fallbackCandidates.length, 0);
+test('recordResult silently drops results with unknown brain ids', () => {
+  installPopulation(fakePopulation(5));
+  // Stale result from before a breed — refers to a brain id that
+  // no longer exists. Must NOT throw and must NOT corrupt stats.
+  _recordResult({ p1_id: 99, p2_id: 1, goals_p1: 1, goals_p2: 0 });
+  assert.equal(_state.totalMatches, 0);
+  assert.equal(_state.population[1].popMatches, 0);
 });
 
-/* ── pickMatchupJson ──────────────────────────────────────── */
-
-test('pickMatchupJson returns a valid pop matchup JSON string', () => {
-  const pop = fakePopulation(10);
-  installPopulation(pop);
-  const pools = buildMatchupPools();
-
-  // matchupCounter starts at 0; first pick has counter=1, not a
-  // fallback slot (1 % 4 !== 0) → this is a pop matchup.
-  const raw = pickMatchupJson(pools);
-  const parsed = JSON.parse(raw);
-  assert.equal(parsed.type, 'pop');
-  assert.equal(typeof parsed.p1, 'number', 'matchup p1 must be an ID (not full brain object)');
-  assert.equal(typeof parsed.p2, 'number', 'matchup p2 must be an ID');
-  assert.ok(parsed.p1 >= 0 && parsed.p1 < pop.length);
-  assert.ok(parsed.p2 >= 0 && parsed.p2 < pop.length);
-  assert.notEqual(parsed.p1, parsed.p2, 'pop matchup must pair two distinct brains');
+test('recordResult is atomic — partial stats are never applied on p2 miss', () => {
+  installPopulation(fakePopulation(5));
+  // p1 valid, p2 unknown: the whole row must be rejected.
+  _recordResult({ p1_id: 0, p2_id: 99, goals_p1: 1, goals_p2: 0 });
+  assert.equal(_state.population[0].popMatches, 0,
+    'p1 stats must not be partially applied when p2 is unknown');
+  assert.equal(_state.population[0].popGoalDiff, 0);
+  assert.equal(_state.totalMatches, 0);
 });
 
-test('pickMatchupJson rotates in fallback matchups on the configured cadence', () => {
-  const pop = fakePopulation(10);
-  installPopulation(pop);
+/* ── Multi-client aggregation (the user-requested scenario) ── */
 
-  let fallbackPicks = 0;
-  let popPicks = 0;
-  // Drive a full cadence cycle's worth of picks and count each type.
-  // Every Nth counter value should produce a fallback; the rest pop.
-  for (let i = 0; i < FALLBACK_MATCHUP_EVERY_N * 3; i++) {
-    const pools = buildMatchupPools();
-    const parsed = JSON.parse(pickMatchupJson(pools));
-    if (parsed.type === 'fallback') {
-      fallbackPicks++;
-      assert.equal(parsed.p2, null, 'fallback matchup must have null p2');
-    } else {
-      popPicks++;
+test('recordResult aggregates contributions from multiple simulated clients correctly', () => {
+  // This is the multi-tab / multi-device scenario: several clients
+  // each post their own streams of results and the broker sums them
+  // into a single authoritative count. Verified by constructing two
+  // result streams by hand and interleaving them.
+  installPopulation(fakePopulation(5));
+
+  // Client A posts 5 pop matches pairing brain 0 vs brain 1.
+  const clientA = [
+    { p1_id: 0, p2_id: 1, goals_p1: 2, goals_p2: 0 },
+    { p1_id: 0, p2_id: 1, goals_p1: 1, goals_p2: 0 },
+    { p1_id: 0, p2_id: 1, goals_p1: 0, goals_p2: 1 },
+    { p1_id: 0, p2_id: 1, goals_p1: 1, goals_p2: 1 },
+    { p1_id: 0, p2_id: 1, goals_p1: 3, goals_p2: 0 },
+  ];
+  // Client B posts 3 fallback matches against brain 0.
+  const clientB = [
+    { p1_id: 0, p2_id: null, goals_p1: 2, goals_p2: 1 },
+    { p1_id: 0, p2_id: null, goals_p1: 0, goals_p2: 3 },
+    { p1_id: 0, p2_id: null, goals_p1: 1, goals_p2: 1 },
+  ];
+  // Client C posts 2 more pop matches pairing brain 2 vs brain 3.
+  const clientC = [
+    { p1_id: 2, p2_id: 3, goals_p1: 1, goals_p2: 0 },
+    { p1_id: 2, p2_id: 3, goals_p1: 2, goals_p2: 2 },
+  ];
+
+  // Interleave them the way three clients would arrive over time.
+  const interleaved = [
+    clientA[0], clientB[0], clientC[0],
+    clientA[1], clientA[2], clientB[1],
+    clientC[1], clientB[2], clientA[3], clientA[4],
+  ];
+  for (const r of interleaved) _recordResult(r);
+
+  // Brain 0: 5 pop (as p1) + 3 fallback
+  assert.equal(_state.population[0].popMatches, 5);
+  // pop goal diff: 2+1-1+0+3 = 5
+  assert.equal(_state.population[0].popGoalDiff, 5);
+  // Fallback wins: 1 (2>1), draws: 1 (1=1), losses implicit: 1
+  assert.equal(_state.population[0].fallbackMatches, 3);
+  assert.equal(_state.population[0].fallbackWins, 1);
+  assert.equal(_state.population[0].fallbackDraws, 1);
+
+  // Brain 1: 5 pop (as p2), goal diff is negated
+  assert.equal(_state.population[1].popMatches, 5);
+  assert.equal(_state.population[1].popGoalDiff, -5);
+
+  // Brain 2: 2 pop
+  assert.equal(_state.population[2].popMatches, 2);
+  assert.equal(_state.population[2].popGoalDiff, 1);
+
+  // Brain 3: 2 pop with negated diff
+  assert.equal(_state.population[3].popMatches, 2);
+  assert.equal(_state.population[3].popGoalDiff, -1);
+
+  // Total matches = 5 + 3 + 2 = 10
+  assert.equal(_state.totalMatches, 10);
+});
+
+test('tryBreed fires once the shared threshold is crossed across clients', () => {
+  // Fake a small config so we can hit the breed threshold with a
+  // few hand-picked matches. This proves the multi-client flow
+  // eventually triggers GA breeding even though no single client
+  // individually hit the threshold. tryBreed persists state + the
+  // generation row via savePopulation, so we open a scratch DB for
+  // the duration of the test.
+  const tmpPath = join(tmpdir(), `football-trybreed-${process.pid}-${Date.now()}.db`);
+  try {
+    _reopenDbForTest(tmpPath);
+    const pop = fakePopulation(5);
+    installPopulation(pop, { min_pop_matches: 2, min_fallback_matches: 1, population_size: 5 });
+    _state.generation = 1;
+    const startGen = _state.generation;
+
+    // Each brain needs ≥2 pop matches AND ≥1 fallback match.
+    // Dispatch matches across "clients" so no single one crosses
+    // the threshold alone — but the aggregate does.
+    const matches = [
+      { p1_id: 0, p2_id: 1, goals_p1: 1, goals_p2: 0 }, // clientA
+      { p1_id: 2, p2_id: 3, goals_p1: 1, goals_p2: 0 }, // clientB
+      { p1_id: 4, p2_id: 0, goals_p1: 0, goals_p2: 1 }, // clientA
+      { p1_id: 1, p2_id: 2, goals_p1: 0, goals_p2: 1 }, // clientB
+      { p1_id: 3, p2_id: 4, goals_p1: 1, goals_p2: 0 }, // clientA
+      { p1_id: 0, p2_id: null, goals_p1: 1, goals_p2: 0 }, // clientA
+      { p1_id: 1, p2_id: null, goals_p1: 0, goals_p2: 1 }, // clientB
+      { p1_id: 2, p2_id: null, goals_p1: 1, goals_p2: 1 }, // clientA
+      { p1_id: 3, p2_id: null, goals_p1: 2, goals_p2: 0 }, // clientB
+      { p1_id: 4, p2_id: null, goals_p1: 0, goals_p2: 0 }, // clientA
+    ];
+    for (const m of matches) _recordResult(m);
+
+    const bred = _tryBreed();
+    assert.equal(bred, true, 'tryBreed should succeed when aggregated counts cross thresholds');
+    assert.equal(_state.generation, startGen + 1, 'generation must advance on successful breed');
+    assert.equal(_state.population.length, 5, 'population size preserved across breed');
+  } finally {
+    _cancelPendingSaveForTest();
+    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
+  }
+});
+
+test('tryBreed refuses to breed while any brain is under-served', () => {
+  const tmpPath = join(tmpdir(), `football-trybreed-no-${process.pid}-${Date.now()}.db`);
+  try {
+    _reopenDbForTest(tmpPath);
+    const pop = fakePopulation(5);
+    installPopulation(pop, { min_pop_matches: 2, min_fallback_matches: 1, population_size: 5 });
+    _state.generation = 1;
+    const startGen = _state.generation;
+
+    // Brain 0 has no fallback match yet — the gate must hold.
+    _recordResult({ p1_id: 0, p2_id: 1, goals_p1: 1, goals_p2: 0 });
+    _recordResult({ p1_id: 0, p2_id: 2, goals_p1: 1, goals_p2: 0 });
+    for (let i = 1; i < 5; i++) {
+      _recordResult({ p1_id: i, p2_id: null, goals_p1: 1, goals_p2: 0 });
+      _recordResult({ p1_id: i, p2_id: (i + 1) % 5, goals_p1: 1, goals_p2: 0 });
     }
-  }
-  assert.equal(fallbackPicks, 3,
-    `expected 3 fallback picks across ${FALLBACK_MATCHUP_EVERY_N * 3} calls, got ${fallbackPicks}`);
-  assert.equal(popPicks, FALLBACK_MATCHUP_EVERY_N * 3 - 3);
-});
-
-test('pickMatchupJson skips fallback slot when no brain needs more fallback matches', () => {
-  const pop = fakePopulation(10);
-  for (const b of pop) b.fallbackMatches = 99; // everyone saturated
-  installPopulation(pop);
-
-  // Force counter=N so the fallback slot fires.
-  _state.matchupCounter = FALLBACK_MATCHUP_EVERY_N - 1;
-  const pools = buildMatchupPools();
-  const parsed = JSON.parse(pickMatchupJson(pools));
-  assert.equal(parsed.type, 'pop',
-    'when fallback pool is empty, the fallback slot should fall through to a pop matchup');
-});
-
-test('pickMatchupJson response has no weight arrays anywhere', () => {
-  // Regression: the old hot path spliced `weights: [...]` into every
-  // matchup; /population now carries weights and /matchup carries
-  // only IDs. This test asserts on the serialised JSON shape itself
-  // so any accidental fat response breaks the test loudly.
-  const pop = fakePopulation(10);
-  installPopulation(pop);
-  const pools = buildMatchupPools();
-  for (let i = 0; i < 20; i++) {
-    const raw = pickMatchupJson(pools);
-    assert.ok(!raw.includes('"weights"'),
-      `regression: matchup response contains a weights field: ${raw.slice(0, 120)}`);
-    assert.ok(raw.length < 100,
-      `regression: matchup response is fat (${raw.length} bytes); should be ~50 bytes`);
+    assert.equal(_tryBreed(), false, 'tryBreed must refuse while brain 0 lacks a fallback match');
+    assert.equal(_state.generation, startGen, 'generation must not advance on refusal');
+  } finally {
+    _cancelPendingSaveForTest();
+    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
   }
 });
-
-/* ── pools are reused across all picks in one request ─────── */
 
 /* ── Persistence regression ───────────────────────────────── */
 
@@ -251,18 +309,13 @@ test('savePopulation handles repeated saves without UNIQUE constraint errors', (
   try {
     _reopenDbForTest(tmpPath);
 
-    // Save 1 — gen 1, ids 0..9.
     const pop1 = fakePopulation(10);
     installPopulation(pop1);
     _state.generation = 1;
     _savePopulation(1);
 
-    // Save 2 — gen 2, same ids 0..9 (this is how breeding works:
-    // new generation reuses the id space). The DELETE FROM brains
-    // inside savePopulation must wipe gen-1 rows first, or the
-    // INSERT id=0 collides.
     const pop2 = fakePopulation(10);
-    for (const b of pop2) b.popMatches = 5; // slightly different state
+    for (const b of pop2) b.popMatches = 5;
     installPopulation(pop2);
     _state.generation = 2;
     assert.doesNotThrow(
@@ -270,10 +323,8 @@ test('savePopulation handles repeated saves without UNIQUE constraint errors', (
       'savePopulation must be callable repeatedly as breeding advances the generation',
     );
 
-    // Sanity: after the save, loadPopulation sees gen-2 and only
-    // gen-2 (gen-1 rows have been wiped).
     const loaded = _loadPopulation();
-    assert.equal(loaded.length, 10, 'loaded population should match most recent save');
+    assert.equal(loaded.length, 10);
     for (const b of loaded) {
       assert.equal(b.popMatches, 5, 'loaded brain should reflect gen-2 state, not gen-1');
     }
@@ -287,48 +338,21 @@ test('savePopulation materialises lazy weights JSON on first save', () => {
   try {
     _reopenDbForTest(tmpPath);
     const pop = fakePopulation(5);
-    // Precondition: all brains start with null _weightsJson after newBrain.
     for (const b of pop) assert.equal(b._weightsJson, null);
     installPopulation(pop);
     _state.generation = 1;
     _savePopulation(1);
-    // After save, every brain must have a materialised JSON cache
-    // (populated by getWeightsJson during the INSERT loop).
     for (const b of pop) {
-      assert.ok(typeof b._weightsJson === 'string',
-        'post-save cache must hold the serialised weight string');
-      assert.ok(b._weightsJson.length > 100, 'cache should be non-trivial JSON');
+      assert.ok(typeof b._weightsJson === 'string');
+      assert.ok(b._weightsJson.length > 100);
     }
-    // And the DB roundtrip preserves the weights exactly.
     const loaded = _loadPopulation();
     assert.equal(loaded.length, pop.length);
     for (let i = 0; i < pop.length; i++) {
       assert.equal(loaded[i].weights.length, WEIGHT_COUNT);
-      assert.equal(loaded[i].weights[0], i + 1, 'first weight should match fakePopulation pattern');
+      assert.equal(loaded[i].weights[0], i + 1);
     }
   } finally {
     try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
   }
-});
-
-test('buildMatchupPools result is stable during a single request', () => {
-  // The perf fix's whole point is that we compute pools ONCE per
-  // handleMatchup call and reuse for all N picks. This test proves
-  // mutations to state.population after pool construction don't
-  // affect the already-built pools — i.e. the pools are a snapshot,
-  // not a live view. If someone refactors pools into a live query
-  // this test fails, which is what we want.
-  const pop = fakePopulation(10);
-  installPopulation(pop);
-  const pools = buildMatchupPools();
-  const beforeFewLen = pools.popWithFew.length;
-  const beforeFbLen  = pools.fallbackCandidates.length;
-
-  // Cross every brain over both thresholds after pools are built.
-  for (const b of pop) { b.popMatches = 99; b.fallbackMatches = 99; }
-
-  assert.equal(pools.popWithFew.length, beforeFewLen,
-    'popWithFew snapshot must not shrink retroactively');
-  assert.equal(pools.fallbackCandidates.length, beforeFbLen,
-    'fallbackCandidates snapshot must not shrink retroactively');
 });

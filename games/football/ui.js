@@ -446,20 +446,43 @@ export function createFollowCamToggle({ renderer, onChange }) {
 }
 
 /**
- * Wires the reset button to POST /reset after a confirmation dialog.
- * On success, calls the provided callback (usually to refresh local state).
+ * Wires the reset button to hard-nuke the training run: POST
+ * /reset?hard=1, which tells the broker to wipe the DB, flush the
+ * warm-start seed, and then self-exit so systemd restarts it. After
+ * the broker has restarted the client hard-reloads the tab with a
+ * cache-bust query string so every JS/WASM/worker file is re-fetched
+ * from Caddy. End result: one click wipes population, broker state,
+ * caches, and every open tab's in-RAM training state.
  */
-export function createResetButton({ apiBase, onReset }) {
+export function createResetButton({ apiBase }) {
   const btn = document.getElementById('game-reset-btn');
   btn.addEventListener('click', async () => {
-    if (!confirm('Reset the population and start over from the warm-start seed?')) return;
+    if (!confirm('Nuke the training run? Broker restarts and the page reloads with a cache-bust.')) return;
     try {
-      const res = await fetch(`${apiBase}/reset`, { method: 'POST' });
-      if (res.ok) onReset?.();
+      await fetch(`${apiBase}/reset?hard=1`, { method: 'POST' });
     } catch {
-      /* ignore */
+      /* ignore — broker is expected to exit mid-response */
     }
+    // Wait a tick for systemd to respawn the service, then reload.
+    // Poll /stats briefly so the new page comes back to a live broker
+    // instead of a 502.
+    await waitForBroker(apiBase, 4000);
+    const url = new URL(window.location.href);
+    url.searchParams.set('_cb', Date.now().toString(36));
+    window.location.replace(url.toString());
   });
+}
+
+async function waitForBroker(apiBase, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(`${apiBase}/stats`, { cache: 'no-store' });
+      if (r.ok) return true;
+    } catch { /* still down */ }
+    await new Promise((res) => setTimeout(res, 200));
+  }
+  return false;
 }
 
 /* ── Auto-pause gate ────────────────────────────────────── */

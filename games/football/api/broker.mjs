@@ -47,8 +47,6 @@ const ROUTE_PREFIX = '/api/football';
 const PORT = Number(process.env.FOOTBALL_PORT || 5050);
 const HOST = '127.0.0.1';
 
-// Matchup-type rotation: 1 fallback match for every 3 pop matches.
-const FALLBACK_MATCHUP_EVERY_N = 4;
 // Showcase: 1 in 5 is best-vs-fallback.
 const SHOWCASE_FALLBACK_EVERY_N = 5;
 const SHOWCASE_RECENT_WINDOW = 20;
@@ -139,7 +137,6 @@ const state = {
   generation: 0,
   totalMatches: 0,
   config: {},
-  matchupCounter: 0,
   showcaseCounter: 0,
   // Dirty flag set whenever a result mutates brain stats. Consumers
   // (handleStats, tryBreed) recompute fitness lazily only when true so
@@ -315,7 +312,6 @@ function initState() {
   state.population = loadPopulation();
   state.generation = currentGeneration();
   state.totalMatches = countTotalMatches();
-  state.matchupCounter = 0;
   state.showcaseCounter = 0;
   state.fitnessDirty = true;
 
@@ -444,59 +440,8 @@ function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-/** Compute the matchup selection pools once per /matchup handler
- *  call. Previously `pickMatchupJson` filtered the full 50-brain
- *  population on every pick — called 40× per request, that's 2000
- *  filter passes, which became the broker's dominant CPU cost once
- *  workers were pushing ~6000 matches/sec. Building the pools once
- *  up front and reusing them across all picks in the batch collapses
- *  that cost to O(pop_size) per request. */
-function buildMatchupPools() {
-  const cfg = state.config;
-  const pop = state.population;
-  const fallbackCandidates = [];
-  const popWithFew = [];
-  for (const b of pop) {
-    if (b.fallbackMatches < cfg.min_fallback_matches) fallbackCandidates.push(b);
-    if (b.popMatches < cfg.min_pop_matches) popWithFew.push(b);
-  }
-  return { fallbackCandidates, popWithFew };
-}
-
-/** Pick a matchup and return it as a raw JSON string containing
- *  only brain IDs. Workers maintain a local weights cache (fetched
- *  from /population on start and on generation drift), so the
- *  hot-path /matchup response stays a few bytes per matchup
- *  instead of 40+ KB per brain.
- *
- *  `pools` is the per-request cache from `buildMatchupPools()` —
- *  caller constructs it once, we reuse it on every pick. */
-function pickMatchupJson(pools) {
-  const pop = state.population;
-  state.matchupCounter += 1;
-
-  if (state.matchupCounter % FALLBACK_MATCHUP_EVERY_N === 0) {
-    const candidates = pools.fallbackCandidates;
-    if (candidates.length > 0) {
-      const pick = pickRandom(candidates);
-      return `{"type":"fallback","p1":${pick.id},"p2":null}`;
-    }
-  }
-
-  let pool = pools.popWithFew.length > 0 ? pools.popWithFew : pop;
-  if (pool.length < 2) pool = pop;
-
-  const a = pickRandom(pool);
-  let b = pickRandom(pool);
-  for (let attempts = 0; b.id === a.id && attempts < 5; attempts++) {
-    b = pickRandom(pool);
-  }
-  return `{"type":"pop","p1":${a.id},"p2":${b.id}}`;
-}
-
-/** Showcase brains keep a structured return so the existing
- *  scoreboard JSON shape stays stable — showcase is called ~1/min,
- *  not on the hot matchup path, so the Array.from cost is immaterial. */
+/** Showcase brains keep a structured return shape — /showcase is
+ *  called once per visual match (~30 s), not on a hot path. */
 function brainView(brain) {
   return {
     id: brain.id,
@@ -602,45 +547,6 @@ function readJsonBody(req) {
 
 // ── Route handlers ────────────────────────────────────────────
 
-// Hard upper bound on the number of matchups returned per request —
-// prevents a malicious or buggy client from asking for a huge batch
-// that stalls the server serializing weight arrays.
-const MATCHUP_BATCH_MAX = 64;
-
-function handleMatchup(req, res) {
-  const url = req.url || '';
-  const qi = url.indexOf('?');
-  let count = 0;
-  if (qi >= 0) {
-    const params = new URLSearchParams(url.slice(qi + 1));
-    const raw = params.get('count');
-    if (raw !== null) {
-      const n = parseInt(raw, 10);
-      if (Number.isFinite(n) && n > 0) count = Math.min(n, MATCHUP_BATCH_MAX);
-    }
-  }
-  // Response envelope carries the generation counter so clients detect
-  // a breed and re-fetch their population cache. The matchups payload
-  // is ID-only — brain weights are fetched separately via /population
-  // once per generation.
-  const pools = buildMatchupPools();
-  let matchupsBody;
-  if (count === 0) {
-    matchupsBody = pickMatchupJson(pools);
-  } else {
-    const parts = new Array(count);
-    for (let i = 0; i < count; i++) parts[i] = pickMatchupJson(pools);
-    matchupsBody = '[' + parts.join(',') + ']';
-  }
-  const body = `{"generation":${state.generation},"matchups":${matchupsBody}}`;
-  const buf = Buffer.from(body);
-  res.writeHead(200, {
-    'Content-Type': 'application/json',
-    'Content-Length': buf.length,
-  });
-  res.end(buf);
-}
-
 /** Serve the full population snapshot — one brain per entry with
  *  pre-serialized weights JSON fragments. Called by clients on worker
  *  start and on generation drift (detected via handleMatchup's
@@ -671,10 +577,47 @@ async function handleResults(req, res) {
     return json(res, 400, { error: 'expected JSON body' });
   }
   if (data == null) return json(res, 400, { error: 'expected JSON body' });
-  const results = Array.isArray(data) ? data : [data];
+  // Accept either the legacy bare-array shape `[result, ...]` or the
+  // new envelope shape `{generation, results: [...]}`. The envelope
+  // lets the orchestrator detect generation drift on its next sync.
+  let results;
+  let clientGen = null;
+  if (Array.isArray(data)) {
+    results = data;
+  } else if (Array.isArray(data.results)) {
+    results = data.results;
+    clientGen = typeof data.generation === 'number' ? data.generation : null;
+  } else {
+    return json(res, 400, { error: 'expected results array or envelope' });
+  }
+  // Stale-generation results are silently dropped via recordResult's
+  // id-miss guard (broker's population has new ids after a breed).
+  // The generation hint is informational only — we still try to
+  // record anything that matches the current population.
   for (const r of results) recordResult(r);
   const bred = tryBreed();
-  json(res, 200, { recorded: results.length, bred });
+
+  // Echo the authoritative counts so the orchestrator can reconcile
+  // its local view with the sum of all clients' contributions.
+  const counts = new Array(state.population.length);
+  for (let i = 0; i < state.population.length; i++) {
+    const b = state.population[i];
+    counts[i] = {
+      id: b.id,
+      popMatches: b.popMatches,
+      popGoalDiff: b.popGoalDiff,
+      fallbackMatches: b.fallbackMatches,
+      fallbackWins: b.fallbackWins,
+      fallbackDraws: b.fallbackDraws,
+    };
+  }
+  json(res, 200, {
+    generation: state.generation,
+    counts,
+    recorded: results.length,
+    bred,
+    clientGen,
+  });
 }
 
 function handleShowcase(req, res) {
@@ -784,6 +727,11 @@ async function handleConfigPost(req, res) {
 }
 
 function handleReset(req, res) {
+  const url = req.url || '';
+  const qi = url.indexOf('?');
+  const hard = qi >= 0 &&
+    new URLSearchParams(url.slice(qi + 1)).get('hard') === '1';
+
   db.prepare('DELETE FROM brains').run();
   db.prepare('DELETE FROM generations').run();
   // Re-init from warm-start. Config rows are preserved (matches the
@@ -792,7 +740,6 @@ function handleReset(req, res) {
   state.population = initPopulationFromWarmStart(state.config);
   state.generation = 1;
   state.totalMatches = 0;
-  state.matchupCounter = 0;
   state.showcaseCounter = 0;
   state.fitnessDirty = true;
   refreshPopulationIndex();
@@ -800,6 +747,21 @@ function handleReset(req, res) {
   // still leaves the warm-start seed on disk.
   savePopulation(state.generation);
   lastSavedGeneration = state.generation;
+
+  if (hard) {
+    // Nuclear reset: respond to the client, then exit the process
+    // so systemd's Restart=always starts a fresh broker. Clients can
+    // piggyback on this to guarantee every in-memory caching layer
+    // (population snapshots, fitness dirty flags, worker-side cached
+    // weights) is wiped — not just the DB.
+    json(res, 200, { ok: true, generation: state.generation, hard: true });
+    // Give the response a tick to flush, then exit.
+    setTimeout(() => {
+      try { if (db) db.close(); } catch { /* ignore */ }
+      process.exit(0);
+    }, 50);
+    return;
+  }
   json(res, 200, { ok: true, generation: state.generation });
 }
 
@@ -813,7 +775,6 @@ async function dispatch(req, res) {
   const key = `${req.method} ${pathname}`;
 
   switch (key) {
-    case `GET ${ROUTE_PREFIX}/matchup`:      return handleMatchup(req, res);
     case `GET ${ROUTE_PREFIX}/population`:   return handlePopulation(req, res);
     case `POST ${ROUTE_PREFIX}/results`:     return handleResults(req, res);
     case `GET ${ROUTE_PREFIX}/showcase`:     return handleShowcase(req, res);
@@ -875,20 +836,19 @@ if (IS_MAIN) {
 
 // Named exports for tests. These are the pure helpers whose
 // correctness can be checked without spinning up a full broker
-// instance — matchup pool construction, lazy weights JSON caching,
-// brain shape canonicalisation, plus a targeted reinit that opens
-// a fresh DB at a caller-supplied path so the persistence path
-// can be exercised against ephemeral /tmp files.
+// instance — lazy weights JSON caching, aggregated result
+// recording, persistence, plus a targeted reinit that opens a
+// fresh DB at a caller-supplied path so the save path can be
+// exercised against ephemeral /tmp files.
 export {
   newBrain,
   getWeightsJson,
-  buildMatchupPools,
-  pickMatchupJson,
+  recordResult as _recordResult,
+  tryBreed as _tryBreed,
   state as _state,
   refreshPopulationIndex,
   savePopulation as _savePopulation,
   loadPopulation as _loadPopulation,
-  FALLBACK_MATCHUP_EVERY_N,
 };
 
 /** Test-only: close any currently-open DB and open a fresh one at
@@ -899,4 +859,15 @@ export function _reopenDbForTest(path) {
   if (db) try { db.close(); } catch { /* ignore */ }
   db = new DatabaseSync(path);
   db.exec(SCHEMA_SQL);
+}
+
+/** Test-only: cancel the pending coalesced save timer if any. Tests
+ *  that trigger `tryBreed` schedule a save 10 s later; without this
+ *  cancel hook the timer keeps the test process alive and also
+ *  crashes when it fires against an already-deleted DB file. */
+export function _cancelPendingSaveForTest() {
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
 }

@@ -23,7 +23,7 @@
  *   worker → main: {type: 'error', message}
  */
 
-import { createField, createState, createSeededRng, tick as physicsTick, buildInputs, TICK_MS, NN_INPUT_SIZE } from './physics.js';
+import { createField, createState, createSeededRng, tick as physicsTick, buildInputs, TICK_MS, NN_INPUT_SIZE, NN_ACTION_STRIDE } from './physics.js';
 import { NeuralNet, WEIGHT_COUNT } from './nn.js';
 import { fallbackAction } from './fallback.js';
 
@@ -169,11 +169,20 @@ function runMatch(matchup) {
   const p2IsFallback = matchup.type === 'fallback';
   if (!p2IsFallback) p2Brain.loadWeights(matchup.p2.weights);
 
+  // Action-repeat stride: compute a fresh NN action every
+  // NN_ACTION_STRIDE ticks and reuse it verbatim on the in-between
+  // ticks. Physics still runs every tick. Same stride is applied in
+  // the visual showcase loop so training and display decision
+  // cadences match (per feedback_training_visual_parity).
+  let p1Action = null;
+  let p2Action = null;
   for (let i = 0; i < matchTicks; i++) {
-    const p1Action = p1Brain.forward(buildInputs(state, 'p1', p1InputBuf));
-    const p2Action = p2IsFallback
-      ? fallbackAction(state, 'p2')
-      : p2Brain.forward(buildInputs(state, 'p2', p2InputBuf));
+    if (i % NN_ACTION_STRIDE === 0) {
+      p1Action = p1Brain.forward(buildInputs(state, 'p1', p1InputBuf));
+      p2Action = p2IsFallback
+        ? fallbackAction(state, 'p2')
+        : p2Brain.forward(buildInputs(state, 'p2', p2InputBuf));
+    }
     physicsTick(state, p1Action, p2Action);
   }
 

@@ -1178,6 +1178,28 @@ function stepReposition(p, tx, ty) {
 export const NN_INPUT_SIZE = 20;
 
 /**
+ * Action-repeat stride (a.k.a. frame-skip). The NN evaluates a fresh
+ * action every `NN_ACTION_STRIDE` physics ticks; on the in-between
+ * ticks the *previous* action vector is reused verbatim. Physics
+ * still runs every tick, so ball trajectories and collisions stay
+ * at the native 16 ms/tick resolution — only the decision cadence
+ * widens.
+ *
+ * This is the classic RL "frame skip" optimisation: 2× here cuts NN
+ * forward compute in half for essentially free, because our policy
+ * is a slow control loop (walk + occasional kick) and action-repeat
+ * over one extra 16 ms tick is imperceptible.
+ *
+ * CRITICAL: this constant must be the same number used by **both**
+ * the headless worker and the visual showcase loop. Per memory
+ * `feedback_training_visual_parity.md`, any mismatch causes the
+ * brains you train to behave differently from the brains you watch,
+ * and fitness selection silently picks up a bias. Keep both call
+ * sites pointed at this single source of truth.
+ */
+export const NN_ACTION_STRIDE = 2;
+
+/**
  * Build the NN input vector for one player, normalized to [-1, 1].
  * Length is NN_INPUT_SIZE. The `out` parameter lets callers reuse
  * a buffer and skip the per-tick Array allocation.

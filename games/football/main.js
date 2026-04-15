@@ -25,6 +25,7 @@ import {
   buildInputs,
   TICK_MS,
   NN_INPUT_SIZE,
+  NN_ACTION_STRIDE,
 } from './physics.js?v=46';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
@@ -166,7 +167,10 @@ async function nextShowcase() {
 
   scoreboard.setMatchup(p1Source, p2Source);
   scoreboard.setScore(0, 0);
-  currentMatch = { state, p1Brain, p2Brain };
+  // p1Action / p2Action are sticky across `NN_ACTION_STRIDE` physics
+  // ticks so the visual showcase decision cadence matches the headless
+  // trainer exactly (see feedback_training_visual_parity).
+  currentMatch = { state, p1Brain, p2Brain, p1Action: null, p2Action: null };
 }
 
 function frame() {
@@ -187,15 +191,20 @@ function frame() {
     return;
   }
 
-  const p1Action = p1Brain
-    ? p1Brain.forward(buildInputs(state, 'p1', p1InputBuf))
-    : fallbackAction(state, 'p1');
+  // Only recompute actions every NN_ACTION_STRIDE ticks — the
+  // in-between ticks reuse the previous decision. Same rule applied
+  // headless in worker.js so the trained policy runs at the exact
+  // cadence it was selected against.
+  if (state.tick % NN_ACTION_STRIDE === 0) {
+    currentMatch.p1Action = p1Brain
+      ? p1Brain.forward(buildInputs(state, 'p1', p1InputBuf))
+      : fallbackAction(state, 'p1');
+    currentMatch.p2Action = p2Brain
+      ? p2Brain.forward(buildInputs(state, 'p2', p2InputBuf))
+      : fallbackAction(state, 'p2');
+  }
 
-  const p2Action = p2Brain
-    ? p2Brain.forward(buildInputs(state, 'p2', p2InputBuf))
-    : fallbackAction(state, 'p2');
-
-  physicsTick(state, p1Action, p2Action);
+  physicsTick(state, currentMatch.p1Action, currentMatch.p2Action);
 
   scoreboard.setScore(state.scoreL, state.scoreR);
   scoreboard.setTimer(
@@ -210,7 +219,7 @@ function frame() {
 function startWorkers(count) {
   stopWorkers();
   for (let i = 0; i < count; i++) {
-    const worker = new Worker(new URL('./worker.js?v=5', import.meta.url), { type: 'module' });
+    const worker = new Worker(new URL('./worker.js?v=6', import.meta.url), { type: 'module' });
     worker.onmessage = (ev) => {
       const msg = ev.data;
       if (msg.type === 'batch') {

@@ -205,11 +205,13 @@ export function createFitnessGraph({ apiBase, pollIntervalMs = 5000 }) {
   const ctx = canvas.getContext('2d');
 
   // Resolve palette colors from the document root so the graph picks up
-  // style.css variables without hard-coding hex values.
+  // style.css variables without hard-coding hex values. Monochrome:
+  // `top` uses bright --text, `avg` uses the dimmer --text-dim so the
+  // two series are distinguishable purely by brightness — no hue.
   const rootStyle = getComputedStyle(document.documentElement);
   const color = {
-    green: rootStyle.getPropertyValue('--green').trim() || '#9ece6a',
-    amber: rootStyle.getPropertyValue('--amber').trim() || '#e0af68',
+    top: rootStyle.getPropertyValue('--text').trim() || '#d0d0d0',
+    avg: rootStyle.getPropertyValue('--text-dim').trim() || '#707070',
     dim: rootStyle.getPropertyValue('--text-dim').trim() || '#707070',
     muted: rootStyle.getPropertyValue('--muted').trim() || '#505050',
   };
@@ -227,6 +229,13 @@ export function createFitnessGraph({ apiBase, pollIntervalMs = 5000 }) {
     }
   }
 
+  // Right-side padding reserved for the endpoint labels ("top 0.83" /
+  // "avg 0.33") that double as the color legend — wider than a pure
+  // number so the key word survives on narrow layouts.
+  const RIGHT_PAD = 64;
+  const LABEL_FONT = '10px "Iosevka Term", monospace';
+  const LABEL_MIN_GAP = 12;
+
   function draw() {
     const w = canvas.width;
     const h = canvas.height;
@@ -234,7 +243,7 @@ export function createFitnessGraph({ apiBase, pollIntervalMs = 5000 }) {
 
     if (history.length < 2) {
       ctx.fillStyle = color.muted;
-      ctx.font = '10px "Iosevka Term", monospace';
+      ctx.font = LABEL_FONT;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText('no history yet', w / 2, h / 2);
@@ -250,42 +259,62 @@ export function createFitnessGraph({ apiBase, pollIntervalMs = 5000 }) {
     const yMax = Math.max(...all, 1);
     const range = Math.max(0.01, yMax - yMin);
 
+    const plotW = w - RIGHT_PAD;
     const n = data.length;
-    const x = (i) => (i / Math.max(1, n - 1)) * (w - 2) + 1;
+    const x = (i) => (i / Math.max(1, n - 1)) * (plotW - 2) + 1;
     const y = (v) => h - ((v - yMin) / range) * (h - 4) - 2;
 
-    // Zero line (dashed)
+    // Zero line (dashed) — only spans the plot area, not the label gutter
     ctx.strokeStyle = color.dim;
     ctx.lineWidth = 1;
     ctx.setLineDash([2, 3]);
     ctx.beginPath();
     ctx.moveTo(0, y(0));
-    ctx.lineTo(w, y(0));
+    ctx.lineTo(plotW, y(0));
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Avg (green)
-    ctx.strokeStyle = color.green;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let i = 0; i < n; i++) {
-      const px = x(i);
-      const py = y(avgs[i]);
-      if (i === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    }
-    ctx.stroke();
+    const drawSeries = (series, stroke) => {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const px = x(i);
+        const py = y(series[i]);
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    };
+    drawSeries(avgs, color.avg);
+    drawSeries(tops, color.top);
 
-    // Top (amber)
-    ctx.strokeStyle = color.amber;
-    ctx.beginPath();
-    for (let i = 0; i < n; i++) {
-      const px = x(i);
-      const py = y(tops[i]);
-      if (i === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
+    // Endpoint labels — colored to match each series, positioned at the
+    // final data point's y with a small horizontal offset into the
+    // reserved right gutter. If both labels would collide vertically,
+    // nudge them apart so neither occludes the other.
+    const lastAvgY = y(avgs[n - 1]);
+    const lastTopY = y(tops[n - 1]);
+    let avgLabelY = lastAvgY;
+    let topLabelY = lastTopY;
+    if (Math.abs(avgLabelY - topLabelY) < LABEL_MIN_GAP) {
+      const mid = (avgLabelY + topLabelY) / 2;
+      if (avgs[n - 1] < tops[n - 1]) {
+        avgLabelY = mid + LABEL_MIN_GAP / 2;
+        topLabelY = mid - LABEL_MIN_GAP / 2;
+      } else {
+        avgLabelY = mid - LABEL_MIN_GAP / 2;
+        topLabelY = mid + LABEL_MIN_GAP / 2;
+      }
     }
-    ctx.stroke();
+    const labelX = plotW + 4;
+    ctx.font = LABEL_FONT;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = color.top;
+    ctx.fillText(`top ${tops[n - 1].toFixed(2)}`, labelX, topLabelY);
+    ctx.fillStyle = color.avg;
+    ctx.fillText(`avg ${avgs[n - 1].toFixed(2)}`, labelX, avgLabelY);
   }
 
   poll();

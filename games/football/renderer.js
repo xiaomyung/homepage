@@ -1,68 +1,51 @@
 /**
  * Football v2 — three.js renderer (non-instanced, pooled-mesh version).
  *
- * Design: one Mesh per visible glyph. Each character in the atlas has
- * its own pre-built unit-quad geometry with UVs baked into the atlas
- * cell. At runtime a fixed pool of Meshes is reused — each frame we hide
- * them all, then assign geometry, position, scale, and color on the ones
- * we need. No instanced attributes, no custom binding logic, no shader
- * attribute surprises. 130 draw calls per frame is well within three.js's
- * capacity.
+ * One Mesh per visible glyph. Each atlas character has its own pre-built
+ * unit-quad geometry with UVs baked in. Each frame we hide the trailing
+ * range of the pool, then assign geometry/position/scale/color/offset to
+ * the ~14 meshes we actually need. ~14 draw calls per frame for dynamic
+ * content, plus ~12 static calls for the field and goals.
  *
- * Coordinate system:
- *   Physics x → three.js x (field horizontal)
- *   Physics z (ball height) → three.js y (up)
- *   Physics y (field depth)  → three.js z
- *
- * Camera: perspective, ~55° tilt from vertical above midfield, framed to
- * fit the whole field width for the current canvas aspect ratio. The field
- * depth (world z) is stretched by Z_STRETCH so the genuinely-very-wide
- * 21:1 physics field fills more of the canvas vertically.
+ * Coordinate mapping:
+ *   physics.x → three.js.x  (field horizontal)
+ *   physics.z → three.js.y  (ball height / up)
+ *   physics.y → three.js.z  (field depth)
  */
 
 import * as THREE from './vendor/three.module.js';
-import { createField, FIELD_HEIGHT } from './physics.js?v=31';
+import { createField, FIELD_HEIGHT, FIELD_WIDTH_REF } from './physics.js?v=31';
 
-const DEFAULT_FIELD_WIDTH = 900;
 const POOL_SIZE = 400;
 
-// Physics field depth (42) is ~21× narrower than its width (900), so a
-// straight 1:1 projection renders the field as a thin horizontal strip.
-// Multiply z by this in render space so the field fills more of the
-// canvas vertically. Physics stays unchanged; only visuals are stretched.
+// Physics field depth (42) is ~21× narrower than its width (900); stretch
+// render-space z so the field fills more of the canvas vertically.
 const Z_STRETCH = 4.7;
 
-// Small margin so the field edges don't touch the canvas boundary
+// Small margin so field edges don't touch the canvas boundary.
 const HORIZONTAL_MARGIN = 1.15;
 
-// Per-element view-space sizes. The shader applies scale in view space,
-// so these are effectively "world units at the projected distance".
 const STICKMAN_GLYPH_SIZE = 22;
 const BALL_GLYPH_SIZE = 24;
+const WALK_ANIM_SPEED_THRESHOLD = 0.3;
+const WALK_ANIM_SPEED_THRESHOLD_SQ = WALK_ANIM_SPEED_THRESHOLD * WALK_ANIM_SPEED_THRESHOLD;
 
-/* ── Shaders ─────────────────────────────────────────────── */
+const CAMERA_FOV = 60;
+const CAMERA_TILT_DEG = 55;
+
+/* ── Shaders ───────────────────────────────────────────────── */
 
 const VERTEX_SHADER = /* glsl */ `
-  // Built-in uniforms auto-injected by ShaderMaterial:
-  //   mat4 modelMatrix, modelViewMatrix, viewMatrix, projectionMatrix
-  // Built-in attributes: vec3 position, vec2 uv
-
   uniform vec2 uViewOffset;
-
   varying vec2 vUv;
 
   void main() {
-    // Billboarded quad: take the mesh's world-space translation, transform
-    // to view space, then add (a) a per-mesh VIEW-SPACE offset and (b) the
-    // vertex's (x, y) scaled by the mesh's uniform scale. Both (a) and (b)
-    // are in view XY (screen-aligned), so they're not affected by camera
-    // pitch — this lets us stack stickman parts in screen space rather
-    // than world space.
+    // Billboarded quad: compute world center, transform to view space,
+    // then add view-space offset + vertex position scaled uniformly.
+    // Stackable in screen space regardless of camera pitch.
     vec3 worldCenter = vec3(modelMatrix[3][0], modelMatrix[3][1], modelMatrix[3][2]);
     vec4 viewCenter = viewMatrix * vec4(worldCenter, 1.0);
-
     float sx = length(vec3(modelMatrix[0][0], modelMatrix[0][1], modelMatrix[0][2]));
-
     viewCenter.xy += uViewOffset + position.xy * sx;
     gl_Position = projectionMatrix * viewCenter;
     vUv = uv;
@@ -72,12 +55,9 @@ const VERTEX_SHADER = /* glsl */ `
 const FRAGMENT_SHADER = /* glsl */ `
   uniform sampler2D sdfTexture;
   uniform vec3 uColor;
-
   varying vec2 vUv;
 
-  // tiny-sdf encoding: glyph edge at 255 * (1 - cutoff) = 255 * 0.75 ≈ 191,
-  // which is ~0.75 in normalized [0, 1]. Values above = inside the glyph,
-  // below = outside.
+  // tiny-sdf edge sits at ~0.75 normalized (cutoff 0.25).
   const float EDGE = 0.75;
   const float AA = 0.02;
 
@@ -89,17 +69,17 @@ const FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
-/* ── Palette (matches style.css design tokens) ─────────── */
+/* ── Palette (matches style.css design tokens) ─────────────── */
 
 const COLOR_TEXT = rgb('#d0d0d0');
 const COLOR_GREEN = rgb('#9ece6a');
 const COLOR_AMBER = rgb('#e0af68');
 const COLOR_RED = rgb('#f7768e');
 
-/* ── Renderer ──────────────────────────────────────────── */
+/* ── Renderer ──────────────────────────────────────────────── */
 
 export class Renderer {
-  constructor(canvas, atlas, { fieldWidth = DEFAULT_FIELD_WIDTH } = {}) {
+  constructor(canvas, atlas, { fieldWidth = FIELD_WIDTH_REF } = {}) {
     this.atlas = atlas;
     this.fieldWidth = fieldWidth;
     this._field = createField(fieldWidth);
@@ -109,11 +89,9 @@ export class Renderer {
     this.renderer.setClearColor(0x000000, 0);
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(60, 2, 0.1, 4000);
+    this.camera = new THREE.PerspectiveCamera(CAMERA_FOV, 2, 0.1, 4000);
     this._placeCamera();
 
-    // Base (shared) material — we clone it per pool mesh so each has its
-    // own uColor / uViewOffset uniforms.
     this._baseMaterial = new THREE.ShaderMaterial({
       uniforms: {
         sdfTexture: { value: atlas.texture },
@@ -127,43 +105,65 @@ export class Renderer {
       depthWrite: false,
     });
 
-    // Pre-build one BufferGeometry per character in the atlas. All
-    // geometries are unit quads; only the UVs differ.
+    // Pre-build one BufferGeometry per atlas character (unit quads, UVs differ).
     this._glyphGeometries = new Map();
     for (const [ch, g] of atlas.glyphs) {
       this._glyphGeometries.set(ch, this._buildGlyphGeometry(g));
     }
 
-    // Pool of Meshes. Each has its own cloned material with fresh uniforms
-    // so changes to one mesh don't bleed into others.
+    // Pre-resolve the fixed characters the renderer actually uses each frame
+    // so the hot path avoids a Map lookup per glyph.
+    this._glyphO = this._glyphGeometries.get('o');
+    this._glyphSlash = this._glyphGeometries.get('/');
+    this._glyphBackslash = this._glyphGeometries.get('\\');
+    this._glyphPipe = this._glyphGeometries.get('|');
+
+    // Pool of meshes, each with its own cloned material + cached uniform refs
+    // so the hot path writes via `mesh._uColor.set(...)` directly.
     this._pool = [];
-    const defaultGeom = this._glyphGeometries.values().next().value;
+    const defaultGeom = this._glyphO || this._glyphGeometries.values().next().value;
     for (let i = 0; i < POOL_SIZE; i++) {
-      const material = this._baseMaterial.clone();
-      material.uniforms = {
-        sdfTexture: { value: atlas.texture },
-        uColor: { value: new THREE.Vector3(1, 1, 1) },
-        uViewOffset: { value: new THREE.Vector2(0, 0) },
-      };
+      const material = new THREE.ShaderMaterial({
+        uniforms: {
+          sdfTexture: { value: atlas.texture },
+          uColor: { value: new THREE.Vector3(1, 1, 1) },
+          uViewOffset: { value: new THREE.Vector2(0, 0) },
+        },
+        vertexShader: VERTEX_SHADER,
+        fragmentShader: FRAGMENT_SHADER,
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+      });
       const mesh = new THREE.Mesh(defaultGeom, material);
       mesh.visible = false;
       mesh.frustumCulled = false;
+      mesh._uColor = material.uniforms.uColor.value;
+      mesh._uViewOffset = material.uniforms.uViewOffset.value;
       this.scene.add(mesh);
       this._pool.push(mesh);
     }
     this._poolCursor = 0;
 
-    // Static field lines (rectangle outline, midfield divider, goal frames)
-    // — added to the scene once at init, never updated per frame
+    // Pre-allocated per-player color buffers so staminaColor can write into
+    // a reused array instead of allocating [r,g,b] every frame.
+    this._p1Color = [0, 0, 0];
+    this._p2Color = [0, 0, 0];
+
+    // Track static scene objects so dispose() can release them.
+    this._staticGeometries = [];
+    this._staticMaterials = [];
+
     this._buildFieldLines();
 
     this._resizeObserver = null;
+    this._lastW = 0;
+    this._lastH = 0;
   }
 
   autoResize() {
-    const canvas = this.renderer.domElement;
     const observer = new ResizeObserver(() => this.resize());
-    observer.observe(canvas);
+    observer.observe(this.renderer.domElement);
     this._resizeObserver = observer;
     this.resize();
   }
@@ -172,6 +172,9 @@ export class Renderer {
     const canvas = this.renderer.domElement;
     const w = canvas.clientWidth || 900;
     const h = canvas.clientHeight || 220;
+    if (w === this._lastW && h === this._lastH) return;
+    this._lastW = w;
+    this._lastH = h;
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
@@ -180,409 +183,267 @@ export class Renderer {
 
   dispose() {
     if (this._resizeObserver) this._resizeObserver.disconnect();
-    for (const mesh of this._pool) {
-      mesh.material.dispose();
-    }
-    for (const geom of this._glyphGeometries.values()) {
-      geom.dispose();
-    }
+    for (const mesh of this._pool) mesh.material.dispose();
+    for (const geom of this._glyphGeometries.values()) geom.dispose();
+    for (const geom of this._staticGeometries) geom.dispose();
+    for (const mat of this._staticMaterials) mat.dispose();
     this._baseMaterial.dispose();
     this.renderer.dispose();
   }
 
   renderState(state) {
-    this._resetPool();
+    const prevCursor = this._poolCursor;
+    this._poolCursor = 0;
 
-    // Stickmen (walk-anim driven by tick + movement)
     const tick = state.tick || 0;
-    this._addStickman(state.p1, staminaColor(state.p1.stamina), tick);
-    this._addStickman(state.p2, staminaColor(state.p2.stamina), tick);
+    staminaColorInto(state.p1.stamina, this._p1Color);
+    staminaColorInto(state.p2.stamina, this._p2Color);
+    this._addStickman(state.p1, this._p1Color, tick);
+    this._addStickman(state.p2, this._p2Color, tick);
 
-    // Ball — bounce height translates to a view-space y offset so the
-    // bounce is visible on screen regardless of camera tilt
-    const bounceViewY = (state.ball.z || 0) * 0.5;
+    // Ball — bounce height becomes a view-space y offset so it shows up
+    // regardless of camera tilt.
     this._placeGlyph(
-      'o',
-      state.ball.x,
-      0,
-      state.ball.y,
+      this._glyphO,
+      state.ball.x, 0, state.ball.y,
       BALL_GLYPH_SIZE,
       COLOR_TEXT,
-      0,
-      bounceViewY
+      0, (state.ball.z || 0) * 0.5
     );
+
+    // Hide any meshes that were active last frame but aren't used this frame.
+    for (let i = this._poolCursor; i < prevCursor; i++) {
+      this._pool[i].visible = false;
+    }
 
     this.renderer.render(this.scene, this.camera);
   }
 
-  /* ── Internals ──────────────────────────────────── */
+  /* ── Camera ─────────────────────────────────────────────── */
 
   _placeCamera() {
-    // Adaptive camera — frames the full field width edge-to-edge for
-    // the current canvas aspect ratio, with a ~22° tilt from vertical.
-    // Render-space z is stretched by Z_STRETCH so the field's apparent
-    // depth matches the canvas aspect better.
     const midX = this.fieldWidth / 2;
     const midZ = (FIELD_HEIGHT * Z_STRETCH) / 2;
     const aspect = this.camera.aspect || 4;
 
-    const fovDeg = 60;
-    const halfFovVert = (fovDeg / 2) * Math.PI / 180;
+    const halfFovVert = (CAMERA_FOV / 2) * Math.PI / 180;
     const tanHalfHoriz = Math.tan(halfFovVert) * aspect;
-
-    // Small horizontal margin so the field doesn't sit flush against
-    // the canvas edge (which clips 1px lines at the boundary)
     const halfFieldWidth = (this.fieldWidth / 2) * HORIZONTAL_MARGIN;
     const distance = halfFieldWidth / tanHalfHoriz;
 
-    // Tilt 55° from vertical — each +5° brings the camera closer to a
-    // side view. Cos(55°) ≈ 0.574 vs cos(50°) ≈ 0.643, so height drops
-    // another ~11% at constant Euclidean distance.
-    const tiltRad = 55 * Math.PI / 180;
+    const tiltRad = CAMERA_TILT_DEG * Math.PI / 180;
     const height = distance * Math.cos(tiltRad);
     const backOff = distance * Math.sin(tiltRad);
 
-    this.camera.fov = fovDeg;
     this.camera.position.set(midX, height, midZ + backOff);
     this.camera.lookAt(midX, 0, midZ);
     this.camera.updateProjectionMatrix();
   }
 
-  /** Build a unit-quad BufferGeometry with UVs baked into the atlas cell. */
+  /* ── Glyph geometry ─────────────────────────────────────── */
+
   _buildGlyphGeometry(glyph) {
     const g = new THREE.BufferGeometry();
-    // Vertices: unit quad in xy plane, centered on origin
-    g.setAttribute(
-      'position',
-      new THREE.BufferAttribute(
-        new Float32Array([
-          -0.5, -0.5, 0,
-           0.5, -0.5, 0,
-           0.5,  0.5, 0,
-          -0.5,  0.5, 0,
-        ]),
-        3
-      )
-    );
-    // UVs: rectangle pointing at the glyph's atlas cell. Using three.js
-    // convention (UV origin bottom-left, v=1 = top of original image with
-    // flipY=true), the TOP vertices of the quad should sample the TOP of
-    // the cell in the canvas image, which corresponds to the higher v.
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+      -0.5, -0.5, 0,
+       0.5, -0.5, 0,
+       0.5,  0.5, 0,
+      -0.5,  0.5, 0,
+    ]), 3));
+    // Atlas cell UVs. canvas flipY=true → v=1 is the top of the cell image,
+    // so top vertices sample the higher v.
     const u0 = glyph.u;
     const u1 = glyph.u + glyph.w;
-    const vTop = 1 - glyph.v;                  // top of cell in canvas = high v in UV
-    const vBot = 1 - (glyph.v + glyph.h);      // bottom of cell in canvas = low v in UV
-    g.setAttribute(
-      'uv',
-      new THREE.BufferAttribute(
-        new Float32Array([
-          u0, vBot,  // bottom-left vertex → bottom of glyph cell
-          u1, vBot,  // bottom-right
-          u1, vTop,  // top-right
-          u0, vTop,  // top-left
-        ]),
-        2
-      )
-    );
+    const vTop = 1 - glyph.v;
+    const vBot = 1 - (glyph.v + glyph.h);
+    g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array([
+      u0, vBot,
+      u1, vBot,
+      u1, vTop,
+      u0, vTop,
+    ]), 2));
     g.setIndex([0, 1, 2, 0, 2, 3]);
     return g;
   }
 
+  /* ── Static world (field outline, midfield, goals) ──────── */
+
   _buildFieldLines() {
-    // Draw the field outline, midfield divider, and goal frames as
-    // three.js Line primitives in world space. Lines are NOT billboarded
-    // so the camera's perspective projection naturally makes far edges
-    // appear smaller than near edges — the perspective "does its job"
-    // automatically.
     const w = this.fieldWidth;
-    const zFar = 0;                         // far edge (away from camera)
-    const zNear = FIELD_HEIGHT * Z_STRETCH; // near edge (closer to camera)
+    const zFar = 0;
+    const zNear = FIELD_HEIGHT * Z_STRETCH;
     const f = this._field;
 
     const dimColor = new THREE.Color('#707070');
     const mutedColor = new THREE.Color('#505050');
     const netColor = new THREE.Color('#404040');
 
-    const lineMat = new THREE.LineBasicMaterial({
-      color: dimColor,
-      transparent: true,
-      opacity: 0.8,
-    });
-    const mutedMat = new THREE.LineBasicMaterial({
-      color: mutedColor,
-      transparent: true,
-      opacity: 0.5,
-    });
-    const netMat = new THREE.LineBasicMaterial({
-      color: netColor,
-      transparent: true,
-      opacity: 0.45,
-    });
-    const goalLineMat = new THREE.LineBasicMaterial({
-      color: dimColor,
-      transparent: true,
-      opacity: 0.75,
-    });
+    const lineMat = new THREE.LineBasicMaterial({ color: dimColor, transparent: true, opacity: 0.8 });
+    const mutedMat = new THREE.LineBasicMaterial({ color: mutedColor, transparent: true, opacity: 0.5 });
+    const netMat = new THREE.LineBasicMaterial({ color: netColor, transparent: true, opacity: 0.45 });
+    const goalLineMat = new THREE.LineBasicMaterial({ color: dimColor, transparent: true, opacity: 0.75 });
+    this._staticMaterials.push(lineMat, mutedMat, netMat, goalLineMat);
 
-    // Main field outline — closed rectangle on the ground plane
-    const fieldOutline = new THREE.LineLoop(
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, zFar),
-        new THREE.Vector3(w, 0, zFar),
-        new THREE.Vector3(w, 0, zNear),
-        new THREE.Vector3(0, 0, zNear),
-      ]),
-      lineMat
-    );
-    this.scene.add(fieldOutline);
+    const outlineGeom = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, zFar),
+      new THREE.Vector3(w, 0, zFar),
+      new THREE.Vector3(w, 0, zNear),
+      new THREE.Vector3(0, 0, zNear),
+    ]);
+    this._addStatic(new THREE.LineLoop(outlineGeom, lineMat), outlineGeom);
 
-    // Midfield divider
-    const midDivider = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(w / 2, 0, zFar),
-        new THREE.Vector3(w / 2, 0, zNear),
-      ]),
-      mutedMat
-    );
-    this.scene.add(midDivider);
+    const midGeom = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(w / 2, 0, zFar),
+      new THREE.Vector3(w / 2, 0, zNear),
+    ]);
+    this._addStatic(new THREE.Line(midGeom, mutedMat), midGeom);
 
-    // Goal frames
     const goalDepth = f.goalLRight - f.goalLLeft;
     const goalWidth = (f.goalMouthYMax - f.goalMouthYMin) * Z_STRETCH;
     const goalHeight = f.goalMouthZMax * 2.25;
     const goalCenterZ = ((f.goalMouthYMin + f.goalMouthYMax) / 2) * Z_STRETCH;
 
-    // Left goal: outer edge on -x, so vertical back wall at centerX - halfD → dir = -1.
+    // Left goal: outer edge on -x (dir = -1). Right goal: mirror.
     const leftCenterX = (f.goalLLeft + f.goalLRight) / 2;
-    this._addGoal(leftCenterX, goalCenterZ, goalDepth, goalWidth, goalHeight, -1, lineMat, netMat, goalLineMat);
-
-    // Right goal: mirror.
     const rightCenterX = (f.goalRLeft + f.goalRRight) / 2;
+    this._addGoal(leftCenterX, goalCenterZ, goalDepth, goalWidth, goalHeight, -1, lineMat, netMat, goalLineMat);
     this._addGoal(rightCenterX, goalCenterZ, goalDepth, goalWidth, goalHeight, +1, lineMat, netMat, goalLineMat);
   }
 
+  _addStatic(obj, geometry) {
+    this.scene.add(obj);
+    if (geometry) this._staticGeometries.push(geometry);
+  }
+
   _addGoal(centerX, centerZ, depth, width, height, dir, mat, netMat, goalLineMat) {
-    // Both the vertical wall AND the slanted wall are drawn as proper
-    // closed 4-edge faces in 3D:
-    //
-    //   VERTICAL face (outer edge of field)
-    //     - 2 vertical posts, 1 crossbar at y=h, 1 bottom at y=0
-    //
-    //   SLANTED face (midfield side)
-    //     - 2 diagonal posts going from (backBotX, 0) to (backTopX, h)
-    //     - 1 slant bottom rail at y=0 at x=backBotX
-    //     - 1 slant top rail at y=h at x=backTopX
-    //
-    //   Top and bottom connecting rails between the two faces (the roof
-    //   slab and the ground slab of the prism) — drawn grey.
     const halfD = depth / 2;
     const halfW = width / 2;
-    const h = height;
-    // dir = +1: vertical face on +x side (goal's outer edge for RIGHT goal)
-    // dir = -1: vertical face on -x side (goal's outer edge for LEFT goal)
-    const vertX = centerX + dir * halfD;          // vertical wall x
-    const slantBotX = centerX - dir * halfD;       // slant's bottom edge x
+    // dir = +1: back wall on +x side (RIGHT goal); dir = -1: back wall on -x (LEFT).
+    const vertX = centerX + dir * halfD;
+    const backTopX = centerX - dir * halfD;
+    const frontWallX = backTopX - dir * halfD;
+    // Empirical front-post offsets: make the front wall look perpendicular
+    // in screen space under the current 55° camera tilt.
+    const postABotX = vertX - dir * 58;
+    const postBBotX = vertX - dir * 52;
     const zMin = centerZ - halfW;
     const zMax = centerZ + halfW;
     const P = (x, y, z) => new THREE.Vector3(x, y, z);
 
-    // Back wall (slanted): full diagonals from (vertX, 0) at the outer-edge
-    // ground up to (backTopX, h), plus top crossbar and bottom rail.
-    const backTopX = slantBotX;
+    // Back wall (slanted): diagonals + top crossbar + bottom rail.
     const backGeom = new THREE.BufferGeometry().setFromPoints([
-      P(vertX, 0, zMin), P(backTopX, h, zMin),
-      P(vertX, 0, zMax), P(backTopX, h, zMax),
-      P(backTopX, h, zMin), P(backTopX, h, zMax),
+      P(vertX, 0, zMin), P(backTopX, height, zMin),
+      P(vertX, 0, zMax), P(backTopX, height, zMax),
+      P(backTopX, height, zMin), P(backTopX, height, zMax),
       P(vertX, 0, zMin), P(vertX, 0, zMax),
     ]);
-    this.scene.add(new THREE.LineSegments(backGeom, mat));
+    this._addStatic(new THREE.LineSegments(backGeom, mat), backGeom);
 
-    // Front mouth: posts offset from vertX along the goal depth axis by
-    // 58/52 — empirical values that make the wall look perpendicular in
-    // screen space under the current camera tilt.
-    const frontWallX = slantBotX - dir * halfD;
-    const postABotX = vertX - dir * 58;
-    const postBBotX = vertX - dir * 52;
+    // Front mouth: 2 posts + top crossbar.
     const frontGeom = new THREE.BufferGeometry().setFromPoints([
-      P(postABotX, 0, zMin), P(frontWallX, h, zMin),
-      P(postBBotX, 0, zMax), P(frontWallX, h, zMax),
-      P(frontWallX, h, zMin), P(frontWallX, h, zMax),
+      P(postABotX, 0, zMin), P(frontWallX, height, zMin),
+      P(postBBotX, 0, zMax), P(frontWallX, height, zMax),
+      P(frontWallX, height, zMin), P(frontWallX, height, zMax),
     ]);
-    this.scene.add(new THREE.LineSegments(frontGeom, mat));
+    this._addStatic(new THREE.LineSegments(frontGeom, mat), frontGeom);
 
-    // Connecting rails: top (frontWallX → slantBotX) and bottom
-    // (vertX → post-bottom on each side).
+    // Connecting rails: top (front↔back) and bottom (vertX↔post-bottom).
     const railGeom = new THREE.BufferGeometry().setFromPoints([
-      P(frontWallX, h, zMin), P(slantBotX, h, zMin),
-      P(frontWallX, h, zMax), P(slantBotX, h, zMax),
+      P(frontWallX, height, zMin), P(backTopX, height, zMin),
+      P(frontWallX, height, zMax), P(backTopX, height, zMax),
       P(vertX, 0, zMin), P(postABotX, 0, zMin),
       P(vertX, 0, zMax), P(postBBotX, 0, zMax),
     ]);
-    this.scene.add(new THREE.LineSegments(railGeom, mat));
+    this._addStatic(new THREE.LineSegments(railGeom, mat), railGeom);
 
-    // Net: a dull grid overlay on the 4 closed surfaces (back, top, both
-    // sides) signalling "ball stops here". Front mouth is intentionally
-    // left open.
+    // Net grid on the 4 closed surfaces (back, top, left side, right side).
+    // Front mouth stays open. Bilinear grid — nU lines along A→B / D→C and
+    // nV lines along A→D / B→C.
     const netPoints = [];
     const pushNet = (A, B, C, D, nU, nV) => {
-      // A=bottom-start, B=bottom-end, C=top-end, D=top-start. Bilinear
-      // grid: nU lines along A→B/D→C direction, nV lines along A→D/B→C.
       for (let i = 1; i < nU; i++) {
         const t = i / nU;
-        const p0 = P(
-          A.x + (B.x - A.x) * t,
-          A.y + (B.y - A.y) * t,
-          A.z + (B.z - A.z) * t
+        netPoints.push(
+          P(A.x + (B.x - A.x) * t, A.y + (B.y - A.y) * t, A.z + (B.z - A.z) * t),
+          P(D.x + (C.x - D.x) * t, D.y + (C.y - D.y) * t, D.z + (C.z - D.z) * t),
         );
-        const p1 = P(
-          D.x + (C.x - D.x) * t,
-          D.y + (C.y - D.y) * t,
-          D.z + (C.z - D.z) * t
-        );
-        netPoints.push(p0, p1);
       }
       for (let j = 1; j < nV; j++) {
         const t = j / nV;
-        const p0 = P(
-          A.x + (D.x - A.x) * t,
-          A.y + (D.y - A.y) * t,
-          A.z + (D.z - A.z) * t
+        netPoints.push(
+          P(A.x + (D.x - A.x) * t, A.y + (D.y - A.y) * t, A.z + (D.z - A.z) * t),
+          P(B.x + (C.x - B.x) * t, B.y + (C.y - B.y) * t, B.z + (C.z - B.z) * t),
         );
-        const p1 = P(
-          B.x + (C.x - B.x) * t,
-          B.y + (C.y - B.y) * t,
-          B.z + (C.z - B.z) * t
-        );
-        netPoints.push(p0, p1);
       }
     };
-
-    // Back wall (slanted): vertX floor → backTopX roof, across full z.
-    pushNet(
-      P(vertX, 0, zMin),
-      P(vertX, 0, zMax),
-      P(backTopX, h, zMax),
-      P(backTopX, h, zMin),
-      6, 4
-    );
-    // Top slab: frontWallX → backTopX along x, zMin → zMax along z.
-    pushNet(
-      P(frontWallX, h, zMin),
-      P(backTopX, h, zMin),
-      P(backTopX, h, zMax),
-      P(frontWallX, h, zMax),
-      4, 6
-    );
-    // Side at zMin: trapezoid post-bottom → vert-bottom → back-top → front-top.
-    pushNet(
-      P(postABotX, 0, zMin),
-      P(vertX, 0, zMin),
-      P(backTopX, h, zMin),
-      P(frontWallX, h, zMin),
-      5, 4
-    );
-    // Side at zMax: same but on the far side.
-    pushNet(
-      P(postBBotX, 0, zMax),
-      P(vertX, 0, zMax),
-      P(backTopX, h, zMax),
-      P(frontWallX, h, zMax),
-      5, 4
-    );
+    pushNet(P(vertX, 0, zMin),      P(vertX, 0, zMax),      P(backTopX, height, zMax),   P(backTopX, height, zMin),   6, 4); // back
+    pushNet(P(frontWallX, height, zMin), P(backTopX, height, zMin), P(backTopX, height, zMax), P(frontWallX, height, zMax), 4, 6); // top
+    pushNet(P(postABotX, 0, zMin),  P(vertX, 0, zMin),      P(backTopX, height, zMin),   P(frontWallX, height, zMin), 5, 4); // side zMin
+    pushNet(P(postBBotX, 0, zMax),  P(vertX, 0, zMax),      P(backTopX, height, zMax),   P(frontWallX, height, zMax), 5, 4); // side zMax
 
     const netGeom = new THREE.BufferGeometry().setFromPoints(netPoints);
-    this.scene.add(new THREE.LineSegments(netGeom, netMat));
+    this._addStatic(new THREE.LineSegments(netGeom, netMat), netGeom);
 
-    // Goal line: dashed segment connecting the bottom-front points of the
-    // mouth, marking the scoring threshold. Emitted as discrete short
-    // LineSegments (dash + gap) so it reads as "_ _ _".
-    const lineA = P(postABotX, 0, zMin);
-    const lineB = P(postBBotX, 0, zMax);
+    // Goal line: dashed "_ _ _" along the bottom-front of the mouth.
     const dashCount = 8;
     const dashRatio = 0.4;
+    const axBot = postABotX, azBot = zMin;
+    const bxBot = postBBotX, bzBot = zMax;
+    const dxBot = bxBot - axBot;
+    const dzBot = bzBot - azBot;
     const goalLinePoints = [];
     for (let i = 0; i < dashCount; i++) {
       const t0 = i / dashCount;
       const t1 = t0 + dashRatio / dashCount;
       goalLinePoints.push(
-        P(
-          lineA.x + (lineB.x - lineA.x) * t0,
-          0,
-          lineA.z + (lineB.z - lineA.z) * t0
-        ),
-        P(
-          lineA.x + (lineB.x - lineA.x) * t1,
-          0,
-          lineA.z + (lineB.z - lineA.z) * t1
-        )
+        P(axBot + dxBot * t0, 0, azBot + dzBot * t0),
+        P(axBot + dxBot * t1, 0, azBot + dzBot * t1),
       );
     }
     const goalLineGeom = new THREE.BufferGeometry().setFromPoints(goalLinePoints);
-    this.scene.add(new THREE.LineSegments(goalLineGeom, goalLineMat));
+    this._addStatic(new THREE.LineSegments(goalLineGeom, goalLineMat), goalLineGeom);
   }
 
+  /* ── Stickman & pool ────────────────────────────────────── */
+
   _addStickman(player, color, tick) {
-    // 6-glyph stickman billboarded so the parts always stack on-screen
-    // regardless of camera tilt. All parts share the same world anchor;
-    // their relative positions come from per-mesh view-space offsets:
-    //
-    //     o           head
-    //    /|\          arm-L, body, arm-R
-    //    / \          leg-L, leg-R   (walking anim alternates)
-    //
-    const x = player.x + 9; // center on player anchor
+    // 6-glyph figure, view-space stacked so parts always align on screen:
+    //     o       head
+    //    /|\      arm-L, body, arm-R
+    //    / \      legs (walk animation alternates)
+    const x = player.x + 9;
     const z = player.y;
     const s = STICKMAN_GLYPH_SIZE;
 
-    // Head
-    this._placeGlyph('o', x, 0, z, s, color, 0, s * 1.4);
+    this._placeGlyph(this._glyphO,         x, 0, z, s, color, 0,          s * 1.4);
+    this._placeGlyph(this._glyphSlash,     x, 0, z, s, color, -s * 0.55,  s * 0.6);
+    this._placeGlyph(this._glyphPipe,      x, 0, z, s, color, 0,          s * 0.6);
+    this._placeGlyph(this._glyphBackslash, x, 0, z, s, color, s * 0.55,   s * 0.6);
 
-    // Arms + body row
-    this._placeGlyph('/', x, 0, z, s, color, -s * 0.55, s * 0.6);
-    this._placeGlyph('|', x, 0, z, s, color, 0, s * 0.6);
-    this._placeGlyph('\\', x, 0, z, s, color, s * 0.55, s * 0.6);
-
-    // Legs row — walking animation when player is moving
-    const speed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
-    const moving = speed > 0.3;
-    const walkFrame = moving ? Math.floor(tick / 6) % 2 : 0;
+    const speedSq = player.vx * player.vx + player.vy * player.vy;
+    const walkFrame = speedSq > WALK_ANIM_SPEED_THRESHOLD_SQ ? Math.floor(tick / 6) % 2 : 0;
     if (walkFrame === 0) {
-      // Legs spread
-      this._placeGlyph('/', x, 0, z, s, color, -s * 0.28, -s * 0.25);
-      this._placeGlyph('\\', x, 0, z, s, color, s * 0.28, -s * 0.25);
+      this._placeGlyph(this._glyphSlash,     x, 0, z, s, color, -s * 0.28, -s * 0.25);
+      this._placeGlyph(this._glyphBackslash, x, 0, z, s, color,  s * 0.28, -s * 0.25);
     } else {
-      // Legs mid-stride (vertical)
-      this._placeGlyph('|', x, 0, z, s, color, -s * 0.16, -s * 0.25);
-      this._placeGlyph('|', x, 0, z, s, color, s * 0.16, -s * 0.25);
+      this._placeGlyph(this._glyphPipe, x, 0, z, s, color, -s * 0.16, -s * 0.25);
+      this._placeGlyph(this._glyphPipe, x, 0, z, s, color,  s * 0.16, -s * 0.25);
     }
   }
 
-  _resetPool() {
-    // Hide every mesh — any we want active will be re-shown in _placeGlyph
-    for (let i = 0; i < this._poolCursor; i++) {
-      this._pool[i].visible = false;
-    }
-    this._poolCursor = 0;
-  }
-
-  _placeGlyph(char, x, y, z, scale, color, viewOffsetX = 0, viewOffsetY = 0) {
-    const geom = this._glyphGeometries.get(char);
-    if (!geom) return;
-    if (this._poolCursor >= this._pool.length) return;
+  _placeGlyph(geom, x, y, z, scale, color, viewOffsetX, viewOffsetY) {
+    if (!geom || this._poolCursor >= this._pool.length) return;
     const mesh = this._pool[this._poolCursor++];
     mesh.geometry = geom;
-    // Apply Z_STRETCH so stickmen/ball positions match the stretched
-    // field geometry drawn by _buildFieldLines.
     mesh.position.set(x, y, z * Z_STRETCH);
     mesh.scale.set(scale, scale, 1);
-    const col = mesh.material.uniforms.uColor.value;
-    col.set(color[0], color[1], color[2]);
-    mesh.material.uniforms.uViewOffset.value.set(viewOffsetX, viewOffsetY);
+    mesh._uColor.set(color[0], color[1], color[2]);
+    mesh._uViewOffset.set(viewOffsetX, viewOffsetY);
     mesh.visible = true;
   }
 }
 
-/* ── Color helpers ─────────────────────────────────────── */
+/* ── Helpers ───────────────────────────────────────────────── */
 
 function rgb(hex) {
   const h = hex.replace('#', '');
@@ -593,20 +454,19 @@ function rgb(hex) {
   ];
 }
 
-function staminaColor(stamina) {
-  const s = Math.max(0, Math.min(1, stamina));
+function staminaColorInto(stamina, out) {
+  const s = stamina < 0 ? 0 : (stamina > 1 ? 1 : stamina);
   if (s >= 0.5) {
     const t = (s - 0.5) * 2;
-    return lerp(COLOR_AMBER, COLOR_GREEN, t);
+    lerpInto(COLOR_AMBER, COLOR_GREEN, t, out);
+    return;
   }
   const t = s * 2;
-  return lerp(COLOR_RED, COLOR_AMBER, t);
+  lerpInto(COLOR_RED, COLOR_AMBER, t, out);
 }
 
-function lerp(a, b, t) {
-  return [
-    a[0] + (b[0] - a[0]) * t,
-    a[1] + (b[1] - a[1]) * t,
-    a[2] + (b[2] - a[2]) * t,
-  ];
+function lerpInto(a, b, t, out) {
+  out[0] = a[0] + (b[0] - a[0]) * t;
+  out[1] = a[1] + (b[1] - a[1]) * t;
+  out[2] = a[2] + (b[2] - a[2]) * t;
 }

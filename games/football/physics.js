@@ -314,32 +314,57 @@ function applyRegenAndExhaustion(p) {
 
 /* ── Action dispatch ─────────────────────────────────────────── */
 
-// Action layout: [moveX, moveY, kick, kickDx, kickDy, kickDz, kickPower, push, pushPower]
-function applyAction(state, p, out) {
-  // In-flight kicks must always tick forward to completion — even if the
-  // player became exhausted during the kick. Otherwise the animation freezes
-  // for the entire exhaustion window and new kicks are locked out.
-  if (advanceKick(state, p)) return;
+// Action vector layout — 9 floats, same order as nn.js output. Exported
+// so fallback.js, tests, and any future consumer can build/read the
+// vector by name instead of by magic index.
+export const ACTION_MOVE_X     = 0;
+export const ACTION_MOVE_Y     = 1;
+export const ACTION_KICK_GATE  = 2;
+export const ACTION_KICK_DX    = 3;
+export const ACTION_KICK_DY    = 4;
+export const ACTION_KICK_DZ    = 5;
+export const ACTION_KICK_POWER = 6;
+export const ACTION_PUSH_GATE  = 7;
+export const ACTION_PUSH_POWER = 8;
+export const NN_OUTPUT_SIZE    = 9;
 
-  // Push cooldown decrements unconditionally so a push issued right before
-  // a kick doesn't get frozen at max for the kick's duration.
-  if (p.pushTimer > 0) {
-    p.pushTimer -= TICK_MS;
-    if (p.pushTimer < 0) p.pushTimer = 0;
-    return;
-  }
+/** Tick a push cooldown forward. Returns true if the player is still
+ *  mid-push and should not accept new actions this tick — mirrors
+ *  `advanceKick`'s in-flight-lock contract. */
+function advancePush(p) {
+  if (p.pushTimer <= 0) return false;
+  p.pushTimer -= TICK_MS;
+  if (p.pushTimer < 0) p.pushTimer = 0;
+  return true;
+}
+
+function applyAction(state, p, out) {
+  // In-flight kicks must always tick forward to completion — even if
+  // the player became exhausted during the kick. Otherwise the
+  // animation freezes for the whole exhaustion window and new kicks
+  // are locked out.
+  if (advanceKick(state, p)) return;
+  // Push cooldown decrements unconditionally so a push issued right
+  // before a kick doesn't get frozen at max for the kick's duration.
+  if (advancePush(p)) return;
 
   if (p.exhausted) { p.vx = 0; p.vy = 0; return; }
 
-  applyMovement(state, p, out[0], out[1]);
+  applyMovement(state, p, out[ACTION_MOVE_X], out[ACTION_MOVE_Y]);
 
-  if (out[7] > 0) {
+  if (out[ACTION_PUSH_GATE] > 0) {
     const opp = p === state.p1 ? state.p2 : state.p1;
-    tryPush(state, p, opp, out[8]);
+    tryPush(state, p, opp, out[ACTION_PUSH_POWER]);
   }
 
-  if (out[2] > 0 && canKick(state, p)) {
-    startKick(p, out[3], out[4], out[5], out[6]);
+  if (out[ACTION_KICK_GATE] > 0 && canKick(state, p)) {
+    startKick(
+      p,
+      out[ACTION_KICK_DX],
+      out[ACTION_KICK_DY],
+      out[ACTION_KICK_DZ],
+      out[ACTION_KICK_POWER],
+    );
   }
 }
 

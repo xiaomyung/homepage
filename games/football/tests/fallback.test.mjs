@@ -7,7 +7,15 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createField, createState, createSeededRng, FIELD_HEIGHT } from '../physics.js';
+import {
+  createField,
+  createState,
+  createSeededRng,
+  FIELD_HEIGHT,
+  ACTION_KICK_GATE,
+  ACTION_KICK_DX,
+  ACTION_PUSH_GATE,
+} from '../physics.js';
 import { fallbackAction } from '../fallback.js';
 
 function freshState(seed = 42) {
@@ -66,7 +74,7 @@ test('fallback kicks when ball is within reach on the ground', () => {
   state.ball.vx = 0;
 
   const out = fallbackAction(state, 'p1');
-  assert.equal(out[2], 1, `kick should fire (out[2]); full out=${JSON.stringify(out)}`);
+  assert.equal(out[ACTION_KICK_GATE], 1, `kick should fire; full out=${JSON.stringify(out)}`);
 });
 
 test('fallback does not kick when ball is far away', () => {
@@ -77,7 +85,7 @@ test('fallback does not kick when ball is far away', () => {
   state.ball.z = 0;
 
   const out = fallbackAction(state, 'p1');
-  assert.equal(out[2], -1, 'kick should not fire when ball is distant');
+  assert.equal(out[ACTION_KICK_GATE], -1, 'kick should not fire when ball is distant');
 });
 
 test('p1 (left side) kicks toward the right goal', () => {
@@ -89,7 +97,7 @@ test('p1 (left side) kicks toward the right goal', () => {
   state.ball.z = 0;
 
   const out = fallbackAction(state, 'p1');
-  assert.ok(out[3] > 0, `p1 kickDx should point right, got ${out[3]}`);
+  assert.ok(out[ACTION_KICK_DX] > 0, `p1 kickDx should point right, got ${out[ACTION_KICK_DX]}`);
 });
 
 test('p2 (right side) kicks toward the left goal', () => {
@@ -101,7 +109,7 @@ test('p2 (right side) kicks toward the left goal', () => {
   state.ball.z = 0;
 
   const out = fallbackAction(state, 'p2');
-  assert.ok(out[3] < 0, `p2 kickDx should point left, got ${out[3]}`);
+  assert.ok(out[ACTION_KICK_DX] < 0, `p2 kickDx should point left, got ${out[ACTION_KICK_DX]}`);
 });
 
 /* ── Push (deterministic, fix for imitation teaching) ───────── */
@@ -114,7 +122,7 @@ test('fallback pushes when opponent is adjacent', () => {
   state.p2.y = FIELD_HEIGHT / 2;
 
   const out = fallbackAction(state, 'p1');
-  assert.equal(out[7], 1, `push should fire (out[7]); full out=${JSON.stringify(out)}`);
+  assert.equal(out[ACTION_PUSH_GATE], 1, `push should fire; full out=${JSON.stringify(out)}`);
 });
 
 test('fallback does not push when opponent is far', () => {
@@ -124,7 +132,7 @@ test('fallback does not push when opponent is far', () => {
   state.p1.y = state.p2.y = FIELD_HEIGHT / 2;
 
   const out = fallbackAction(state, 'p1');
-  assert.equal(out[7], -1, 'push should not fire when opponent is far');
+  assert.equal(out[ACTION_PUSH_GATE], -1, 'push should not fire when opponent is far');
 });
 
 /* ── Determinism (the whole point) ──────────────────────────── */

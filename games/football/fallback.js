@@ -23,6 +23,16 @@ import {
   KICK_REACH_Y,
   KICK_FACE_TOL,
   PUSH_FACE_TOL,
+  NN_OUTPUT_SIZE,
+  ACTION_MOVE_X,
+  ACTION_MOVE_Y,
+  ACTION_KICK_GATE,
+  ACTION_KICK_DX,
+  ACTION_KICK_DY,
+  ACTION_KICK_DZ,
+  ACTION_KICK_POWER,
+  ACTION_PUSH_GATE,
+  ACTION_PUSH_POWER,
   facingToward,
 } from './physics.js?v=46';
 
@@ -78,15 +88,15 @@ export function fallbackAction(state, which) {
   const adjacent = inPushRange
     && facingToward(p, oppCenter, oppZ, PUSH_FACE_TOL);
 
-  return [
-    moveX,
-    moveY,
-    canKickNow ? 1 : -1,
-    kickDirX,
-    0,
-    KICK_DZ,
-    KICK_POWER_NORM,
-    adjacent ? 1 : -1,
-    PUSH_POWER_NORM,
-  ];
+  const out = new Array(NN_OUTPUT_SIZE);
+  out[ACTION_MOVE_X]     = moveX;
+  out[ACTION_MOVE_Y]     = moveY;
+  out[ACTION_KICK_GATE]  = canKickNow ? 1 : -1;
+  out[ACTION_KICK_DX]    = kickDirX;
+  out[ACTION_KICK_DY]    = 0;
+  out[ACTION_KICK_DZ]    = KICK_DZ;
+  out[ACTION_KICK_POWER] = KICK_POWER_NORM;
+  out[ACTION_PUSH_GATE]  = adjacent ? 1 : -1;
+  out[ACTION_PUSH_POWER] = PUSH_POWER_NORM;
+  return out;
 }

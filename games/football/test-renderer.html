@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>renderer diagnostic</title>
+<link rel="stylesheet" href="../../style.css?v=132">
+<style>
+  body {
+    padding: 1rem 2rem 4rem;
+  }
+  h1, h2 {
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    margin: 1.2rem 0 0.4rem;
+    letter-spacing: 0.02em;
+  }
+  .note {
+    color: var(--text-dim);
+    font-size: 0.55rem;
+    margin-bottom: 0.6rem;
+  }
+  .strip {
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 0.4rem;
+    margin-bottom: 0.6rem;
+  }
+  canvas.strip-canvas {
+    display: block;
+    width: 100%;
+    height: 220px;
+    background: #000;
+  }
+  .row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.6rem;
+  }
+  .row .strip { margin-bottom: 0; }
+  .row canvas.strip-canvas { height: 180px; }
+  .log {
+    font-family: var(--mono);
+    font-size: 0.55rem;
+    color: var(--text-dim);
+    white-space: pre;
+    margin: 0.2rem 0 0.6rem;
+  }
+  .log .ok   { color: var(--green); }
+  .log .err  { color: var(--red); }
+</style>
+</head>
+<body>
+
+<h1>~/football/renderer diagnostic</h1>
+<div class="note">
+  Visual smoke tests for renderer.js. Each strip instantiates an
+  independent Renderer pointing at a shared physics state it
+  controls directly — nothing talks to the broker. Use this page
+  to verify stickman animation poses, particles, shadows, and
+  camera behaviour after renderer changes.
+</div>
+<div class="log" id="boot-log"></div>
+
+<h2>full scene (live tick)</h2>
+<div class="note">Default showcase camera. Physics steps every frame, both players + ball animate.</div>
+<div class="strip"><canvas class="strip-canvas" id="s-live"></canvas></div>
+
+<h2>stickman poses (amplitude = 1.0, varying phase)</h2>
+<div class="note">Each frame pins a different walk-cycle phase so arms and legs are held at a specific swing angle.</div>
+<div class="row">
+  <div class="strip"><canvas class="strip-canvas" id="s-pose-0"></canvas></div>
+  <div class="strip"><canvas class="strip-canvas" id="s-pose-1"></canvas></div>
+  <div class="strip"><canvas class="strip-canvas" id="s-pose-2"></canvas></div>
+</div>
+
+<h2>push (scripted curve)</h2>
+<div class="note">pushTimer is forced non-zero so the scripted arm / pivot / body-dip / hop curve drives the pose.</div>
+<div class="row">
+  <div class="strip"><canvas class="strip-canvas" id="s-push-0"></canvas></div>
+  <div class="strip"><canvas class="strip-canvas" id="s-push-1"></canvas></div>
+  <div class="strip"><canvas class="strip-canvas" id="s-push-2"></canvas></div>
+</div>
+
+<h2>celebration</h2>
+<div class="note">pauseState='celebrate' + goalScorer set to each player in turn.</div>
+<div class="strip"><canvas class="strip-canvas" id="s-celeb"></canvas></div>
+
+<h2>airborne ball + bounce particles</h2>
+<div class="note">Ball held aloft with a synthetic bounce event injected each tick so the particle system fires continuously.</div>
+<div class="strip"><canvas class="strip-canvas" id="s-ball-air"></canvas></div>
+
+<h2>goal burst</h2>
+<div class="note">Injected 'goal' event spawns the full ~42-particle burst out of the left goal mouth.</div>
+<div class="strip"><canvas class="strip-canvas" id="s-goal-burst"></canvas></div>
+
+<script type="module">
+import { Renderer } from './renderer.js?v=84';
+import {
+  createField,
+  createState,
+  createSeededRng,
+  tick,
+  FIELD_WIDTH_REF,
+} from './physics.js?v=42';
+
+const log = document.getElementById('boot-log');
+function write(cls, msg) {
+  const span = document.createElement('span');
+  span.className = cls;
+  span.textContent = msg + '\n';
+  log.appendChild(span);
+}
+
+function makeState() {
+  const field = createField(FIELD_WIDTH_REF);
+  const state = createState(field, createSeededRng(7));
+  state.graceFrames = 0;
+  state.recordEvents = true;
+  return state;
+}
+
+function mountStrip(id) {
+  const canvas = document.getElementById(id);
+  const r = new Renderer(canvas);
+  r.autoResize();
+  return r;
+}
+
+function safeDraw(r, state) {
+  try { r.renderState(state); }
+  catch (e) { write('err', `render error: ${e.message}`); }
+}
+
+try {
+  // ── Strip 1: live showcase ───────────────────────────────
+  (() => {
+    const r = mountStrip('s-live');
+    const state = makeState();
+    let t = 0;
+    function loop() {
+      tick(state, null, null);
+      safeDraw(r, state);
+      if (t++ < 10000) requestAnimationFrame(loop);
+    }
+    loop();
+  })();
+
+  // ── Strip 2: 3 stickman walk-cycle phases ───────────────
+  const poses = [
+    { id: 's-pose-0', phase: 0,            label: 'phase=0' },
+    { id: 's-pose-1', phase: Math.PI / 2,  label: 'phase=π/2' },
+    { id: 's-pose-2', phase: Math.PI,      label: 'phase=π' },
+  ];
+  for (const pose of poses) {
+    const r = mountStrip(pose.id);
+    const state = makeState();
+    // Give the animation a velocity hint so amplitude ramps up in
+    // the LPF, then force the final phase.
+    state.p1.x = 200; state.p1.y = 27;
+    state.p2.x = 700; state.p2.y = 27;
+    for (let i = 0; i < 20; i++) tick(state, null, null);
+    // Now override anim state after one final render call
+    r.renderState(state);
+    const a1 = r._animByPlayer.get(state.p1);
+    const a2 = r._animByPlayer.get(state.p2);
+    if (a1) { a1.amplitude = 1; a1.phase = pose.phase; a1.tilt = -0.25; a1.pushing = 0; a1.celebrate = 0; }
+    if (a2) { a2.amplitude = 1; a2.phase = pose.phase; a2.tilt =  0.25; a2.pushing = 0; a2.celebrate = 0; }
+    r.renderState(state);
+  }
+
+  // ── Strip 3: push animation at 3 phases along the curve ─
+  const pushFracs = [0.15, 0.45, 0.80];
+  for (let i = 0; i < 3; i++) {
+    const r = mountStrip('s-push-' + i);
+    const state = makeState();
+    state.p1.x = 200; state.p1.y = 27;
+    state.p2.x = 700; state.p2.y = 27;
+    state.p1.pushTimer = 10;
+    state.p2.pushTimer = 10;
+    for (let k = 0; k < 5; k++) tick(state, null, null);
+    r.renderState(state);
+    const a1 = r._animByPlayer.get(state.p1);
+    const a2 = r._animByPlayer.get(state.p2);
+    const prog = pushFracs[i] * 18;  // PUSH_TOTAL_TICKS
+    if (a1) { a1.pushProgress = prog; a1.pushing = 1; }
+    if (a2) { a2.pushProgress = prog; a2.pushing = 1; }
+    r.renderState(state);
+  }
+
+  // ── Strip 4: celebration ─────────────────────────────────
+  (() => {
+    const r = mountStrip('s-celeb');
+    const state = makeState();
+    state.p1.x = 200; state.p1.y = 27;
+    state.p2.x = 700; state.p2.y = 27;
+    state.pauseState = 'celebrate';
+    state.goalScorer = state.p1;
+    let t = 0;
+    function loop() {
+      // Don't call tick — it advances pauseState. Just render the
+      // frozen celebrate state repeatedly so the jumping-jack phase
+      // keeps cycling through the LPF.
+      state.tick++;
+      safeDraw(r, state);
+      if (t++ < 10000) requestAnimationFrame(loop);
+    }
+    loop();
+  })();
+
+  // ── Strip 5: airborne ball with continuous bounce particles ─
+  (() => {
+    const r = mountStrip('s-ball-air');
+    const state = makeState();
+    state.p1.x = 100; state.p1.y = 5;
+    state.p2.x = 800; state.p2.y = 50;
+    state.ball.x = 450; state.ball.y = 27; state.ball.z = 40;
+    state.ball.vx = 2; state.ball.vy = 0; state.ball.vz = 0;
+    state.ball.frozen = false;
+    let t = 0;
+    function loop() {
+      tick(state, null, null);
+      // Inject a synthetic bounce every few ticks so the particle
+      // system keeps firing.
+      if ((t % 8) === 0) {
+        state.events.push({
+          type: 'ball_bounce',
+          axis: 'z', force: 4,
+          x: state.ball.x, y: state.ball.y, z: state.ball.z,
+        });
+      }
+      safeDraw(r, state);
+      if (t++ < 10000) requestAnimationFrame(loop);
+    }
+    loop();
+  })();
+
+  // ── Strip 6: goal burst ──────────────────────────────────
+  (() => {
+    const r = mountStrip('s-goal-burst');
+    const state = makeState();
+    state.p1.x = 80;  state.p1.y = 20;
+    state.p2.x = 820; state.p2.y = 35;
+    let t = 0;
+    let injected = false;
+    function loop() {
+      if (!injected) {
+        state.events.push({ type: 'goal', scorer: 'p2' });
+        injected = true;
+      }
+      tick(state, null, null);
+      safeDraw(r, state);
+      // Re-inject every ~120 frames so the burst loops for repeated inspection
+      if (t > 120 && (t % 120) === 0) {
+        state.events.push({ type: 'goal', scorer: 'p2' });
+      }
+      if (t++ < 10000) requestAnimationFrame(loop);
+    }
+    loop();
+  })();
+
+  write('ok', 'all strips mounted');
+} catch (e) {
+  write('err', `boot failed: ${e.message}`);
+  console.error(e);
+}
+</script>
+
+</body>
+</html>

@@ -107,6 +107,11 @@ async function main() {
   let followCamCtl = null;
   freeCamCtl = createFreeCamToggle({ renderer, onChange: () => followCamCtl?.refresh() });
   followCamCtl = createFollowCamToggle({ renderer, onChange: () => freeCamCtl?.refresh() });
+  // Default the page to follow-ball mode on every fresh load. The
+  // showcase looks best when the camera tracks the ball — the static
+  // wide-angle default made the action feel distant.
+  renderer.setFollowCam(true);
+  followCamCtl.refresh();
   // The reset button hard-reloads the page after the broker restarts,
   // so no onReset callback is needed — the showcase rebuilds from
   // scratch on the new page load.

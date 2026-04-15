@@ -1228,7 +1228,7 @@ export const NN_INPUT_SIZE = 20;
  * and fitness selection silently picks up a bias. Keep both call
  * sites pointed at this single source of truth.
  */
-export const NN_ACTION_STRIDE = 2;
+export const NN_ACTION_STRIDE = 3;
 
 /**
  * Build the NN input vector for one player, normalized to [-1, 1].

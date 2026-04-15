@@ -25,6 +25,7 @@ import {
   createSeededRng,
   tick as physicsTick,
   buildInputs,
+  TICK_MS,
 } from './physics.js?v=33';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
@@ -40,7 +41,10 @@ import {
 } from './ui.js';
 
 const API_BASE = '/api/football';
-const MAX_SHOWCASE_TICKS = 2000;  // safety limit if a match stalls
+// Hard safety limit — a stalled match still times out even if the config
+// slider was pushed past this. Real match length comes from the config
+// controls via getMatchDurationMs().
+const MAX_SHOWCASE_TICKS = 4000;
 
 /* ── Bootstrap ────────────────────────────────────────── */
 
@@ -159,7 +163,10 @@ function frame() {
   if (!currentMatch) return;
   const { state, p1Brain, p2Brain } = currentMatch;
 
-  if (state.matchOver || state.tick > MAX_SHOWCASE_TICKS) {
+  const matchDurationMs = configControls?.getMatchDurationMs() ?? 30000;
+  const matchDurationTicks = Math.ceil(matchDurationMs / TICK_MS);
+
+  if (state.matchOver || state.tick >= matchDurationTicks || state.tick > MAX_SHOWCASE_TICKS) {
     nextShowcase();
     return;
   }
@@ -181,7 +188,10 @@ function frame() {
   physicsTick(state, p1Action, p2Action);
 
   scoreboard.setScore(state.scoreL, state.scoreR);
-  scoreboard.setTimer((state.tick * 16) / 1000);
+  scoreboard.setTimer(
+    (state.tick * TICK_MS) / 1000,
+    matchDurationMs / 1000,
+  );
   renderer.renderState(state);
 }
 

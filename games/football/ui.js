@@ -40,11 +40,15 @@ export function createScoreboard() {
     setScore(scoreL, scoreR) {
       el.score.textContent = `${scoreL} — ${scoreR}`;
     },
-    setTimer(seconds) {
-      const m = Math.floor(seconds / 60);
-      const s = Math.floor(seconds % 60);
-      el.timer.textContent =
-        `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    setTimer(seconds, totalSeconds) {
+      const fmt = (t) => {
+        const m = Math.floor(t / 60);
+        const s = Math.floor(t % 60);
+        return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+      };
+      el.timer.textContent = totalSeconds != null
+        ? `${fmt(seconds)} / ${fmt(totalSeconds)}`
+        : fmt(seconds);
     },
   };
 }
@@ -366,6 +370,10 @@ export function createConfigControls({ apiBase }) {
 
   return {
     getWorkerCount: () => parseInt(controls.workers.input.value, 10),
+    getMatchDurationMs: () => {
+      const v = parseInt(controls.duration.input.value, 10);
+      return Number.isFinite(v) && v > 0 ? v : 30000;
+    },
     onWorkerCountChange: (fn) => workerChangeListeners.push(fn),
   };
 }

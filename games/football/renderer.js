@@ -798,25 +798,20 @@ export class Renderer {
     this._addArc(w / 2, midZ, centerR, centerR, 0, TWO_PI, 48, mutedMat);
     this._addArc(w / 2, midZ, centerR * 0.06, centerR * 0.06, 0, TWO_PI, 12, mutedMat);
 
-    // Penalty arcs — half-ellipses whose chord is the goal mouth (z-axis
-    // tied to the posts) with the x-semiaxis stretched deeper into the
-    // field. Endpoints pinned to the goalposts at the physics scoring
-    // line so they stay visually locked to the mouth.
     const mouthCenterZ = ((f.goalMouthYMin + f.goalMouthYMax) / 2) * Z_STRETCH;
     const mouthHalfZ   = ((f.goalMouthYMax - f.goalMouthYMin) / 2) * Z_STRETCH;
-    const arcDepth = mouthHalfZ * 2;  // x-semiaxis = 2× the chord half
-    this._addArc(f.goalLineL, mouthCenterZ, arcDepth, mouthHalfZ, -Math.PI / 2, Math.PI / 2, 48, mutedMat);
-    this._addArc(f.goalLineR, mouthCenterZ, arcDepth, mouthHalfZ, Math.PI / 2, 3 * Math.PI / 2, 48, mutedMat);
 
     // Penalty area (18-yard box) — rectangle on the ground in front
     // of each goal, centered on the goal line and extending forward
-    // into the field. 6-yard goal area nested inside. Both boxes are
-    // drawn with the touchline-sized scale, roughly 2× the mouth
-    // y-span wide and extending outward by some depth into the field.
-    const penaltyHalfY = mouthHalfZ * 2.2;          // ~2.2× mouth half
-    const penaltyDepth = mouthHalfZ * 2.0;           // forward into field
-    const goalAreaHalfY = mouthHalfZ * 1.35;
-    const goalAreaDepth = mouthHalfZ * 0.75;
+    // into the field. 6-yard goal area nested inside. Sizes are
+    // tuned so the penalty box fits inside the touchlines of this
+    // (much wider-than-real) mouth/field proportion. The goal area
+    // is slightly wider than the mouth and shallower; the penalty
+    // area is wider still and extends further into the field.
+    const penaltyHalfY  = mouthHalfZ * 1.35;  // fits in half-field (128)
+    const penaltyDepth  = mouthHalfZ * 1.55;
+    const goalAreaHalfY = mouthHalfZ * 1.12;
+    const goalAreaDepth = mouthHalfZ * 0.55;
     const drawBox = (lineX, inward) => {
       // `inward` = +1 for LEFT goal (box extends in +x), -1 for RIGHT.
       const penaltyInX = lineX + inward * penaltyDepth;
@@ -827,10 +822,10 @@ export class Renderer {
       const goalAreaZMax = mouthCenterZ + goalAreaHalfY;
       // Penalty area: 3 sides (back side is the goal line itself).
       const pen = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(lineX,     0, penaltyZMin),
+        new THREE.Vector3(lineX,      0, penaltyZMin),
         new THREE.Vector3(penaltyInX, 0, penaltyZMin),
         new THREE.Vector3(penaltyInX, 0, penaltyZMax),
-        new THREE.Vector3(lineX,     0, penaltyZMax),
+        new THREE.Vector3(lineX,      0, penaltyZMax),
       ]);
       this._addStatic(new THREE.Line(pen, mutedMat), pen);
       // Goal area (smaller nested box).
@@ -845,16 +840,24 @@ export class Renderer {
     drawBox(f.goalLineL, +1);
     drawBox(f.goalLineR, -1);
 
-    // Corner arcs — quarter-circles at the 4 touchline corners,
-    // sweeping from the goal-line-end into the field by a small
-    // radius. `_addArc` takes a parametric sweep with its own angle
-    // convention: angle 0 = +x, π/2 = +z. For a corner at (0, 0)
-    // we want the arc sweeping from (+x, 0) to (0, +z) i.e. 0 → π/2.
-    const cornerR = mouthHalfZ * 0.42;
-    this._addArc(0,      zFar,  cornerR, cornerR, 0,            Math.PI / 2, 12, mutedMat);
-    this._addArc(w,      zFar,  cornerR, cornerR, Math.PI / 2,  Math.PI,     12, mutedMat);
-    this._addArc(w,      zNear, cornerR, cornerR, Math.PI,      3 * Math.PI / 2, 12, mutedMat);
-    this._addArc(0,      zNear, cornerR, cornerR, 3 * Math.PI / 2, TWO_PI,   12, mutedMat);
+    // Penalty arcs — half-circle pinned to the mouth posts, bulging
+    // forward into the field by the same half-radius as their chord
+    // so they stay a compact "D" instead of a stretched oval. The
+    // bulge sits inside the penalty box by design (classic 10-yard
+    // arc tangent to the penalty spot).
+    const penaltyArcDepth = mouthHalfZ * 0.85;
+    this._addArc(f.goalLineL, mouthCenterZ, penaltyArcDepth, mouthHalfZ, -Math.PI / 2, Math.PI / 2, 32, mutedMat);
+    this._addArc(f.goalLineR, mouthCenterZ, penaltyArcDepth, mouthHalfZ, Math.PI / 2, 3 * Math.PI / 2, 32, mutedMat);
+
+    // Corner arcs — tiny quarter-circles at the 4 touchline corners,
+    // sweeping into the field. _addArc uses (x,z) ellipse parameters
+    // with angle 0 = +x, π/2 = +z. For each corner we pick the 90°
+    // sweep that goes "inward" toward the field.
+    const cornerR = mouthHalfZ * 0.12;
+    this._addArc(0, zFar,  cornerR, cornerR, 0,                Math.PI / 2,     12, mutedMat);
+    this._addArc(w, zFar,  cornerR, cornerR, Math.PI / 2,      Math.PI,         12, mutedMat);
+    this._addArc(w, zNear, cornerR, cornerR, Math.PI,          3 * Math.PI / 2, 12, mutedMat);
+    this._addArc(0, zNear, cornerR, cornerR, 3 * Math.PI / 2,  TWO_PI,          12, mutedMat);
 
     const goalWidth = (f.goalMouthYMax - f.goalMouthYMin) * Z_STRETCH;
     const goalHeight = f.goalMouthZMax * 2.25;

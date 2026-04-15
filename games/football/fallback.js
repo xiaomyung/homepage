@@ -21,22 +21,44 @@
  *   [moveX, moveY, kick, kickDx, kickDy, kickDz, kickPower, push, pushPower]
  */
 
-// Ball-prediction horizon for lead-the-target movement
+import {
+  PLAYER_WIDTH,
+  PLAYER_HEIGHT,
+  Z_STRETCH,
+  PUSH_RANGE_X,
+  PUSH_RANGE_Y,
+  KICK_REACH_Y,
+  KICK_FACE_TOL,
+  PUSH_FACE_TOL,
+} from './physics.js?v=45';
+
+// Ball-prediction horizon for lead-the-target movement.
 const AI_PREDICT_FRAMES = 20;
-
-// Push-adjacency ranges — matched to physics.js PUSH_RANGE_X / PUSH_RANGE_Y
-const PUSH_RANGE_X = 30;
-const PUSH_RANGE_Y = 20;
-
-// Ground-kick reach — matched to physics.js canKick(): ball must be within
-// playerWidth in x AND within KICK_REACH_Y_NEAR in y AND near the ground.
-const KICK_REACH_Y_NEAR = 10;
+// Teacher-only ball-height limit — the fallback refuses to kick
+// balls far above the ground; physics.js's canKick is stricter
+// (PLAYER_HEIGHT ≈ 6), but this gives the teacher a slightly wider
+// window to aim for during the predict-ahead phase.
 const KICK_BALL_Z_MAX = 10;
 
-// Constant kick and push powers (deterministic teacher — no variation)
+// Constant kick and push powers (deterministic teacher — no variation).
 const KICK_POWER_NORM = 0.8;
 const KICK_DZ = 0.2; // slight lob
 const PUSH_POWER_NORM = 0.5;
+
+/** Shortest-arc signed difference in (-π, π]. */
+function wrapAngle(a) {
+  while (a > Math.PI) a -= 2 * Math.PI;
+  while (a <= -Math.PI) a += 2 * Math.PI;
+  return a;
+}
+
+/** True iff `p` is pointed at world-space target (wx, wz) within `tol`. */
+function facingToward(p, wx, wz, tol) {
+  const cx = p.x + PLAYER_WIDTH / 2;
+  const cz = (p.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const want = Math.atan2(wz - cz, wx - cx);
+  return Math.abs(wrapAngle(want - p.heading)) < tol;
+}
 
 /**
  * Compute the fallback action vector for one player.
@@ -63,25 +85,35 @@ export function fallbackAction(state, which) {
   const moveX = dx / dist;
   const moveY = dy / dist;
 
-  // Kick if the (current, not predicted) ball is within reach on the ground.
-  // Predicted-position gate would cause the AI to kick at empty air.
+  // Kick if the (current, not predicted) ball is within reach on the
+  // ground AND the player is already facing the ball. The face gate
+  // matches physics.js canKick() — emitting kick=1 while unaligned
+  // would be silently rejected and would confuse the imitation
+  // learner. The fallback's move-toward-ball command drives the
+  // heading into alignment over ~PLAYER_TURN_TICKS ticks, so this is
+  // a "wait until you're lined up, then strike" pattern.
+  const pMidY = p.y + PLAYER_HEIGHT / 2;
   const ballDx = ball.x - center;
-  const ballDy = ball.y - p.y;
-  const canKickNow =
+  const ballDy = ball.y - pMidY;
+  const ballZ  = ball.y * Z_STRETCH;
+  const inKickRange =
     Math.abs(ballDx) < pw &&
-    Math.abs(ballDy) < KICK_REACH_Y_NEAR &&
+    Math.abs(ballDy) < KICK_REACH_Y &&
     ball.z < KICK_BALL_Z_MAX;
+  const canKickNow = inKickRange && facingToward(p, ball.x, ballZ, KICK_FACE_TOL);
 
   // Kick always aims toward the opponent's goal (+1 for left side, -1 for right)
   const kickDirX = p.side === 'left' ? 1 : -1;
 
-  // Push is deterministic: fires whenever the opponent is in hitbox range.
-  // The physics layer's pushTimer cooldown prevents spam, so the fallback can
-  // safely output push=1 continuously without causing weird physics.
+  // Push: fire when the opponent is adjacent AND the player is
+  // facing them. Same rationale as kick — silent gate rejections
+  // would poison the warm-start signal.
   const oppCenter = opp.x + pw / 2;
-  const adjacent =
+  const oppZ      = (opp.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const inPushRange =
     Math.abs(center - oppCenter) < PUSH_RANGE_X &&
     Math.abs(p.y - opp.y) < PUSH_RANGE_Y;
+  const adjacent = inPushRange && facingToward(p, oppCenter, oppZ, PUSH_FACE_TOL);
 
   return [
     moveX,

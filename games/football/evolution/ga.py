@@ -2,7 +2,7 @@
 Football v2 — genetic algorithm and numpy NN forward pass.
 
 Responsibilities:
-  - Represent brains as {weights: np.ndarray[1193], fitness: float, ...}
+  - Represent brains as {weights: np.ndarray[1233], fitness: float, ...}
   - Hybrid fitness computation (goal diff + fallback anchor tournament)
   - Tournament selection (k=5 default)
   - Two-point crossover over flat weight arrays
@@ -13,9 +13,10 @@ Responsibilities:
 Fitness weights are hyperparameters — iterated against local_test.py until
 top_fitness climbs measurably over 10 generations (phase 3 hard gate).
 
-The numpy NN matches the JS nn.js architecture bit-for-bit: 18→20→16→18→9,
-LeakyReLU hidden, tanh output, 1193 total parameters, flat weight layout
-[weights0, biases0, weights1, biases1, ...].
+The numpy NN matches the JS nn.js architecture bit-for-bit: 20→20→16→18→9,
+LeakyReLU hidden, tanh output, 1233 total parameters, flat weight layout
+[weights0, biases0, weights1, biases1, ...]. Inputs 18 and 19 are
+cos/sin of the player's heading.
 """
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ import numpy as np
 
 # ── NN architecture (must match games/football/nn.js) ─────────
 
-ARCH = [18, 20, 16, 18, 9]
+ARCH = [20, 20, 16, 18, 9]
 LEAKY_SLOPE = 0.01
 
 
@@ -246,7 +247,7 @@ def _fresh_brain(weights: np.ndarray) -> dict:
 # ── Numpy NN forward pass ─────────────────────────────────────
 
 def nn_forward(weights: np.ndarray, inputs: np.ndarray) -> np.ndarray:
-    """Run the 18→20→16→18→9 network on one input vector.
+    """Run the 20→20→16→18→9 network on one input vector.
 
     Layout matches nn.js: for each layer, [weights (fan_in * fan_out),
     biases (fan_out)] concatenated. LeakyReLU on hidden layers, tanh on output.

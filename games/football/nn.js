@@ -1,13 +1,14 @@
 /**
  * Football v2 — neural net forward pass.
  *
- * Architecture inherited from v1 (known-good, LeakyReLU+tanh combo fixes
- * saturation; see memory feedback_nn_saturation_fix):
+ * Architecture (LeakyReLU+tanh combo fixes saturation; see memory
+ * feedback_nn_saturation_fix):
  *
- *   Inputs (18) → Hidden 1 (20, LeakyReLU) → Hidden 2 (16, LeakyReLU)
+ *   Inputs (20) → Hidden 1 (20, LeakyReLU) → Hidden 2 (16, LeakyReLU)
  *               → Hidden 3 (18, LeakyReLU) → Output (9, tanh)
  *
- * Total 1193 weights (380 + 336 + 306 + 171).
+ * Total 1233 weights (420 + 336 + 306 + 171). Inputs 18 and 19 are
+ * cos/sin of the player's heading — see physics.js:buildInputs().
  *
  * Forward-pass only. Training is done offline in Python (see
  * evolution/build_warm_start.py) and the resulting weights are serialized
@@ -15,7 +16,7 @@
  */
 
 /** Layer sizes. Changing this invalidates committed warm_start_weights.json. */
-export const ARCH = [18, 20, 16, 18, 9];
+export const ARCH = [20, 20, 16, 18, 9];
 
 /** LeakyReLU slope on the negative side. */
 const LEAKY_SLOPE = 0.01;
@@ -56,7 +57,7 @@ export class NeuralNet {
   /**
    * Run a forward pass. Allocates only the minimum intermediate buffers.
    *
-   * @param {number[]|Float64Array} inputs — 18-float input vector
+   * @param {number[]|Float64Array} inputs — ARCH[0]-float input vector
    * @returns {number[]} 9-float output vector
    */
   forward(inputs) {

@@ -34,13 +34,29 @@ const RESPAWN_DROP_Z = 60;
 
 // Player movement
 export const MAX_PLAYER_SPEED = 10;
-const PLAYER_INERTIA = 0.7;
+// Acceleration cap: limits |Δv| per tick so players can't start/stop
+// instantly. Full speed → stop takes PLAYER_ACCEL_TICKS ticks; a
+// 180° reversal takes 2×. Tuned for ~320 ms at 60 Hz.
+const PLAYER_ACCEL_TICKS = 20;
+const PLAYER_ACCEL = MAX_PLAYER_SPEED / PLAYER_ACCEL_TICKS;
 const MOVE_THRESHOLD = 0.1;
 const MOVE_THRESHOLD_SQ = MOVE_THRESHOLD * MOVE_THRESHOLD;
 const STARTING_GAP = 40;
-const PLAYER_WIDTH = 18;
+export const PLAYER_WIDTH = 18;
 export const PLAYER_HEIGHT = 6;
 const MIN_SPEED_STAMINA = 0.3;
+
+// Heading — angular orientation in world-space (cos(h), sin(h)*Z_STRETCH)
+// is the unit "front" vector of the stickman. Tracks visual motion
+// direction with bounded angular velocity (angular inertia), so a
+// 180° turn takes PLAYER_TURN_TICKS ticks regardless of how fast the
+// NN slams the stick. Also defines which way the player must face to
+// land a kick or a push — see FACE_TOL constants below.
+export const Z_STRETCH = 4.7;  // must match renderer.js Z_STRETCH
+const PLAYER_TURN_TICKS = 20;  // ticks to complete a 180° turn
+const PLAYER_TURN_RATE = Math.PI / PLAYER_TURN_TICKS;
+export const KICK_FACE_TOL = Math.PI / 3;  // 60° cone toward ball
+export const PUSH_FACE_TOL = Math.PI / 3;  // 60° cone toward victim
 
 // Stamina
 const STAMINA_REGEN = 0.005;
@@ -58,22 +74,39 @@ const MIN_KICK_POWER = 0.15;
 const MIN_KICK_STAMINA = 0.2;
 const KICK_NOISE_SCALE = 0.3;
 const KICK_NOISE_VERT = 0.5;
+// Ground-kick reach: foot/leg swings in the (facing, up) plane only,
+// so lateral reach is essentially zero. The allowed ball offset on
+// the depth axis is one body-half + ball radius + a small slack for
+// animation smoothing. Expressed as center-to-center in the canKick
+// check below (see the mid-Y formula, not the legacy top-Y version).
+const KICK_REACH_SLACK_Y = 1.5;
 const KICK_REACH_X_MULT = 1.0;
-const KICK_REACH_Y = 16;
+export const KICK_REACH_Y = PLAYER_HEIGHT / 2 + BALL_RADIUS + KICK_REACH_SLACK_Y;
+// Airkick has a slightly more generous depth tolerance — the leap
+// lets the player tilt into the ball a touch past the standing footprint.
+const AIRKICK_REACH_SLACK_Y = 3;
 const AIRKICK_REACH_X_MULT = 1.5;
-const AIRKICK_REACH_Y = 24;
+export const AIRKICK_REACH_Y = PLAYER_HEIGHT / 2 + BALL_RADIUS + AIRKICK_REACH_SLACK_Y;
 const AIRKICK_MAX_Z = 20;
-const AIRKICK_MS = 350;
-const AIRKICK_PEAK_FRAC = 0.4;
+export const AIRKICK_MS = 350;
+export const AIRKICK_PEAK_FRAC = 0.4;
 const AIRKICK_DZ_THRESHOLD = 0.5;
-const KICK_WINDUP_MS = 96;
-const KICK_RECOVERY_MS = 288;
+// Ground-kick timing: fire impact at KICK_WINDUP_MS, deactivate at
+// KICK_DURATION_MS. Both are *total* elapsed times, not spans — so
+// the recovery window lasts (KICK_DURATION_MS - KICK_WINDUP_MS).
+export const KICK_WINDUP_MS = 96;
+export const KICK_DURATION_MS = 288;
 const KICK_DIR_MIN_LEN = 0.01;
 const WASTED_KICK_SPEED = MIN_KICK_POWER * 0.1;
 
 // Push
-const PUSH_RANGE_X = 30;
-const PUSH_RANGE_Y = 20;
+export const PUSH_RANGE_X = 30;
+// Push range on the depth axis: fists also swing in the (facing, up)
+// plane with ~zero lateral reach, so bodies must overlap (or nearly
+// touch) in y. PLAYER_HEIGHT covers the full overlap-to-touching
+// range from top-to-top, plus a small slack for animation timing.
+const PUSH_RANGE_SLACK_Y = 1;
+export const PUSH_RANGE_Y = PLAYER_HEIGHT + PUSH_RANGE_SLACK_Y;
 export const MAX_PUSH_FORCE = 200;
 const PUSH_DAMP = 0.88;
 const PUSH_APPLY = 0.12;
@@ -160,7 +193,15 @@ function createPlayer(side, field) {
       power: 0,
     },
     pushTimer: 0,
-    dir: side === 'left' ? 1 : -1,
+    // Heading: 0 = facing toward +x (right side of field). Players
+    // start facing the opposing goal so the first frame of a match
+    // looks like a kick-off, not two stickmen staring at the camera.
+    heading: side === 'left' ? 0 : Math.PI,
+    // Previous tick's commanded move direction (sign of move axis).
+    // Used to fire DIRECTION_CHANGE_DRAIN exactly once on each
+    // reversal instead of continuously while velocity crosses zero.
+    prevTargetDirX: 0,
+    prevTargetDirY: 0,
     airZ: 0,
   };
 }
@@ -307,6 +348,31 @@ function applyAction(state, p, out) {
 
 /* ── Movement ─────────────────────────────────────────────────── */
 
+/** Shortest-arc signed difference between two angles, in (-π, π]. */
+function wrapAngle(a) {
+  while (a > Math.PI) a -= 2 * Math.PI;
+  while (a <= -Math.PI) a += 2 * Math.PI;
+  return a;
+}
+
+/** Rotate `current` toward `target` by at most PLAYER_TURN_RATE. */
+function turnToward(current, target) {
+  const diff = wrapAngle(target - current);
+  if (diff >  PLAYER_TURN_RATE) return current + PLAYER_TURN_RATE;
+  if (diff < -PLAYER_TURN_RATE) return current - PLAYER_TURN_RATE;
+  return target;
+}
+
+/** Signed heading difference between a player's current heading and
+ *  the world-space direction toward (worldX, worldZ). Used by both
+ *  kick and push alignment gates, and by the renderer for the limb
+ *  swing frame (via the exported helper below). */
+function angleToTarget(p, worldX, worldZ) {
+  const centerX = p.x + PLAYER_WIDTH / 2;
+  const centerZ = (p.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  return Math.atan2(worldZ - centerZ, worldX - centerX);
+}
+
 function applyMovement(state, p, moveX, moveY) {
   const effSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina);
   let targetVx = clamp(moveX, -1, 1) * effSpeed;
@@ -319,19 +385,45 @@ function applyMovement(state, p, moveX, moveY) {
     targetVx = 0; p.vx = 0;
   }
 
-  if (p.vx * targetVx < 0 || p.vy * targetVy < 0) {
+  // Direction-change drain: fire exactly once on the tick where the
+  // commanded target direction *flips*, not every tick while the
+  // current velocity is still crossing zero toward the new target
+  // (which would drain ~20× per flip under the acceleration cap).
+  const targetDirX = targetVx > 0 ? 1 : targetVx < 0 ? -1 : 0;
+  const targetDirY = targetVy > 0 ? 1 : targetVy < 0 ? -1 : 0;
+  const xFlipped = targetDirX !== 0 && p.prevTargetDirX !== 0 && targetDirX !== p.prevTargetDirX;
+  const yFlipped = targetDirY !== 0 && p.prevTargetDirY !== 0 && targetDirY !== p.prevTargetDirY;
+  if (xFlipped || yFlipped) {
     p.stamina = Math.max(0, p.stamina - DIRECTION_CHANGE_DRAIN);
   }
+  p.prevTargetDirX = targetDirX;
+  p.prevTargetDirY = targetDirY;
 
-  const blend = 1 - PLAYER_INERTIA;
-  p.vx += (targetVx - p.vx) * blend;
-  p.vy += (targetVy - p.vy) * blend;
+  // Acceleration cap — bound |Δv| to PLAYER_ACCEL per tick. A full
+  // stop from max speed takes PLAYER_ACCEL_TICKS ticks, a 180°
+  // reversal takes 2× that. Same rule for starting and stopping, so
+  // momentum is symmetric.
+  const dvx = targetVx - p.vx;
+  const dvy = targetVy - p.vy;
+  const dvMag = Math.sqrt(dvx * dvx + dvy * dvy);
+  if (dvMag > PLAYER_ACCEL) {
+    const scale = PLAYER_ACCEL / dvMag;
+    p.vx += dvx * scale;
+    p.vy += dvy * scale;
+  } else {
+    p.vx = targetVx;
+    p.vy = targetVy;
+  }
 
   const speedSq = p.vx * p.vx + p.vy * p.vy;
   if (speedSq > MOVE_THRESHOLD_SQ) {
     p.x += p.vx;
     p.y += p.vy;
-    p.dir = p.vx > 0 ? 1 : -1;
+    // Heading target = direction of current *visual* motion (physics
+    // vy scaled by Z_STRETCH) so facing and motion read consistently
+    // to the viewer. Hold current heading when nearly still.
+    const targetHeading = Math.atan2(p.vy * Z_STRETCH, p.vx);
+    p.heading = turnToward(p.heading, targetHeading);
   } else {
     p.vx = 0;
     p.vy = 0;
@@ -552,10 +644,17 @@ function resolveBallGoalBox(state, box) {
 function canKick(state, p) {
   if (p.kick.active) return false;
   const f = state.field;
-  const center = p.x + f.playerWidth / 2;
-  const closeX = Math.abs(state.ball.x - center) < f.playerWidth * KICK_REACH_X_MULT;
-  const closeY = Math.abs(state.ball.y - p.y) < KICK_REACH_Y;
-  return closeX && closeY;
+  const centerX = p.x + f.playerWidth / 2;
+  const centerY = p.y + PLAYER_HEIGHT / 2;
+  const closeX = Math.abs(state.ball.x - centerX) < f.playerWidth * KICK_REACH_X_MULT;
+  const closeY = Math.abs(state.ball.y - centerY) < KICK_REACH_Y;
+  if (!(closeX && closeY)) return false;
+  // Face gate: the player must be pointed toward the ball (within a
+  // ~60° cone) to connect. This is what forces the brain to turn
+  // before kicking — same rule for ground and air kicks.
+  const ballZ = state.ball.y * Z_STRETCH;
+  const wantAngle = angleToTarget(p, state.ball.x, ballZ);
+  return Math.abs(wrapAngle(wantAngle - p.heading)) < KICK_FACE_TOL;
 }
 
 function startKick(p, dx, dy, dz, power) {
@@ -606,7 +705,7 @@ function advanceKick(state, p) {
     k.fired = true;
     executeKick(state, p);
   }
-  if (k.timer >= KICK_RECOVERY_MS) {
+  if (k.timer >= KICK_DURATION_MS) {
     k.active = false;
   }
   return true;
@@ -629,9 +728,10 @@ function executeKick(state, p) {
   }
 
   if (isAirkick) {
-    const center = p.x + f.playerWidth / 2;
+    const centerX = p.x + f.playerWidth / 2;
+    const centerY = p.y + PLAYER_HEIGHT / 2;
     const reachX = f.playerWidth * AIRKICK_REACH_X_MULT;
-    if (Math.abs(ball.x - center) > reachX || Math.abs(ball.y - p.y) > AIRKICK_REACH_Y) {
+    if (Math.abs(ball.x - centerX) > reachX || Math.abs(ball.y - centerY) > AIRKICK_REACH_Y) {
       if (state.recordEvents) state.events.push({ type: 'kick_missed', player: which, reason: 'airkick_out_of_range' });
       return;
     }
@@ -693,14 +793,29 @@ function tryPush(state, pusher, victim, powerNorm) {
   if (Math.abs(pusherCenterX - victimCenterX) > PUSH_RANGE_X) return;
   if (Math.abs(pusher.y - victim.y) > PUSH_RANGE_Y) return;
 
+  // Face gate: the pusher must be pointed toward the victim.
+  const victimZ = (victim.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const wantAngle = angleToTarget(pusher, victimCenterX, victimZ);
+  if (Math.abs(wrapAngle(wantAngle - pusher.heading)) > PUSH_FACE_TOL) return;
+
   const power01 = (clamp(powerNorm, -1, 1) + 1) / 2;
   const force = power01 * MAX_PUSH_FORCE * Math.max(MIN_PUSH_STAMINA, pusher.stamina);
 
-  pusher.dir = pusherCenterX < victimCenterX ? 1 : -1;
+  // Push direction = pusher's heading. The face gate above
+  // already ensures heading is within PUSH_FACE_TOL of the
+  // victim direction, so this launches the victim along the
+  // pusher's actual facing (not the relative-x sign shortcut).
+  // Heading lives in world space, so convert the z component
+  // back to physics-y via Z_STRETCH and re-normalize so that
+  // the push magnitude in physics space still equals `force`.
+  const fxWorld = Math.cos(pusher.heading);
+  const fzWorld = Math.sin(pusher.heading);
+  const fyPhys  = fzWorld / Z_STRETCH;
+  const pMag    = Math.sqrt(fxWorld * fxWorld + fyPhys * fyPhys) || 1;
   pusher.pushTimer = PUSH_ANIM_MS;
 
-  victim.pushVx = pusher.dir * force;
-  victim.pushVy = (state.rng() - 0.5) * force * 0.5;
+  victim.pushVx = (fxWorld / pMag) * force;
+  victim.pushVy = (fyPhys  / pMag) * force;
 
   pusher.stamina = Math.max(0, pusher.stamina - PUSH_STAMINA_COST * power01);
   victim.stamina = Math.max(0, victim.stamina - PUSH_STAMINA_COST * power01 * PUSH_VICTIM_STAMINA_MULT);
@@ -957,13 +1072,21 @@ function stepReposition(p, tx, ty) {
 
 /* ── NN input builder ────────────────────────────────────────── */
 
+export const NN_INPUT_SIZE = 20;
+
 /**
- * Build the 18-dim NN input vector for one player, normalized to [-1, 1].
- * The `out` parameter lets callers reuse a buffer and skip the per-tick
- * Array allocation. Must stay bit-identical to physics_py.py:build_inputs.
+ * Build the NN input vector for one player, normalized to [-1, 1].
+ * Length is NN_INPUT_SIZE. The `out` parameter lets callers reuse
+ * a buffer and skip the per-tick Array allocation. Must stay
+ * bit-identical to physics_py.py:build_inputs.
+ *
+ * Inputs 18 and 19 are cos/sin of the player's heading — a direct
+ * signal of which way the stickman is pointed, so a stationary
+ * brain can still reason about its own facing relative to the
+ * ball / opponent without having to move first.
  */
 export function buildInputs(state, which, out) {
-  if (!out) out = new Array(18);
+  if (!out) out = new Array(NN_INPUT_SIZE);
   const f = state.field;
   const p = state[which];
   const opp = which === 'p1' ? state.p2 : state.p1;
@@ -990,8 +1113,11 @@ export function buildInputs(state, which, out) {
   out[15] = (tgx / fw) * 2 - 1;
   out[16] = (ogx / fw) * 2 - 1;
   out[17] = (fw / FIELD_WIDTH_REF) * 2 - 1;
+  // cos/sin of heading are already in [-1, 1] — no normalization.
+  out[18] = Math.cos(p.heading);
+  out[19] = Math.sin(p.heading);
 
-  for (let i = 0; i < 18; i++) {
+  for (let i = 0; i < NN_INPUT_SIZE; i++) {
     if (out[i] > 1) out[i] = 1;
     else if (out[i] < -1) out[i] = -1;
   }

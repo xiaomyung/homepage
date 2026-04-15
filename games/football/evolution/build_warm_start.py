@@ -62,7 +62,7 @@ def collect_imitation_dataset(
     dataset size and teaches the NN to play both sides.
 
     Returns:
-        inputs:  (N, 18) float64 array
+        inputs:  (N, 20) float64 array
         actions: (N, 9) float64 array
     """
     inputs_list: list[list[float]] = []
@@ -96,7 +96,7 @@ def collect_imitation_dataset(
 # ── Torch NN that mirrors nn.js architecture ──────────────────
 
 class ImitationNN(nn.Module):
-    """Matches ARCH [18, 20, 16, 18, 9] with LeakyReLU hidden + tanh output.
+    """Matches ARCH [20, 20, 16, 18, 9] with LeakyReLU hidden + tanh output.
 
     Used only for offline training; the runtime forward pass uses the
     numpy version in ga.py (and the JS version in nn.js). After training,
@@ -105,7 +105,7 @@ class ImitationNN(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.fc1 = nn.Linear(18, 20)
+        self.fc1 = nn.Linear(20, 20)
         self.fc2 = nn.Linear(20, 16)
         self.fc3 = nn.Linear(16, 18)
         self.fc4 = nn.Linear(18, 9)

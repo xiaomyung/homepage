@@ -39,13 +39,22 @@ RESPAWN_DROP_Z = 60
 
 # Player
 MAX_PLAYER_SPEED = 10
-PLAYER_INERTIA = 0.7
+# Acceleration cap — see physics.js for rationale and tuning.
+PLAYER_ACCEL_TICKS = 20
+PLAYER_ACCEL = MAX_PLAYER_SPEED / PLAYER_ACCEL_TICKS
 MOVE_THRESHOLD = 0.1
 MOVE_THRESHOLD_SQ = MOVE_THRESHOLD * MOVE_THRESHOLD
 STARTING_GAP = 40
 PLAYER_WIDTH = 18
 PLAYER_HEIGHT = 6
 MIN_SPEED_STAMINA = 0.3
+
+# Heading — must match physics.js exactly (parity-critical).
+Z_STRETCH = 4.7
+PLAYER_TURN_TICKS = 20
+PLAYER_TURN_RATE = math.pi / PLAYER_TURN_TICKS
+KICK_FACE_TOL = math.pi / 3
+PUSH_FACE_TOL = math.pi / 3
 
 # Stamina
 STAMINA_REGEN = 0.005
@@ -63,22 +72,32 @@ MIN_KICK_POWER = 0.15
 MIN_KICK_STAMINA = 0.2
 KICK_NOISE_SCALE = 0.3
 KICK_NOISE_VERT = 0.5
+# Ground-kick reach: lateral leg extension is ~0, so depth tolerance
+# is body-half + ball radius + small animation slack. Must stay in
+# lock-step with physics.js — see test_parity.
+KICK_REACH_SLACK_Y = 1.5
 KICK_REACH_X_MULT = 1.0
-KICK_REACH_Y = 16
+KICK_REACH_Y = PLAYER_HEIGHT / 2 + BALL_RADIUS + KICK_REACH_SLACK_Y
+AIRKICK_REACH_SLACK_Y = 3
 AIRKICK_REACH_X_MULT = 1.5
-AIRKICK_REACH_Y = 24
+AIRKICK_REACH_Y = PLAYER_HEIGHT / 2 + BALL_RADIUS + AIRKICK_REACH_SLACK_Y
 AIRKICK_MAX_Z = 20
 AIRKICK_MS = 350
 AIRKICK_PEAK_FRAC = 0.4
 AIRKICK_DZ_THRESHOLD = 0.5
+# Ground-kick timing: fire impact at KICK_WINDUP_MS, deactivate at
+# KICK_DURATION_MS (total elapsed, not a separate span).
 KICK_WINDUP_MS = 96
-KICK_RECOVERY_MS = 288
+KICK_DURATION_MS = 288
 KICK_DIR_MIN_LEN = 0.01
 WASTED_KICK_SPEED = MIN_KICK_POWER * 0.1
 
 # Push
 PUSH_RANGE_X = 30
-PUSH_RANGE_Y = 20
+# Push range on depth axis: fists have ~0 lateral reach, so bodies
+# must overlap or near-touch in y. PLAYER_HEIGHT + slack.
+PUSH_RANGE_SLACK_Y = 1
+PUSH_RANGE_Y = PLAYER_HEIGHT + PUSH_RANGE_SLACK_Y
 MAX_PUSH_FORCE = 200
 PUSH_DAMP = 0.88
 PUSH_APPLY = 0.12
@@ -193,7 +212,13 @@ def _create_player(side: str, field: dict) -> dict:
             "power": 0,
         },
         "pushTimer": 0,
-        "dir": 1 if side == "left" else -1,
+        # Heading: 0 = facing +x (opposing goal for left side).
+        "heading": 0.0 if side == "left" else math.pi,
+        # Previous commanded move direction, per axis — used by
+        # _apply_movement to fire DIRECTION_CHANGE_DRAIN only on
+        # actual target-sign flips, not continuously.
+        "prevTargetDirX": 0,
+        "prevTargetDirY": 0,
         "airZ": 0,
     }
 
@@ -326,6 +351,30 @@ def _apply_action(state: dict, p: dict, out: list) -> None:
 
 # ── Movement ───────────────────────────────────────────────────
 
+def _wrap_angle(a: float) -> float:
+    """Shortest-arc signed difference in (-pi, pi]. Matches physics.js."""
+    while a > math.pi:
+        a -= 2 * math.pi
+    while a <= -math.pi:
+        a += 2 * math.pi
+    return a
+
+
+def _turn_toward(current: float, target: float) -> float:
+    diff = _wrap_angle(target - current)
+    if diff > PLAYER_TURN_RATE:
+        return current + PLAYER_TURN_RATE
+    if diff < -PLAYER_TURN_RATE:
+        return current - PLAYER_TURN_RATE
+    return target
+
+
+def _angle_to_target(p: dict, world_x: float, world_z: float) -> float:
+    center_x = p["x"] + PLAYER_WIDTH / 2
+    center_z = (p["y"] + PLAYER_HEIGHT / 2) * Z_STRETCH
+    return math.atan2(world_z - center_z, world_x - center_x)
+
+
 def _apply_movement(state: dict, p: dict, move_x: float, move_y: float) -> None:
     eff_speed = MAX_PLAYER_SPEED * max(MIN_SPEED_STAMINA, p["stamina"])
     target_vx = _clamp(move_x, -1, 1) * eff_speed
@@ -340,18 +389,34 @@ def _apply_movement(state: dict, p: dict, move_x: float, move_y: float) -> None:
         target_vx = 0
         p["vx"] = 0
 
-    if p["vx"] * target_vx < 0 or p["vy"] * target_vy < 0:
+    # Fire DIRECTION_CHANGE_DRAIN exactly once per commanded reversal,
+    # not every tick while velocity crosses zero toward the new target.
+    target_dir_x = 1 if target_vx > 0 else (-1 if target_vx < 0 else 0)
+    target_dir_y = 1 if target_vy > 0 else (-1 if target_vy < 0 else 0)
+    x_flipped = target_dir_x != 0 and p["prevTargetDirX"] != 0 and target_dir_x != p["prevTargetDirX"]
+    y_flipped = target_dir_y != 0 and p["prevTargetDirY"] != 0 and target_dir_y != p["prevTargetDirY"]
+    if x_flipped or y_flipped:
         p["stamina"] = max(0, p["stamina"] - DIRECTION_CHANGE_DRAIN)
+    p["prevTargetDirX"] = target_dir_x
+    p["prevTargetDirY"] = target_dir_y
 
-    blend = 1 - PLAYER_INERTIA
-    p["vx"] += (target_vx - p["vx"]) * blend
-    p["vy"] += (target_vy - p["vy"]) * blend
+    dvx = target_vx - p["vx"]
+    dvy = target_vy - p["vy"]
+    dv_mag = math.sqrt(dvx * dvx + dvy * dvy)
+    if dv_mag > PLAYER_ACCEL:
+        scale = PLAYER_ACCEL / dv_mag
+        p["vx"] += dvx * scale
+        p["vy"] += dvy * scale
+    else:
+        p["vx"] = target_vx
+        p["vy"] = target_vy
 
     speed_sq = p["vx"] * p["vx"] + p["vy"] * p["vy"]
     if speed_sq > MOVE_THRESHOLD_SQ:
         p["x"] += p["vx"]
         p["y"] += p["vy"]
-        p["dir"] = 1 if p["vx"] > 0 else -1
+        target_heading = math.atan2(p["vy"] * Z_STRETCH, p["vx"])
+        p["heading"] = _turn_toward(p["heading"], target_heading)
     else:
         p["vx"] = 0
         p["vy"] = 0
@@ -549,10 +614,15 @@ def _can_kick(state: dict, p: dict) -> bool:
     if p["kick"]["active"]:
         return False
     f = state["field"]
-    center = p["x"] + f["playerWidth"] / 2
-    close_x = abs(state["ball"]["x"] - center) < f["playerWidth"] * KICK_REACH_X_MULT
-    close_y = abs(state["ball"]["y"] - p["y"]) < KICK_REACH_Y
-    return close_x and close_y
+    center_x = p["x"] + f["playerWidth"] / 2
+    center_y = p["y"] + PLAYER_HEIGHT / 2
+    close_x = abs(state["ball"]["x"] - center_x) < f["playerWidth"] * KICK_REACH_X_MULT
+    close_y = abs(state["ball"]["y"] - center_y) < KICK_REACH_Y
+    if not (close_x and close_y):
+        return False
+    ball_z = state["ball"]["y"] * Z_STRETCH
+    want_angle = _angle_to_target(p, state["ball"]["x"], ball_z)
+    return abs(_wrap_angle(want_angle - p["heading"])) < KICK_FACE_TOL
 
 
 def _start_kick(p: dict, dx: float, dy: float, dz: float, power: float) -> None:
@@ -599,7 +669,7 @@ def _advance_kick(state: dict, p: dict) -> bool:
     if not k["fired"] and k["timer"] >= KICK_WINDUP_MS:
         k["fired"] = True
         _execute_kick(state, p)
-    if k["timer"] >= KICK_RECOVERY_MS:
+    if k["timer"] >= KICK_DURATION_MS:
         k["active"] = False
     return True
 
@@ -621,9 +691,10 @@ def _execute_kick(state: dict, p: dict) -> None:
         return
 
     if is_airkick:
-        center = p["x"] + f["playerWidth"] / 2
+        center_x = p["x"] + f["playerWidth"] / 2
+        center_y = p["y"] + PLAYER_HEIGHT / 2
         reach_x = f["playerWidth"] * AIRKICK_REACH_X_MULT
-        if abs(ball["x"] - center) > reach_x or abs(ball["y"] - p["y"]) > AIRKICK_REACH_Y:
+        if abs(ball["x"] - center_x) > reach_x or abs(ball["y"] - center_y) > AIRKICK_REACH_Y:
             if state["recordEvents"]:
                 state["events"].append({"type": "kick_missed", "player": which, "reason": "airkick_out_of_range"})
             return
@@ -694,14 +765,23 @@ def _try_push(state: dict, pusher: dict, victim: dict, power_norm: float) -> Non
     if abs(pusher["y"] - victim["y"]) > PUSH_RANGE_Y:
         return
 
+    victim_z = (victim["y"] + PLAYER_HEIGHT / 2) * Z_STRETCH
+    want_angle = _angle_to_target(pusher, victim_center_x, victim_z)
+    if abs(_wrap_angle(want_angle - pusher["heading"])) > PUSH_FACE_TOL:
+        return
+
     power01 = (_clamp(power_norm, -1, 1) + 1) / 2
     force = power01 * MAX_PUSH_FORCE * max(MIN_PUSH_STAMINA, pusher["stamina"])
 
-    pusher["dir"] = 1 if pusher_center_x < victim_center_x else -1
+    # Push direction from heading, re-normalized in physics space.
+    fx_world = math.cos(pusher["heading"])
+    fz_world = math.sin(pusher["heading"])
+    fy_phys = fz_world / Z_STRETCH
+    p_mag = math.sqrt(fx_world * fx_world + fy_phys * fy_phys) or 1.0
     pusher["pushTimer"] = PUSH_ANIM_MS
 
-    victim["pushVx"] = pusher["dir"] * force
-    victim["pushVy"] = (state["rng"]() - 0.5) * force * 0.5
+    victim["pushVx"] = (fx_world / p_mag) * force
+    victim["pushVy"] = (fy_phys / p_mag) * force
 
     pusher["stamina"] = max(0, pusher["stamina"] - PUSH_STAMINA_COST * power01)
     victim["stamina"] = max(
@@ -943,10 +1023,13 @@ def _step_reposition(p: dict, tx: float, ty: float) -> None:
 
 # ── NN input builder ──────────────────────────────────────────
 
+NN_INPUT_SIZE = 20
+
+
 def build_inputs(state: dict, which: str, out: Optional[list] = None) -> list:
-    """18-dim normalized input vector, bit-identical to physics.js buildInputs()."""
+    """NN input vector (length NN_INPUT_SIZE), bit-identical to physics.js buildInputs()."""
     if out is None:
-        out = [0.0] * 18
+        out = [0.0] * NN_INPUT_SIZE
     f = state["field"]
     p = state[which]
     opp = state["p2"] if which == "p1" else state["p1"]
@@ -973,8 +1056,10 @@ def build_inputs(state: dict, which: str, out: Optional[list] = None) -> list:
     out[15] = (tgx / fw) * 2 - 1
     out[16] = (ogx / fw) * 2 - 1
     out[17] = (fw / FIELD_WIDTH_REF) * 2 - 1
+    out[18] = math.cos(p["heading"])
+    out[19] = math.sin(p["heading"])
 
-    for i in range(18):
+    for i in range(NN_INPUT_SIZE):
         if out[i] > 1:
             out[i] = 1
         elif out[i] < -1:

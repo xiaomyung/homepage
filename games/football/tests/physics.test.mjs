@@ -15,6 +15,11 @@ import {
   FIELD_HEIGHT,
   PLAYER_HEIGHT,
   BALL_RADIUS,
+  MAX_PLAYER_SPEED,
+  Z_STRETCH,
+  KICK_WINDUP_MS,
+  KICK_DURATION_MS,
+  AIRKICK_MS,
 } from '../physics.js';
 
 const NOOP = [0, 0, -1, 0, 0, 0, 0, -1, 0];
@@ -25,6 +30,10 @@ function moveAction(mx, my = 0) {
 
 function pushAction(power = 1) {
   return [0, 0, -1, 0, 0, 0, 0, 1, power];
+}
+
+function kickAction(dx = 1, dy = 0, dz = 0, power = 1) {
+  return [0, 0, 1, dx, dy, dz, power, -1, 0];
 }
 
 /** Fresh state with seeded RNG, grace frames zeroed, and events enabled. */
@@ -421,16 +430,30 @@ test('different seeds produce different trajectories', () => {
 
 /* ── Bonus: buildInputs shape ───────────────────────────────── */
 
-test('buildInputs produces 18 floats in [-1, 1]', () => {
+test('buildInputs produces 20 floats in [-1, 1]', () => {
   const state = freshState();
   state.p1.x = 100;
   state.ball.vx = 5;
   const inputs = buildInputs(state, 'p1');
-  assert.equal(inputs.length, 18);
+  assert.equal(inputs.length, 20);
   for (const v of inputs) {
     assert.ok(v >= -1 && v <= 1, `input out of range: ${v}`);
     assert.ok(Number.isFinite(v), `non-finite input: ${v}`);
   }
+});
+
+test('buildInputs heading outputs track cos/sin(heading)', () => {
+  const state = freshState();
+  state.p1.heading = Math.PI / 4;
+  const inputs = buildInputs(state, 'p1');
+  assert.ok(
+    Math.abs(inputs[18] - Math.cos(Math.PI / 4)) < 1e-10,
+    `input[18] should be cos(π/4), got ${inputs[18]}`,
+  );
+  assert.ok(
+    Math.abs(inputs[19] - Math.sin(Math.PI / 4)) < 1e-10,
+    `input[19] should be sin(π/4), got ${inputs[19]}`,
+  );
 });
 
 /* ── Task #59: OOB only via left/right, touchlines bounce ──
@@ -643,4 +666,250 @@ test('shot over the crossbar with no dip does not score', () => {
     !scoredEarly,
     'ball above the crossbar should not register a goal while still above it',
   );
+});
+
+/* ── Lateral-reach bug fixes: push and kick must only fire when
+ *    players/ball are within the stickman's actual stretched-limb
+ *    reach on the depth axis, not across half the field. */
+
+test('push does not land when players are within x range but depth-separated', () => {
+  const state = freshState();
+  // Place them close in x (well within PUSH_RANGE_X = 30) but far
+  // apart in y — more than a full player depth. Under the old
+  // PUSH_RANGE_Y = 20, this would have fired. Under the new range
+  // (derived from PLAYER_HEIGHT + slack), it must not.
+  state.p1.x = state.field.midX - 8;
+  state.p2.x = state.field.midX + 8;
+  state.p1.y = 4;
+  state.p2.y = 4 + PLAYER_HEIGHT + 5;  // bodies well separated on depth
+
+  tick(state, pushAction(1), NOOP);
+
+  assert.equal(state.p2.pushVx, 0, 'push should not land when depth-separated');
+  assert.ok(
+    !state.events.some(e => e.type === 'push'),
+    `no push event expected when depth-separated: ${JSON.stringify(state.events)}`,
+  );
+});
+
+test('push lands when players overlap in depth (touching)', () => {
+  const state = freshState();
+  // Touching: p2 top is at p1's bottom.
+  state.p1.x = state.field.midX - 8;
+  state.p2.x = state.field.midX + 8;
+  state.p1.y = 10;
+  state.p2.y = state.p1.y + PLAYER_HEIGHT - 0.5;  // 0.5 units of overlap
+
+  tick(state, pushAction(1), NOOP);
+
+  assert.ok(
+    state.p2.pushVx !== 0,
+    `push should land when players touch in depth: pushVx=${state.p2.pushVx}`,
+  );
+  assert.ok(state.events.some(e => e.type === 'push'), 'push event expected on touch');
+});
+
+test('kick activates when ball is within new lateral reach', () => {
+  const state = freshState();
+  // Place p1 and park the ball just in front of him (forward in x)
+  // at the same mid-Y. Ball should be kickable.
+  state.p1.x = 300;
+  state.p1.y = 20;
+  state.ball.x = state.p1.x + state.field.playerWidth / 2 + 5;
+  state.ball.y = state.p1.y + PLAYER_HEIGHT / 2;
+  state.ball.z = 0;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+
+  assert.ok(state.p1.kick.active, 'kick should activate when ball is in reach');
+});
+
+test('kick does not activate when ball is laterally far in depth', () => {
+  const state = freshState();
+  // Same forward distance, but offset the ball by a full player depth
+  // plus ball radius on the y axis — legs cannot reach laterally at
+  // all, so even a small offset past body+ball should be rejected.
+  state.p1.x = 300;
+  state.p1.y = 20;
+  state.ball.x = state.p1.x + state.field.playerWidth / 2 + 5;
+  state.ball.y = state.p1.y + PLAYER_HEIGHT / 2 + PLAYER_HEIGHT + BALL_RADIUS + 4;
+  state.ball.z = 0;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+
+  assert.equal(
+    state.p1.kick.active, false,
+    'kick must not activate when ball is beyond stretched-leg reach on depth axis',
+  );
+});
+
+/* ── Heading, angular inertia, and movement acceleration ── */
+
+test('player cannot reach full speed in a single tick', () => {
+  const state = freshState();
+  state.p1.x = 200;
+  tick(state, moveAction(1), NOOP);
+  // Acceleration cap: per-tick |Δv| is PLAYER_ACCEL (0.5 at default
+  // tuning). First tick must produce less than half of full speed.
+  assert.ok(
+    state.p1.vx < MAX_PLAYER_SPEED / 2,
+    `vx should accel, not snap: got ${state.p1.vx}`,
+  );
+});
+
+test('player reaches full speed after the full ramp and keeps it there', () => {
+  const state = freshState();
+  state.p1.x = 150;
+  for (let i = 0; i < 25; i++) tick(state, moveAction(1), NOOP);
+  // After ~PLAYER_ACCEL_TICKS ticks vx should sit at MAX_PLAYER_SPEED
+  // (modulo stamina decay). Stamina drops under 1 but stays above
+  // MIN_SPEED_STAMINA, so the effective speed cap is still close to
+  // MAX_PLAYER_SPEED.
+  assert.ok(
+    state.p1.vx > MAX_PLAYER_SPEED * 0.7,
+    `vx should climb to near max, got ${state.p1.vx}`,
+  );
+});
+
+test('releasing input decelerates over multiple ticks, not instantly', () => {
+  const state = freshState();
+  state.p1.x = 300;
+  for (let i = 0; i < 25; i++) tick(state, moveAction(1), NOOP);
+  const topVx = state.p1.vx;
+  tick(state, NOOP, NOOP);
+  // One tick of coast must reduce speed but not zero it.
+  assert.ok(state.p1.vx < topVx, 'speed should decay');
+  assert.ok(state.p1.vx > 0, `player must not stop instantly: got ${state.p1.vx}`);
+});
+
+test('direction-change drain fires once per commanded reversal, not continuously', () => {
+  // Run forward 25 ticks to reach full speed, then flip the command
+  // and keep it flipped. Under the acceleration cap, velocity takes
+  // ~40 ticks to reverse, during which vx * targetVx < 0 every tick.
+  // The edge-detected drain must fire exactly once (on the flip tick),
+  // not every tick while vx crosses zero.
+  const state = freshState();
+  state.p1.x = 300;
+  for (let i = 0; i < 25; i++) tick(state, moveAction(1), NOOP);
+  const staminaBefore = state.p1.stamina;
+  // First tick after the flip: target sign changes. One DCD drain fires.
+  tick(state, moveAction(-1), NOOP);
+  const staminaAfterFlip = state.p1.stamina;
+  const flipDrain = staminaBefore - staminaAfterFlip;
+  // Next 20 ticks: target direction stays -1, no more DCD drain.
+  for (let i = 0; i < 20; i++) tick(state, moveAction(-1), NOOP);
+  const staminaAfterSustain = state.p1.stamina;
+  const sustainDrain = staminaAfterFlip - staminaAfterSustain;
+  // The flip tick drained DCD + movement. The 20 sustain ticks only
+  // drain movement stamina, which is much smaller per-tick. Assert
+  // that the sustain drain over 20 ticks is less than ~5× the
+  // single-flip drain — that would hold even if DCD kept firing,
+  // BUT would fail if we were continuously draining 0.02 per tick.
+  // (20 * 0.02 = 0.4, vs one-shot ~0.02-0.04.)
+  assert.ok(
+    flipDrain > 0.01,
+    `flip tick should drain more than movement baseline, got ${flipDrain}`,
+  );
+  assert.ok(
+    sustainDrain < flipDrain * 5,
+    `sustain drain should NOT compound (got ${sustainDrain} vs flip ${flipDrain})`,
+  );
+});
+
+test('heading rotates toward motion direction at bounded rate', () => {
+  const state = freshState();
+  // Face straight along +x. Start moving in +depth (physics y) — the
+  // target heading is ~π/2 (after Z_STRETCH scaling). Over many
+  // ticks heading must approach π/2, but one tick should not flip it.
+  state.p1.x = 400; state.p1.y = 20;
+  state.p1.heading = 0;
+  tick(state, moveAction(0, 1), NOOP);
+  const afterOne = state.p1.heading;
+  assert.ok(afterOne > 0, `heading should have rotated toward target, got ${afterOne}`);
+  assert.ok(
+    afterOne < Math.PI / 3,
+    `heading should not have snapped in one tick, got ${afterOne}`,
+  );
+
+  for (let i = 0; i < 40; i++) tick(state, moveAction(0, 1), NOOP);
+  assert.ok(
+    Math.abs(state.p1.heading - Math.PI / 2) < 0.2,
+    `heading should converge near π/2, got ${state.p1.heading}`,
+  );
+});
+
+test('kick blocked when player faces away from the ball', () => {
+  const state = freshState();
+  state.p1.x = 300;
+  state.p1.y = 20;
+  state.p1.heading = Math.PI;  // facing -x
+  state.ball.x = state.p1.x + state.field.playerWidth / 2 + 5; // ball in +x
+  state.ball.y = state.p1.y + PLAYER_HEIGHT / 2;
+  state.ball.z = 0;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+
+  assert.equal(
+    state.p1.kick.active, false,
+    'kick must not activate when heading is opposite the ball direction',
+  );
+});
+
+test('push blocked when pusher faces away from the victim', () => {
+  const state = freshState();
+  state.p1.x = state.field.midX - 8;
+  state.p2.x = state.field.midX + 8;
+  state.p1.y = state.p2.y = FIELD_HEIGHT / 2;
+  state.p1.heading = Math.PI;  // facing -x, victim is in +x
+
+  tick(state, pushAction(1), NOOP);
+
+  assert.equal(
+    state.p2.pushVx, 0,
+    'push must not land when pusher is facing away',
+  );
+  assert.ok(
+    !state.events.some(e => e.type === 'push'),
+    'no push event when pusher is facing away',
+  );
+});
+
+test('kick state machine fires impact at windup end and clears at duration end', () => {
+  const state = freshState();
+  state.p1.x = 300;
+  state.p1.y = 20;
+  state.ball.x = state.p1.x + state.field.playerWidth / 2 + 5;
+  state.ball.y = state.p1.y + PLAYER_HEIGHT / 2;
+  state.ball.z = 0;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  // Start the kick on tick 1.
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+  assert.ok(state.p1.kick.active, 'kick should be active after start');
+  assert.equal(state.p1.kick.fired, false, 'kick should not have fired on tick 1');
+
+  // Drive the state machine up to just after the windup — impact
+  // should fire (ball.vx becomes non-zero).
+  const windupTicks = Math.ceil(KICK_WINDUP_MS / 16);
+  for (let i = 0; i < windupTicks + 1; i++) tick(state, NOOP, NOOP);
+  assert.ok(
+    state.p1.kick.fired,
+    `kick should have fired by tick ${windupTicks + 2}, timer=${state.p1.kick.timer}`,
+  );
+  assert.ok(
+    state.ball.vx > 0,
+    `ball should have gained forward velocity after fire, got vx=${state.ball.vx}`,
+  );
+
+  // Drive to the end of KICK_DURATION_MS — active must go false.
+  const totalTicks = Math.ceil(KICK_DURATION_MS / 16);
+  for (let i = 0; i < totalTicks; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.p1.kick.active, false, 'kick should deactivate after KICK_DURATION_MS');
 });

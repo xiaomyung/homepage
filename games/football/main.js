@@ -16,7 +16,7 @@
  * the user clicks [start].
  */
 
-import { Renderer } from './renderer.js?v=86';
+import { Renderer } from './renderer.js?v=90';
 import {
   createField,
   createState,
@@ -24,7 +24,8 @@ import {
   tick as physicsTick,
   buildInputs,
   TICK_MS,
-} from './physics.js?v=42';
+  NN_INPUT_SIZE,
+} from './physics.js?v=45';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import {
@@ -56,8 +57,8 @@ let configControls = null;
 let workers = [];
 let currentMatch = null;
 // Reused NN input buffers — avoid per-tick allocation in buildInputs().
-const p1InputBuf = new Array(18);
-const p2InputBuf = new Array(18);
+const p1InputBuf = new Array(NN_INPUT_SIZE);
+const p2InputBuf = new Array(NN_INPUT_SIZE);
 
 async function main() {
   const canvas = document.getElementById('game-canvas');

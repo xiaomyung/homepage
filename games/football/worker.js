@@ -23,7 +23,7 @@
  *   worker → main: {type: 'error', message}
  */
 
-import { createField, createState, createSeededRng, tick as physicsTick, buildInputs, TICK_MS } from './physics.js';
+import { createField, createState, createSeededRng, tick as physicsTick, buildInputs, TICK_MS, NN_INPUT_SIZE } from './physics.js';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 
@@ -114,8 +114,8 @@ async function main() {
 /* ── Match runner ───────────────────────────────────────── */
 
 // Reused NN input buffers — avoid per-tick allocation in buildInputs().
-const p1InputBuf = new Array(18);
-const p2InputBuf = new Array(18);
+const p1InputBuf = new Array(NN_INPUT_SIZE);
+const p2InputBuf = new Array(NN_INPUT_SIZE);
 
 function runMatch(matchup) {
   const field = createField();

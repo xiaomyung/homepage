@@ -14,11 +14,24 @@
  */
 
 import * as THREE from './vendor/three.module.js';
-import { createField, FIELD_HEIGHT, FIELD_WIDTH_REF } from './physics.js?v=42';
+import {
+  createField,
+  FIELD_HEIGHT,
+  FIELD_WIDTH_REF,
+  KICK_WINDUP_MS,
+  KICK_DURATION_MS,
+  AIRKICK_MS,
+  Z_STRETCH as PHYSICS_Z_STRETCH,
+} from './physics.js?v=44';
 
 // Physics field depth (42) is ~21× narrower than its width (900); stretch
-// render-space z so the field fills more of the canvas vertically.
+// render-space z so the field fills more of the canvas vertically. Re-
+// exported from physics.js as PHYSICS_Z_STRETCH; assertion below guards
+// against accidental drift between the two copies.
 const Z_STRETCH = 4.7;
+if (PHYSICS_Z_STRETCH !== Z_STRETCH) {
+  throw new Error(`Z_STRETCH drift: renderer ${Z_STRETCH} vs physics ${PHYSICS_Z_STRETCH}`);
+}
 
 // Small margin so field edges don't touch the canvas boundary.
 const HORIZONTAL_MARGIN = 1.15;
@@ -82,6 +95,45 @@ const PUSH_EXTEND_ANGLE   = Math.PI * 0.5;
 const PUSH_FIST_SIZE      = 0.65 * STICKMAN_GLYPH_SIZE;
 const PUSH_BACK_TILT      = 0.28;                        // rad — body leans back during windup
 const PUSH_FWD_TILT       = 0.42;                        // rad — body leans forward on strike
+
+// Kick pose — a windup → whip-through → follow-through curve on the
+// kicking leg, with a counter-balance arm swing and a small body
+// dip/lean. Animation is driven by `player.kick.timer` read directly
+// from the physics state.
+//
+// Phases over normalized progress t ∈ [0, 1] for a ground kick:
+//   [0,         KICK_FIRE_T]    windup:   kicking leg rotates 0 → KICK_WINDUP_ANGLE
+//                                         (behind the player, loading the swing)
+//   [KICK_FIRE_T, KICK_STRIKE_END_T]  strike: leg whips through
+//                                         KICK_WINDUP_ANGLE → KICK_STRIKE_ANGLE
+//                                         (explosive, short window)
+//   [KICK_STRIKE_END_T, 1]      recovery: leg eases back to 0
+//
+// KICK_FIRE_T is the physics fire fraction — impact is applied at
+// this exact point in the animation so ball launch and foot contact
+// are visually synchronised.
+const KICK_FIRE_T         = KICK_WINDUP_MS / KICK_DURATION_MS;
+const KICK_STRIKE_SPAN_T  = 0.15;
+const KICK_STRIKE_END_T   = Math.min(0.95, KICK_FIRE_T + KICK_STRIKE_SPAN_T);
+const KICK_WINDUP_ANGLE   = -Math.PI * 0.28;             // rad — leg rotated behind body
+const KICK_STRIKE_ANGLE   =  Math.PI * 0.55;             // rad — foot past vertical forward
+const KICK_ARM_SWING      =  Math.PI * 0.45;             // rad — counter-arm forward throw
+const KICK_ARM_OPP_FRAC   = 0.35;                        // same-side arm small back-swing
+const KICK_BACK_TILT      = 0.12;                        // rad — body lean back during windup
+const KICK_FWD_TILT       = 0.22;                        // rad — body lean forward on strike
+const KICK_CROUCH_DEPTH   = 0.12 * STICKMAN_GLYPH_SIZE;  // body dip during windup
+
+// Airkick: the player leaps (player.airZ supplies the world-y lift)
+// and the leg swings through a steeper arc. The physics fire point
+// for airkicks lives at AIRKICK_PEAK_FRAC of AIRKICK_MS (import-time
+// constant from physics.js would double the surface area; instead we
+// duplicate the fraction and keep the two modules in sync via tests).
+const AIRKICK_FIRE_T       = 0.4;  // matches physics AIRKICK_PEAK_FRAC
+const AIRKICK_STRIKE_SPAN_T = 0.20;
+const AIRKICK_STRIKE_END_T = Math.min(0.95, AIRKICK_FIRE_T + AIRKICK_STRIKE_SPAN_T);
+const AIRKICK_WINDUP_ANGLE = -Math.PI * 0.22;            // smaller windup, more time in the air
+const AIRKICK_STRIKE_ANGLE =  Math.PI * 0.80;            // foot near horizontal-forward (bicycle kick)
+const AIRKICK_BACK_TILT    = 0.55;                        // rad — body leans way back on volley
 // Visual radius of the 3D ball sphere, in world units. Physics
 // BALL_RADIUS is bumped alongside this so the hitbox scales with the
 // visual; visual is still larger than the physics hitbox for
@@ -495,6 +547,27 @@ export class Renderer {
     this.camera.position.set(midX, height, midZ + backOff);
     this.camera.lookAt(midX, 0, midZ);
     this.camera.updateProjectionMatrix();
+  }
+
+  /** Force a fixed close-up camera pose: look at (targetX, targetY,
+   *  targetZ) from `distance` world units away, tilted down by
+   *  `pitchDeg` (degrees above horizontal, 0 = dead-level, 90 =
+   *  straight down) and rotated around the vertical axis by
+   *  `yawDeg` (0 = directly behind target in +z, positive rotates
+   *  to the right). Used by the renderer diagnostic page to frame
+   *  individual stickmen at full size without running the full
+   *  follow-cam spring. Flips the debug cam's `active` flag so the
+   *  default autoResize placement leaves this pose alone. */
+  setCameraFocus(targetX, targetY, targetZ, distance, pitchDeg = 35, yawDeg = 0) {
+    if (!this._debugCam) return;
+    const dc = this._debugCam;
+    dc.active = true;
+    dc.target.set(targetX, targetY, targetZ);
+    dc.distance = distance;
+    dc.yaw = (yawDeg * Math.PI) / 180;
+    dc.pitch = (pitchDeg * Math.PI) / 180;
+    dc.keys.clear();
+    dc.dragging = false;
   }
 
   /** Compute the camera height / back-offset for a zoom multiplier
@@ -1066,10 +1139,22 @@ export class Renderer {
    * by `facing` and adding the player's world base (x, 0, z).
    */
   _addStickman(player, color, tick, isCelebrating) {
-    let x = player.x + 9;
-    const z = player.y * Z_STRETCH;
+    // Player world position — x along the field, z across the depth.
+    // Both are mutable because push-hop shifts the whole figure in
+    // the heading direction (which has both x and z components).
+    let baseX = player.x + 9;
+    let baseZ = player.y * Z_STRETCH;
     const s = STICKMAN_GLYPH_SIZE;
-    const facing = player.side === 'left' ? 1 : -1;
+
+    // Heading = physics-space angle (0 = +x). Forward unit vector
+    // lives in world xz, perpendicular lateral vector is the left-
+    // hand rotation of forward. All shoulder / hip / limb / tilt
+    // offsets are built on this local frame.
+    const heading = player.heading ?? 0;
+    const forwardX = Math.cos(heading);
+    const forwardZ = Math.sin(heading);
+    const lateralX = -forwardZ;
+    const lateralZ =  forwardX;
 
     // Fetch / init smoothed state for this player (same as before).
     let anim = this._animByPlayer.get(player);
@@ -1093,12 +1178,15 @@ export class Renderer {
     const speed = Math.sqrt(effVx * effVx + effVy * effVy);
 
     const targetAmplitude = Math.min(speed * 0.2, 1.0);
-    // Walk tilt leans the body in the direction of motion along the
-    // field (physics x). For the forward facing stickman, "forward"
-    // is already the facing direction, so we use sign(effVx)*facing
-    // so a player running toward their opponent's goal leans forward.
+    // Walk tilt — sign from the component of motion along the
+    // player's current heading, so "moving forward" leans in,
+    // "moving backward" leans the opposite way. Heading-frame
+    // decomposition uses the same Z_STRETCH as the physics-side
+    // target heading so motion direction and facing stay consistent.
+    const effVworldZ = effVy * Z_STRETCH;
+    const forwardSpeed = effVx * forwardX + effVworldZ * forwardZ;
     const targetTilt = speed > STICKMAN_RUN_THRESHOLD
-      ? Math.sign(effVx) * facing * Math.min(
+      ? Math.sign(forwardSpeed) * Math.min(
           (speed - STICKMAN_RUN_THRESHOLD) * STICKMAN_TILT_PER_SPEED,
           STICKMAN_TILT_MAX,
         )
@@ -1116,6 +1204,15 @@ export class Renderer {
     }
     anim.prevPushTimer = player.pushTimer;
 
+    // Kick animation reads physics state directly — no smoothing, no
+    // local timer. `player.kick` is the authoritative source for
+    // active/phase/timer, and `player.airZ` is the airborne lift
+    // already computed by the physics tick for the airkick phase.
+    const kick = player.kick;
+    const isKicking = !!(kick && kick.active);
+    const isAirkick = isKicking && kick.phase === 'airkick';
+    const airLift   = player.airZ || 0;
+
     anim.tilt      += (targetTilt      - anim.tilt)      * STICKMAN_SMOOTH;
     anim.amplitude += (targetAmplitude - anim.amplitude) * STICKMAN_SMOOTH;
     anim.celebrate += (targetCelebrate - anim.celebrate) * STICKMAN_SMOOTH;
@@ -1132,8 +1229,9 @@ export class Renderer {
     const jumpY = Math.max(0, Math.sin(anim.celebratePhase)) * CELEB_JUMP_PEAK * celeb;
     const bob = Math.abs(swing) * 0.08 * amplitude * celebInv;
 
-    // Push scripted state — always positive forward in local frame,
-    // the facing transform applies the direction at the end.
+    // Push scripted state — in the local (forward, up) frame. The
+    // forward transform (forwardX, forwardZ) applies when mixing
+    // into world space.
     let pushArmAngle   = 0;
     let pushBodyDip    = 0;
     let pushFistScale  = 1;
@@ -1145,48 +1243,78 @@ export class Renderer {
       pushBodyDip    =  pushBodyDipAt(pushT);
       pushFistScale  =  pushFistScaleAt(pushT);
       pushTiltOffset =  pushBodyTiltAt(pushT);
-      x             +=  facing * pushHopAt(pushT);
+      const hop       =  pushHopAt(pushT);
+      baseX          +=  forwardX * hop;
+      baseZ          +=  forwardZ * hop;
       strikeActive   =  pushT >= PUSH_WINDUP_T && pushT <= PUSH_LOWER_T;
     }
 
+    // Kick scripted state — the kicking leg (right leg by convention)
+    // and the contralateral arm (left arm) drive the swing, with a
+    // body dip + tilt to sell the weight transfer.
+    let kickLegAngle   = 0;
+    let kickArmAngle   = 0;
+    let kickBodyDip    = 0;
+    let kickTiltOffset = 0;
+    if (isKicking) {
+      const totalMs = isAirkick ? AIRKICK_MS : KICK_DURATION_MS;
+      const kickT   = Math.min(kick.timer / totalMs, 1);
+      if (isAirkick) {
+        kickLegAngle   = airkickLegAngleAt(kickT);
+        kickTiltOffset = airkickTiltAt(kickT);
+      } else {
+        kickLegAngle   = kickLegAngleAt(kickT);
+        kickTiltOffset = kickTiltAt(kickT);
+      }
+      kickArmAngle = kickArmAngleAt(kickT);
+      kickBodyDip  = kickDipAt(kickT);
+    }
+
     const walkTilt  = anim.tilt;
-    const upperTilt = walkTilt + pushTiltOffset;
+    const upperTilt = walkTilt + pushTiltOffset + kickTiltOffset;
     const tiltC = Math.cos(upperTilt);
     const tiltS = Math.sin(upperTilt);
 
-    // Feet-on-ground clearance — straight legs land on y=0.
-    const hipBaseY  = STICKMAN_LIMB_FULL_H + bob * s + jumpY;
-    const upperHipY = hipBaseY + pushBodyDip;
+    // Feet-on-ground clearance — straight legs land on y=0. airLift
+    // raises the whole figure during the airkick leap (legs trail
+    // the body upward because hipBaseY lifts with the rest).
+    const hipBaseY  = STICKMAN_LIMB_FULL_H + bob * s + jumpY + airLift;
+    const upperHipY = hipBaseY + pushBodyDip + kickBodyDip;
 
     // Neck (top of torso) is one torso-length above the hip, rotated
-    // forward by upperTilt in the (forward, up) plane. "Forward"
-    // means local +x, which maps to world x via the facing factor.
-    const torsoH = STICKMAN_SHOULDER_OFY;
-    const neckLocalX = torsoH * tiltS;
-    const neckY      = upperHipY + torsoH * tiltC;
-    const neckX      = x + facing * neckLocalX;
+    // forward by upperTilt in the (forward, up) plane. "Forward" is
+    // the heading-space xz vector (forwardX, forwardZ).
+    const torsoH      = STICKMAN_SHOULDER_OFY;
+    const neckFwdOfs  = torsoH * tiltS;
+    const neckX       = baseX + forwardX * neckFwdOfs;
+    const neckZ       = baseZ + forwardZ * neckFwdOfs;
+    const neckY       = upperHipY + torsoH * tiltC;
 
-    // Shoulders: lateral to neck along world z (unrotated by tilt —
-    // the tilt rotates the body forward, leaving shoulder width intact).
+    // Shoulders: lateral to neck along (lateralX, lateralZ).
     const shoulderHalfWidth = STICKMAN_SHOULDER_OFX;
-    const lShX = neckX;
-    const lShZ = z - shoulderHalfWidth;
-    const rShX = neckX;
-    const rShZ = z + shoulderHalfWidth;
+    const lShX = neckX - lateralX * shoulderHalfWidth;
+    const lShZ = neckZ - lateralZ * shoulderHalfWidth;
+    const rShX = neckX + lateralX * shoulderHalfWidth;
+    const rShZ = neckZ + lateralZ * shoulderHalfWidth;
 
-    // Torso: capsule from hip center to neck.
-    this._placeTorso(x, upperHipY, z, neckX, neckY, z, color);
+    // Torso: capsule from hip center to neck (both move with baseX/Z).
+    this._placeTorso(baseX, upperHipY, baseZ, neckX, neckY, neckZ, color);
 
-    // Head: sphere a fixed gap above the neck (follows tilt so it
-    // stays anchored to the torso top).
-    const headCenterX = neckX + facing * STICKMAN_HEAD_GAP_Y * tiltS;
-    const headCenterY = neckY + STICKMAN_HEAD_GAP_Y * tiltC + STICKMAN_HEAD_RADIUS;
-    this._placeSph(headCenterX, headCenterY, z, STICKMAN_HEAD_RADIUS, color);
+    // Head: sphere a fixed gap above the neck, following the tilt so
+    // it stays anchored to the torso top.
+    const headGap     = STICKMAN_HEAD_GAP_Y;
+    const headFwdOfs  = headGap * tiltS;
+    const headCenterX = neckX + forwardX * headFwdOfs;
+    const headCenterZ = neckZ + forwardZ * headFwdOfs;
+    const headCenterY = neckY + headGap * tiltC + STICKMAN_HEAD_RADIUS;
+    this._placeSph(headCenterX, headCenterY, headCenterZ, STICKMAN_HEAD_RADIUS, color);
 
-    // Hips: lateral to hip center along world z.
+    // Hips: lateral to hip center along the same lateral vector.
     const hipHalfWidth = STICKMAN_HIP_OFX;
-    const lHipZ = z - hipHalfWidth;
-    const rHipZ = z + hipHalfWidth;
+    const lHipX = baseX - lateralX * hipHalfWidth;
+    const lHipZ = baseZ - lateralZ * hipHalfWidth;
+    const rHipX = baseX + lateralX * hipHalfWidth;
+    const rHipZ = baseZ + lateralZ * hipHalfWidth;
 
     // Limb angles — contralateral walk swing + celebration override
     // (arms sweep to π = straight up, legs spread forward-back) +
@@ -1211,17 +1339,26 @@ export class Renderer {
       rightArmAngle = pushArmAngle;
     }
 
-    // Draw the four limbs — each is a fixed-length capsule pivoted at
-    // its joint and rotated by the swing angle in the (forward, up)
-    // plane. At angle=0 the limb hangs straight down; at angle=π/2
-    // it points forward; at angle=π straight up (celebration). The
-    // local +x is scaled by `facing` so both teams animate
-    // consistently relative to their own attack direction.
+    // Kick takes precedence over walk swing (but not push — physics
+    // guarantees the two never overlap). The right leg is the kicking
+    // leg; the left arm counter-swings forward; the right arm pulls
+    // slightly back. Celebration still overrides everything.
+    if (isKicking && celeb < 0.001) {
+      rightLegAngle = kickLegAngle;
+      leftArmAngle  = kickArmAngle;
+      rightArmAngle = -kickArmAngle * KICK_ARM_OPP_FRAC;
+    }
+
+    // Draw the four limbs — each is a fixed-length capsule pivoted
+    // at its joint and rotated by the swing angle in the (forward,
+    // up) plane. The forward unit vector is the heading-based
+    // (forwardX, forwardZ), so at angle=0 the limb hangs straight
+    // down and at angle=π/2 it points along +forward.
     const shoulderY = upperHipY + torsoH * tiltC;
-    this._placeLimb(lShX, shoulderY, lShZ, leftArmAngle,  facing, color);
-    this._placeLimb(rShX, shoulderY, rShZ, rightArmAngle, facing, color);
-    this._placeLimb(x,    hipBaseY,  lHipZ, leftLegAngle,  facing, color);
-    this._placeLimb(x,    hipBaseY,  rHipZ, rightLegAngle, facing, color);
+    this._placeLimb(lShX, shoulderY, lShZ, leftArmAngle,  forwardX, forwardZ, color);
+    this._placeLimb(rShX, shoulderY, rShZ, rightArmAngle, forwardX, forwardZ, color);
+    this._placeLimb(lHipX, hipBaseY, lHipZ, leftLegAngle,  forwardX, forwardZ, color);
+    this._placeLimb(rHipX, hipBaseY, rHipZ, rightLegAngle, forwardX, forwardZ, color);
 
     // Push fists — spheres at the end of each extended arm during the
     // strike window. Size pulses larger at strike peak via pushFistScale.
@@ -1232,8 +1369,14 @@ export class Renderer {
       const lCos = Math.cos(leftArmAngle);
       const rSin = Math.sin(rightArmAngle);
       const rCos = Math.cos(rightArmAngle);
-      this._placeSph(lShX + facing * L * lSin, shoulderY - L * lCos, lShZ, fistR, color);
-      this._placeSph(rShX + facing * L * rSin, shoulderY - L * rCos, rShZ, fistR, color);
+      this._placeSph(
+        lShX + forwardX * L * lSin, shoulderY - L * lCos, lShZ + forwardZ * L * lSin,
+        fistR, color,
+      );
+      this._placeSph(
+        rShX + forwardX * L * rSin, shoulderY - L * rCos, rShZ + forwardZ * L * rSin,
+        fistR, color,
+      );
     }
   }
 
@@ -1277,14 +1420,17 @@ export class Renderer {
 
   /** Pull a limb capsule from the pool and pivot it at (px, py, pz)
    *  with the given swing angle. The limb extends by LIMB_FULL_H
-   *  along (facing*sin(angle), -cos(angle), 0). */
-  _placeLimb(px, py, pz, angle, facing, color) {
+   *  along (forwardX*sin(angle), -cos(angle), forwardZ*sin(angle)),
+   *  where (forwardX, forwardZ) is the player's heading-based
+   *  forward unit vector in world xz. */
+  _placeLimb(px, py, pz, angle, forwardX, forwardZ, color) {
     if (this._stickmanLimbCursor >= this._stickmanLimb.length) return;
     const mesh = this._stickmanLimb[this._stickmanLimbCursor++];
     const L = STICKMAN_LIMB_FULL_H;
-    const ex = px + facing * L * Math.sin(angle);
+    const sinA = Math.sin(angle);
+    const ex = px + forwardX * L * sinA;
     const ey = py - L * Math.cos(angle);
-    const ez = pz;
+    const ez = pz + forwardZ * L * sinA;
     this._orientBetween(mesh, px, py, pz, ex, ey, ez, color);
   }
 
@@ -1465,29 +1611,6 @@ function pushArmAngleAt(t) {
 }
 
 /**
- * Shoulder pivot shift curve for the spring-loaded push. 0 during the
- * raise, slides back during windup, springs forward through strike,
- * settles to 0. Magnitude only — multiply by pushDir outside.
- */
-function pushPivotAt(t) {
-  if (t < PUSH_RAISE_T) return 0;
-  if (t < PUSH_WINDUP_T) {
-    const p = (t - PUSH_RAISE_T) / (PUSH_WINDUP_T - PUSH_RAISE_T);
-    return -PUSH_WINDUP_DIST * easeOut(p);
-  }
-  if (t < PUSH_STRIKE_T) {
-    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
-    const span = PUSH_WINDUP_DIST + PUSH_STRIKE_DIST;
-    return -PUSH_WINDUP_DIST + span * (p * p);
-  }
-  if (t < PUSH_SETTLE_T) {
-    const p = (t - PUSH_STRIKE_T) / (PUSH_SETTLE_T - PUSH_STRIKE_T);
-    return PUSH_STRIKE_DIST * (1 - easeInOut(p));
-  }
-  return 0;
-}
-
-/**
  * Upper-body crouch depth during push. Body drops while the pivot
  * pulls back, snaps upright during the strike, settles at 0. Negative
  * values are subtracted from the upper body's Y so a negative result
@@ -1542,11 +1665,10 @@ function pushFistScaleAt(t) {
 }
 
 /**
- * Body lean along the push axis as a signed "forward amount":
- * negative = lean away from push dir (back / windup loading),
- * positive = lean toward push dir (forward / strike release).
- * Caller multiplies by player.dir to map into the walk-tilt convention
- * (where negative tilt leans right for dir=+1).
+ * Body lean along the player's heading as a signed "forward amount":
+ * negative = lean back (windup loading), positive = lean forward
+ * (strike release). Added directly to the walk-tilt term because
+ * both live in the same heading-relative (forward, up) frame.
  */
 function pushBodyTiltAt(t) {
   if (t < PUSH_RAISE_T) return 0;
@@ -1563,6 +1685,98 @@ function pushBodyTiltAt(t) {
     return PUSH_FWD_TILT * (1 - easeInOut(p));
   }
   return 0;
+}
+
+/* ── Kick curves ───────────────────────────────────────────── */
+
+/**
+ * Three-phase swing curve: windup eases the leg from 0 back to
+ * startAngle, strike whips it through to endAngle at the physics fire
+ * point, recovery eases it back to 0. Shared by ground kick and
+ * airkick with different angle magnitudes / phase boundaries.
+ */
+function swingCurve(t, fireT, strikeEndT, startAngle, endAngle) {
+  if (t < fireT) {
+    const p = t / fireT;
+    return startAngle * easeInOut(p);
+  }
+  if (t < strikeEndT) {
+    const p = (t - fireT) / (strikeEndT - fireT);
+    return startAngle + (endAngle - startAngle) * easeInOut(p);
+  }
+  const p = (t - strikeEndT) / (1 - strikeEndT);
+  return endAngle * (1 - easeInOut(p));
+}
+
+function kickLegAngleAt(t) {
+  return swingCurve(t, KICK_FIRE_T, KICK_STRIKE_END_T, KICK_WINDUP_ANGLE, KICK_STRIKE_ANGLE);
+}
+
+function airkickLegAngleAt(t) {
+  return swingCurve(t, AIRKICK_FIRE_T, AIRKICK_STRIKE_END_T, AIRKICK_WINDUP_ANGLE, AIRKICK_STRIKE_ANGLE);
+}
+
+/**
+ * Counter-balance arm swing: forward during windup + strike, returns
+ * to 0 during recovery. Same shape for ground and airkick — the arm
+ * doesn't need airkick-specific tuning because it isn't the load-
+ * bearing limb.
+ */
+function kickArmAngleAt(t) {
+  if (t < KICK_FIRE_T) {
+    const p = t / KICK_FIRE_T;
+    return KICK_ARM_SWING * easeInOut(p);
+  }
+  if (t < KICK_STRIKE_END_T) return KICK_ARM_SWING;
+  const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
+  return KICK_ARM_SWING * (1 - easeInOut(p));
+}
+
+/**
+ * Body dip: crouch into the windup, spring back up on strike, settle
+ * during recovery. Negative values lower the upper body.
+ */
+function kickDipAt(t) {
+  if (t < KICK_FIRE_T) {
+    const p = t / KICK_FIRE_T;
+    return -KICK_CROUCH_DEPTH * easeOut(p);
+  }
+  if (t < KICK_STRIKE_END_T) {
+    const p = (t - KICK_FIRE_T) / (KICK_STRIKE_END_T - KICK_FIRE_T);
+    return -KICK_CROUCH_DEPTH * (1 - p * p);
+  }
+  return 0;
+}
+
+/**
+ * Body tilt during ground kick: lean back during windup, flip forward
+ * through strike, settle during recovery.
+ */
+function kickTiltAt(t) {
+  if (t < KICK_FIRE_T) {
+    const p = t / KICK_FIRE_T;
+    return -KICK_BACK_TILT * easeOut(p);
+  }
+  if (t < KICK_STRIKE_END_T) {
+    const p = (t - KICK_FIRE_T) / (KICK_STRIKE_END_T - KICK_FIRE_T);
+    return -KICK_BACK_TILT + (KICK_BACK_TILT + KICK_FWD_TILT) * (p * p);
+  }
+  const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
+  return KICK_FWD_TILT * (1 - easeInOut(p));
+}
+
+/**
+ * Body tilt during airkick: big back lean that holds through the
+ * leap, settles as the player lands.
+ */
+function airkickTiltAt(t) {
+  if (t < AIRKICK_FIRE_T) {
+    const p = t / AIRKICK_FIRE_T;
+    return -AIRKICK_BACK_TILT * easeOut(p);
+  }
+  if (t < AIRKICK_STRIKE_END_T) return -AIRKICK_BACK_TILT;
+  const p = (t - AIRKICK_STRIKE_END_T) / (1 - AIRKICK_STRIKE_END_T);
+  return -AIRKICK_BACK_TILT * (1 - easeInOut(p));
 }
 
 function easeInOut(p) {

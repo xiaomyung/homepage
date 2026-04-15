@@ -14,7 +14,7 @@
  */
 
 import * as THREE from './vendor/three.module.js';
-import { createField, FIELD_HEIGHT, FIELD_WIDTH_REF } from './physics.js?v=37';
+import { createField, FIELD_HEIGHT, FIELD_WIDTH_REF } from './physics.js?v=38';
 
 const POOL_SIZE = 400;
 
@@ -75,7 +75,12 @@ const PUSH_EXTEND_ANGLE   = Math.PI * 0.5;
 const PUSH_FIST_SIZE      = 0.65 * STICKMAN_GLYPH_SIZE;
 const PUSH_BACK_TILT      = 0.28;                        // rad — body leans back during windup
 const PUSH_FWD_TILT       = 0.42;                        // rad — body leans forward on strike
-const BALL_SIZE = 10.206;
+// Visual radius of the 3D ball sphere, in world units. Physics
+// BALL_RADIUS is bumped alongside this so the hitbox scales with the
+// visual; visual is still larger than the physics hitbox for
+// readability, same tradeoff as the stickman glyph being bigger
+// than PLAYER_WIDTH.
+const BALL_VISUAL_RADIUS = 3.84;
 
 // Splash particles for ball bounces. Pool holds up to PARTICLE_POOL slots,
 // filled via a rolling index so old particles are recycled automatically.
@@ -150,22 +155,35 @@ const FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
-// Procedural ring shader for the ball — true circle with a centered
-// hole at 1/3 of the outer radius. Outer edge fades out past 0.5,
-// inner edge fades in past 0.167 (1/3 of 0.5).
-const BALL_FRAGMENT_SHADER = /* glsl */ `
-  uniform vec3 uColor;
+// Soft drop-shadow disc, drawn flat on the xz plane under players and
+// the ball. World-space geometry (not view-space) so perspective
+// foreshortens it correctly from any camera angle. Center is opaque
+// black, fading to transparent at the edge.
+const SHADOW_VERTEX_SHADER = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+// Fragment outputs a dim gray, not pure black — on the black page
+// background a true black shadow is invisible (alpha-composited black
+// over black is still black). The gray reads as a subtle
+// ground-contact disc instead.
+const SHADOW_FRAGMENT_SHADER = /* glsl */ `
+  uniform float uAlpha;
   varying vec2 vUv;
   void main() {
     vec2 p = vUv - 0.5;
     float d = length(p);
-    float outer = smoothstep(0.5, 0.47, d);
-    float inner = smoothstep(0.15, 0.18, d);
-    float alpha = outer * inner;
-    if (alpha < 0.01) discard;
-    gl_FragColor = vec4(uColor, alpha);
+    float falloff = smoothstep(0.5, 0.15, d);
+    float a = falloff * uAlpha;
+    if (a < 0.01) discard;
+    gl_FragColor = vec4(0.22, 0.22, 0.24, a);
   }
 `;
+const PLAYER_SHADOW_RADIUS = 12; // world units — fits under stickman glyph
+const SHADOW_ALPHA_BASE    = 0.55;
 
 /* ── Palette (matches style.css design tokens) ─────────────── */
 
@@ -259,29 +277,55 @@ export class Renderer {
     this._staticGeometries = [];
     this._staticMaterials = [];
 
-    // Dedicated ball mesh: a plane billboarded to the camera and filled
-    // by a procedural circle shader, so the ball is a true circle instead
-    // of the slightly oval `o` glyph.
-    const ballGeom = new THREE.PlaneGeometry(1, 1);
-    const ballMat = new THREE.ShaderMaterial({
-      uniforms: {
-        uColor: { value: new THREE.Vector3(1, 1, 1) },
-        uViewOffset: { value: new THREE.Vector2(0, 0) },
-        uRotation: { value: 0 },
-      },
-      vertexShader: VERTEX_SHADER,
-      fragmentShader: BALL_FRAGMENT_SHADER,
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
+    // Lighting for the ball sphere. The rest of the scene is rendered
+    // with unlit line / basic materials, so these lights only affect
+    // meshes that use a lit material (MeshLambertMaterial etc.). Low
+    // ambient + soft directional gives the ball shaded hemispheres
+    // without washing it out.
+    this.scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.55);
+    dirLight.position.set(0.6, 1.0, 0.4);  // from upper-front
+    this.scene.add(dirLight);
+
+    // Dedicated ball mesh: a real 3D sphere in world space at
+    // (ball.x, ball.z, ball.y * Z_STRETCH). Physics collision still
+    // uses BALL_RADIUS (~1.4 world units); visual sphere is larger
+    // for readability — same mismatch as stickman-glyph vs PLAYER_WIDTH.
+    const ballGeom = new THREE.SphereGeometry(1, 20, 14);
+    const ballMat = new THREE.MeshLambertMaterial({
+      color: new THREE.Color(COLOR_TEXT[0], COLOR_TEXT[1], COLOR_TEXT[2]),
     });
     this._ballMesh = new THREE.Mesh(ballGeom, ballMat);
     this._ballMesh.frustumCulled = false;
-    this._ballUColor = ballMat.uniforms.uColor.value;
-    this._ballUViewOffset = ballMat.uniforms.uViewOffset.value;
     this._staticGeometries.push(ballGeom);
     this._staticMaterials.push(ballMat);
     this.scene.add(this._ballMesh);
+
+    // Ground shadows — a soft dark disc per entity, laid flat on the
+    // xz-plane just above y=0 so it doesn't z-fight the field lines.
+    // One shared plane geometry, each mesh gets its own material so
+    // uAlpha can be animated per-entity (ball fades as it rises).
+    const shadowGeom = new THREE.PlaneGeometry(1, 1);
+    this._staticGeometries.push(shadowGeom);
+    const makeShadow = () => {
+      const mat = new THREE.ShaderMaterial({
+        uniforms: { uAlpha: { value: SHADOW_ALPHA_BASE } },
+        vertexShader: SHADOW_VERTEX_SHADER,
+        fragmentShader: SHADOW_FRAGMENT_SHADER,
+        transparent: true,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(shadowGeom, mat);
+      mesh.rotation.x = -Math.PI / 2;  // lay flat on xz plane
+      mesh.frustumCulled = false;
+      mesh._uAlpha = mat.uniforms.uAlpha;
+      this._staticMaterials.push(mat);
+      this.scene.add(mesh);
+      return mesh;
+    };
+    this._p1Shadow   = makeShadow();
+    this._p2Shadow   = makeShadow();
+    this._ballShadow = makeShadow();
 
     // Pre-allocated per-player color buffers so staminaColor can write into
     // a reused array instead of allocating [r,g,b] every frame.
@@ -356,13 +400,32 @@ export class Renderer {
     this._addStickman(state.p1, this._p1Color, tick, p1Celebrating);
     this._addStickman(state.p2, this._p2Color, tick, p2Celebrating);
 
-    // Ball — dedicated circle-shader mesh, not a font glyph, so it
-    // renders as a true circle. Bounce height becomes a view-space y
-    // offset so the ball shows up regardless of camera tilt.
-    this._ballMesh.position.set(state.ball.x, 0, state.ball.y * Z_STRETCH);
-    this._ballMesh.scale.set(BALL_SIZE, BALL_SIZE, 1);
-    this._ballUColor.set(COLOR_TEXT[0], COLOR_TEXT[1], COLOR_TEXT[2]);
-    this._ballUViewOffset.set(0, (state.ball.z || 0) * 0.5);
+    // Ball — real 3D sphere in world space. Altitude comes straight
+    // from physics ball.z; gravity, bounce, and all collisions live
+    // in physics.js and are unaffected by the visual change.
+    const ballAltitude = state.ball.z || 0;
+    this._ballMesh.position.set(
+      state.ball.x,
+      ballAltitude + BALL_VISUAL_RADIUS,
+      state.ball.y * Z_STRETCH,
+    );
+    this._ballMesh.scale.set(BALL_VISUAL_RADIUS, BALL_VISUAL_RADIUS, BALL_VISUAL_RADIUS);
+
+    // Ground shadows — stamped on the xz-plane, sized per-entity.
+    // Ball shadow is anchored to the ball's x/y (physics plane) so it
+    // stays put on the ground as the sphere rises on ball.z; radius
+    // grows slightly and alpha fades with altitude, reading as height.
+    const SHADOW_Y = 0.2;   // tiny offset above ground to avoid z-fight
+    this._p1Shadow.position.set(state.p1.x + 9, SHADOW_Y, state.p1.y * Z_STRETCH);
+    this._p1Shadow.scale.set(PLAYER_SHADOW_RADIUS * 2, PLAYER_SHADOW_RADIUS * 2, 1);
+    this._p2Shadow.position.set(state.p2.x + 9, SHADOW_Y, state.p2.y * Z_STRETCH);
+    this._p2Shadow.scale.set(PLAYER_SHADOW_RADIUS * 2, PLAYER_SHADOW_RADIUS * 2, 1);
+    const airH = Math.max(0, state.ball.z || 0);
+    const ballShadowR = BALL_VISUAL_RADIUS * (1 + airH * 0.04);
+    const ballShadowA = SHADOW_ALPHA_BASE / (1 + airH * 0.06);
+    this._ballShadow.position.set(state.ball.x, SHADOW_Y, state.ball.y * Z_STRETCH);
+    this._ballShadow.scale.set(ballShadowR * 2, ballShadowR * 2, 1);
+    this._ballShadow._uAlpha.value = ballShadowA;
 
     // Consume ball-bounce events and spawn splash particles. Physics
     // clears `state.events` at the top of each tick, so any entries here

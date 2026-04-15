@@ -171,19 +171,24 @@ function runMatch(matchup) {
 
   // Action-repeat stride: compute a fresh NN action every
   // NN_ACTION_STRIDE ticks and reuse it verbatim on the in-between
-  // ticks. Physics still runs every tick. Same stride is applied in
-  // the visual showcase loop so training and display decision
-  // cadences match (per feedback_training_visual_parity).
-  let p1Action = null;
-  let p2Action = null;
-  for (let i = 0; i < matchTicks; i++) {
-    if (i % NN_ACTION_STRIDE === 0) {
-      p1Action = p1Brain.forward(buildInputs(state, 'p1', p1InputBuf));
-      p2Action = p2IsFallback
-        ? fallbackAction(state, 'p2')
-        : p2Brain.forward(buildInputs(state, 'p2', p2InputBuf));
+  // ticks. Split as decision-outer / physics-inner rather than a
+  // single loop with a branch so V8 sees two monomorphic loop bodies
+  // (outer: NN forward + buildInputs; inner: pure physicsTick). The
+  // single-loop form with `if (i % K === 0)` branch-deopts the hot
+  // path — measured ~2× slower than this pattern. Same stride is
+  // applied in the visual showcase (main.js) so training and display
+  // decision cadences match (feedback_training_visual_parity).
+  let ticksDone = 0;
+  while (ticksDone < matchTicks) {
+    const p1Action = p1Brain.forward(buildInputs(state, 'p1', p1InputBuf));
+    const p2Action = p2IsFallback
+      ? fallbackAction(state, 'p2')
+      : p2Brain.forward(buildInputs(state, 'p2', p2InputBuf));
+    const chunkEnd = Math.min(ticksDone + NN_ACTION_STRIDE, matchTicks);
+    while (ticksDone < chunkEnd) {
+      physicsTick(state, p1Action, p2Action);
+      ticksDone++;
     }
-    physicsTick(state, p1Action, p2Action);
   }
 
   return {

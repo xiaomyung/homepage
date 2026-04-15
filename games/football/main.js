@@ -219,7 +219,7 @@ function frame() {
 function startWorkers(count) {
   stopWorkers();
   for (let i = 0; i < count; i++) {
-    const worker = new Worker(new URL('./worker.js?v=6', import.meta.url), { type: 'module' });
+    const worker = new Worker(new URL('./worker.js?v=7', import.meta.url), { type: 'module' });
     worker.onmessage = (ev) => {
       const msg = ev.data;
       if (msg.type === 'batch') {

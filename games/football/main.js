@@ -18,7 +18,7 @@
  */
 
 import { buildAtlas } from './atlas.js';
-import { Renderer } from './renderer.js?v=58';
+import { Renderer } from './renderer.js?v=61';
 import {
   createField,
   createState,
@@ -64,8 +64,10 @@ async function main() {
   const atlas = await buildAtlas();
 
   const canvas = document.getElementById('game-canvas');
-  renderer = new Renderer(canvas, atlas);
+  const debugCam = new URLSearchParams(window.location.search).has('debugCam');
+  renderer = new Renderer(canvas, atlas, { debugCam });
   renderer.autoResize();
+  if (debugCam) window.__footballRenderer = renderer;
 
   scoreboard = createScoreboard();
   statsPanel = createStatsPanel({ apiBase: API_BASE });

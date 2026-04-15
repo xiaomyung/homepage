@@ -171,10 +171,11 @@ const COLOR_RED = rgb('#f7768e');
 /* ── Renderer ──────────────────────────────────────────────── */
 
 export class Renderer {
-  constructor(canvas, atlas, { fieldWidth = FIELD_WIDTH_REF } = {}) {
+  constructor(canvas, atlas, { fieldWidth = FIELD_WIDTH_REF, debugCam = false } = {}) {
     this.atlas = atlas;
     this.fieldWidth = fieldWidth;
     this._field = createField(fieldWidth);
+    this._debugCam = null;
 
     this.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio || 1);
@@ -183,6 +184,7 @@ export class Renderer {
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(CAMERA_FOV, 2, 0.1, 4000);
     this._placeCamera();
+    if (debugCam) this._initDebugCam();
 
     this._baseMaterial = new THREE.ShaderMaterial({
       uniforms: {
@@ -368,12 +370,16 @@ export class Renderer {
       this._pool[i].visible = false;
     }
 
+    if (this._debugCam) this._stepDebugCam();
     this.renderer.render(this.scene, this.camera);
   }
 
   /* ── Camera ─────────────────────────────────────────────── */
 
   _placeCamera() {
+    // When debug-cam is active, resize() still updates `camera.aspect` but
+    // we leave the pose alone — `_stepDebugCam()` owns position/lookAt.
+    if (this._debugCam) return;
     const midX = this.fieldWidth / 2;
     const midZ = (FIELD_HEIGHT * Z_STRETCH) / 2;
     const aspect = this.camera.aspect || 4;
@@ -389,6 +395,103 @@ export class Renderer {
 
     this.camera.position.set(midX, height, midZ + backOff);
     this.camera.lookAt(midX, 0, midZ);
+    this.camera.updateProjectionMatrix();
+  }
+
+  /* ── Debug cam (gated on ?debugCam=1) ───────────────────────
+   * Left-drag orbits yaw/pitch around `target`. WASD pans the target in
+   * the camera's forward/right plane, Q/E lower/raise it. Mouse wheel
+   * zooms distance. R resets to the default showcase pose. */
+  _initDebugCam() {
+    const midX = this.fieldWidth / 2;
+    const midZ = (FIELD_HEIGHT * Z_STRETCH) / 2;
+    const aspect = this.camera.aspect || 4;
+    const halfFovVert = (CAMERA_FOV / 2) * Math.PI / 180;
+    const tanHalfHoriz = Math.tan(halfFovVert) * aspect;
+    const halfFieldWidth = (this.fieldWidth / 2) * HORIZONTAL_MARGIN;
+    const distance = halfFieldWidth / tanHalfHoriz;
+    const defaultPitch = (90 - CAMERA_TILT_DEG) * Math.PI / 180;
+    this._debugCam = {
+      target: new THREE.Vector3(midX, 0, midZ),
+      defaultTarget: new THREE.Vector3(midX, 0, midZ),
+      distance, defaultDistance: distance,
+      yaw: 0, defaultYaw: 0,
+      pitch: defaultPitch, defaultPitch,
+      keys: new Set(),
+      dragging: false,
+      lastPointerX: 0,
+      lastPointerY: 0,
+    };
+    const canvas = this.renderer.domElement;
+    canvas.style.touchAction = 'none';
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      this._debugCam.dragging = true;
+      this._debugCam.lastPointerX = e.clientX;
+      this._debugCam.lastPointerY = e.clientY;
+      try { canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      const dc = this._debugCam;
+      if (!dc.dragging) return;
+      const dx = e.clientX - dc.lastPointerX;
+      const dy = e.clientY - dc.lastPointerY;
+      dc.lastPointerX = e.clientX;
+      dc.lastPointerY = e.clientY;
+      dc.yaw -= dx * 0.005;
+      const half = Math.PI / 2 - 0.02;
+      dc.pitch = Math.max(-half, Math.min(half, dc.pitch - dy * 0.005));
+    });
+    const stopDrag = (e) => {
+      this._debugCam.dragging = false;
+      try { canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    };
+    canvas.addEventListener('pointerup', stopDrag);
+    canvas.addEventListener('pointercancel', stopDrag);
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const dc = this._debugCam;
+      dc.distance = Math.max(40, Math.min(4000, dc.distance * (1 + e.deltaY * 0.001)));
+    }, { passive: false });
+    window.addEventListener('keydown', (e) => {
+      const k = e.key.toLowerCase();
+      if ('wasdqer'.includes(k)) this._debugCam.keys.add(k);
+    });
+    window.addEventListener('keyup', (e) => {
+      this._debugCam.keys.delete(e.key.toLowerCase());
+    });
+    // eslint-disable-next-line no-console
+    console.log('[football] debug cam on. drag=orbit, wasd=pan, q/e=up-down, wheel=zoom, r=reset');
+  }
+
+  _stepDebugCam() {
+    const dc = this._debugCam;
+    if (dc.keys.has('r')) {
+      dc.target.copy(dc.defaultTarget);
+      dc.distance = dc.defaultDistance;
+      dc.yaw = dc.defaultYaw;
+      dc.pitch = dc.defaultPitch;
+      dc.keys.delete('r');
+    }
+    const speed = dc.distance * 0.01;
+    const forwardX = -Math.sin(dc.yaw);
+    const forwardZ = -Math.cos(dc.yaw);
+    const rightX = Math.cos(dc.yaw);
+    const rightZ = -Math.sin(dc.yaw);
+    if (dc.keys.has('w')) { dc.target.x += forwardX * speed; dc.target.z += forwardZ * speed; }
+    if (dc.keys.has('s')) { dc.target.x -= forwardX * speed; dc.target.z -= forwardZ * speed; }
+    if (dc.keys.has('d')) { dc.target.x += rightX * speed; dc.target.z += rightZ * speed; }
+    if (dc.keys.has('a')) { dc.target.x -= rightX * speed; dc.target.z -= rightZ * speed; }
+    if (dc.keys.has('e')) { dc.target.y += speed; }
+    if (dc.keys.has('q')) { dc.target.y -= speed; }
+
+    const cosP = Math.cos(dc.pitch);
+    const sinP = Math.sin(dc.pitch);
+    const offX = Math.sin(dc.yaw) * cosP * dc.distance;
+    const offY = sinP * dc.distance;
+    const offZ = Math.cos(dc.yaw) * cosP * dc.distance;
+    this.camera.position.set(dc.target.x + offX, dc.target.y + offY, dc.target.z + offZ);
+    this.camera.lookAt(dc.target.x, dc.target.y, dc.target.z);
     this.camera.updateProjectionMatrix();
   }
 
@@ -466,16 +569,16 @@ export class Renderer {
     this._addArc(f.goalLineL, mouthCenterZ, arcDepth, mouthHalfZ, -Math.PI / 2, Math.PI / 2, 48, mutedMat);
     this._addArc(f.goalLineR, mouthCenterZ, arcDepth, mouthHalfZ, Math.PI / 2, 3 * Math.PI / 2, 48, mutedMat);
 
-    const goalDepth = f.goalLRight - f.goalLLeft;
     const goalWidth = (f.goalMouthYMax - f.goalMouthYMin) * Z_STRETCH;
     const goalHeight = f.goalMouthZMax * 2.25;
     const goalCenterZ = ((f.goalMouthYMin + f.goalMouthYMax) / 2) * Z_STRETCH;
 
-    // Left goal: outer edge on -x (dir = -1). Right goal: mirror.
-    const leftCenterX = (f.goalLLeft + f.goalLRight) / 2;
-    const rightCenterX = (f.goalRLeft + f.goalRRight) / 2;
-    this._addGoal(leftCenterX, goalCenterZ, goalDepth, goalWidth, goalHeight, -1, lineMat, netMat, goalLineMat);
-    this._addGoal(rightCenterX, goalCenterZ, goalDepth, goalWidth, goalHeight, +1, lineMat, netMat, goalLineMat);
+    // Pass the scoring-line x (= f.goalLineL/R) as the front mouth, and
+    // the outer box edge as the back — the goal renders as a lean-to
+    // between those two x values. This keeps the mouth posts visually
+    // aligned with the penalty arcs and the physics scoring boundary.
+    this._addGoal(f.goalLineL, f.goalLLeft, goalCenterZ, goalWidth, goalHeight, lineMat, netMat, goalLineMat);
+    this._addGoal(f.goalLineR, f.goalRRight, goalCenterZ, goalWidth, goalHeight, lineMat, netMat, goalLineMat);
   }
 
   _addStatic(obj, geometry) {
@@ -522,48 +625,46 @@ export class Renderer {
     this._addStatic(new THREE.Line(geom, material), geom);
   }
 
-  _addGoal(centerX, centerZ, depth, width, height, dir, mat, netMat, goalLineMat) {
-    const halfD = depth / 2;
+  _addGoal(goalLineX, backBotX, centerZ, width, height, mat, netMat, goalLineMat) {
     const halfW = width / 2;
-    // dir = +1: back wall on +x side (RIGHT goal); dir = -1: back wall on -x (LEFT).
-    const vertX = centerX + dir * halfD;
-    const backTopX = centerX - dir * halfD;
-    const frontWallX = backTopX - dir * halfD;
-    // Post bottoms sit on the scoring goal line (= backTopX in these
-    // coords, = f.goalLineL/R in physics coords, = where the penalty
-    // arcs are anchored). Both posts share this x so the mouth base is
-    // parallel to z and the visible line matches the scoring boundary.
-    const postABotX = backTopX;
-    const postBBotX = backTopX;
+    // Lean-to soccer goal side profile (triangle, x-axis):
+    //
+    //              ____ crossbar @ (goalLineX, height)
+    //             /|
+    //            / | front posts (vertical, at goalLineX)
+    //           /  |
+    //          /___|
+    //      backBotX goalLineX
+    //
+    // For the LEFT goal, backBotX < goalLineX (back edge is on -x).
+    // For the RIGHT goal, backBotX > goalLineX (back edge is on +x).
+    // Orientation is implicit in the caller-supplied x pair.
     const zMin = centerZ - halfW;
     const zMax = centerZ + halfW;
     const P = (x, y, z) => new THREE.Vector3(x, y, z);
 
-    // Goal frame bars — rendered as thin cylinders so they look like solid
-    // metal poles instead of 1-pixel lines. Each bar is built via
-    // `_addBar(a, b)` which pivots a unit cylinder to the (a, b) axis.
+    // Goal frame bars — thin cylinders so they read as solid metal poles.
     const barMat = new THREE.MeshBasicMaterial({
       color: mat.color, transparent: true, opacity: mat.opacity ?? 1,
     });
     this._staticMaterials.push(barMat);
-    // Front frame — 2 upright posts + crossbar.
-    this._addBar(P(postABotX, 0, zMin), P(frontWallX, height, zMin), barMat);
-    this._addBar(P(postBBotX, 0, zMax), P(frontWallX, height, zMax), barMat);
-    this._addBar(P(frontWallX, height, zMin), P(frontWallX, height, zMax), barMat);
-    // Back frame — uprights + top crossbar + floor rail.
-    this._addBar(P(vertX, 0, zMin), P(backTopX, height, zMin), barMat);
-    this._addBar(P(vertX, 0, zMax), P(backTopX, height, zMax), barMat);
-    this._addBar(P(backTopX, height, zMin), P(backTopX, height, zMax), barMat);
-    this._addBar(P(vertX, 0, zMin), P(vertX, 0, zMax), barMat);
-    // Side rails connecting front and back.
-    this._addBar(P(frontWallX, height, zMin), P(backTopX, height, zMin), barMat);
-    this._addBar(P(frontWallX, height, zMax), P(backTopX, height, zMax), barMat);
-    this._addBar(P(vertX, 0, zMin), P(postABotX, 0, zMin), barMat);
-    this._addBar(P(vertX, 0, zMax), P(postBBotX, 0, zMax), barMat);
+    // Front frame — two vertical posts at the goal line + crossbar.
+    this._addBar(P(goalLineX, 0, zMin), P(goalLineX, height, zMin), barMat);
+    this._addBar(P(goalLineX, 0, zMax), P(goalLineX, height, zMax), barMat);
+    this._addBar(P(goalLineX, height, zMin), P(goalLineX, height, zMax), barMat);
+    // Slanted back edges from the crossbar down to the outer back bottom.
+    this._addBar(P(goalLineX, height, zMin), P(backBotX, 0, zMin), barMat);
+    this._addBar(P(goalLineX, height, zMax), P(backBotX, 0, zMax), barMat);
+    // Ground rails closing the floor triangle.
+    this._addBar(P(backBotX, 0, zMin), P(backBotX, 0, zMax), barMat);
+    this._addBar(P(backBotX, 0, zMin), P(goalLineX, 0, zMin), barMat);
+    this._addBar(P(backBotX, 0, zMax), P(goalLineX, 0, zMax), barMat);
 
-    // Net grid on the 4 closed surfaces (back, top, left side, right side).
-    // Front mouth stays open. Bilinear grid — nU lines along A→B / D→C and
-    // nV lines along A→D / B→C.
+    // Net grid on the 3 closed surfaces: slanted back + two triangular
+    // sides. Front mouth stays open; there is no roof (the crossbar is
+    // the apex of the triangle). Bilinear grid — nU lines along A→B /
+    // D→C, nV lines along A→D / B→C. For triangles, pass C === D and
+    // the j-loop collapses into a point along that collapsed edge.
     const netPoints = [];
     const pushNet = (A, B, C, D, nU, nV) => {
       for (let i = 1; i < nU; i++) {
@@ -581,28 +682,39 @@ export class Renderer {
         );
       }
     };
-    pushNet(P(vertX, 0, zMin),      P(vertX, 0, zMax),      P(backTopX, height, zMax),   P(backTopX, height, zMin),   12, 8); // back
-    pushNet(P(frontWallX, height, zMin), P(backTopX, height, zMin), P(backTopX, height, zMax), P(frontWallX, height, zMax), 8, 12); // top
-    pushNet(P(postABotX, 0, zMin),  P(vertX, 0, zMin),      P(backTopX, height, zMin),   P(frontWallX, height, zMin), 10, 8); // side zMin
-    pushNet(P(postBBotX, 0, zMax),  P(vertX, 0, zMax),      P(backTopX, height, zMax),   P(frontWallX, height, zMax), 10, 8); // side zMax
+    // Back slanted face — rectangle from ground (backBotX, 0) up to the
+    // crossbar (goalLineX, height), spanning full z.
+    pushNet(
+      P(backBotX,  0,      zMin), P(backBotX,  0,      zMax),
+      P(goalLineX, height, zMax), P(goalLineX, height, zMin),
+      12, 8,
+    );
+    // Side triangle zMin — A=front-bot, B=back-bot, C=D=crossbar.
+    pushNet(
+      P(goalLineX, 0,      zMin), P(backBotX,  0,      zMin),
+      P(goalLineX, height, zMin), P(goalLineX, height, zMin),
+      10, 8,
+    );
+    // Side triangle zMax — mirror of zMin.
+    pushNet(
+      P(goalLineX, 0,      zMax), P(backBotX,  0,      zMax),
+      P(goalLineX, height, zMax), P(goalLineX, height, zMax),
+      10, 8,
+    );
 
     const netGeom = new THREE.BufferGeometry().setFromPoints(netPoints);
     this._addStatic(new THREE.LineSegments(netGeom, netMat), netGeom);
 
-    // Goal line: dashed "_ _ _" along the bottom-front of the mouth.
+    // Dashed goal line along the mouth ground edge (z-axis at goalLineX).
     const dashCount = 8;
     const dashRatio = 0.4;
-    const axBot = postABotX, azBot = zMin;
-    const bxBot = postBBotX, bzBot = zMax;
-    const dxBot = bxBot - axBot;
-    const dzBot = bzBot - azBot;
     const goalLinePoints = [];
     for (let i = 0; i < dashCount; i++) {
       const t0 = i / dashCount;
       const t1 = t0 + dashRatio / dashCount;
       goalLinePoints.push(
-        P(axBot + dxBot * t0, 0, azBot + dzBot * t0),
-        P(axBot + dxBot * t1, 0, azBot + dzBot * t1),
+        P(goalLineX, 0, zMin + (zMax - zMin) * t0),
+        P(goalLineX, 0, zMin + (zMax - zMin) * t1),
       );
     }
     const goalLineGeom = new THREE.BufferGeometry().setFromPoints(goalLinePoints);

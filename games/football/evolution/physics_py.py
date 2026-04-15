@@ -95,7 +95,7 @@ GOAL_BACK_OFFSET = 30
 GOAL_DEPTH = 78
 GOAL_LINE_INSET = 6
 GOAL_MOUTH_Z = 26  # crossbar height (unchanged)
-GOAL_MOUTH_WIDTH = 26  # z-span of the mouth (30% wider than the original 20)
+GOAL_MOUTH_WIDTH = 28.6  # z-span of the mouth (30% + another 10% wider than the original 20)
 GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - GOAL_MOUTH_WIDTH) / 2
 GOAL_MOUTH_Y_MAX = (FIELD_HEIGHT + GOAL_MOUTH_WIDTH) / 2
 

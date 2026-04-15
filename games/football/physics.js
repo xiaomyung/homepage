@@ -90,7 +90,7 @@ const GOAL_BACK_OFFSET = 30;
 const GOAL_DEPTH = 78;
 const GOAL_LINE_INSET = 6; // scoring line sits this far inside the mouth
 const GOAL_MOUTH_Z = 26;  // crossbar height (unchanged)
-const GOAL_MOUTH_WIDTH = 26;  // z-span of the mouth (30% wider than the original 20)
+const GOAL_MOUTH_WIDTH = 28.6;  // z-span of the mouth (30% + another 10% wider than the original 20)
 const GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - GOAL_MOUTH_WIDTH) / 2;
 const GOAL_MOUTH_Y_MAX = (FIELD_HEIGHT + GOAL_MOUTH_WIDTH) / 2;
 

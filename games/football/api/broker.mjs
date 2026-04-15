@@ -235,12 +235,8 @@ function savePopulation(generation) {
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const b of state.population) {
-    // Use the cached weightsJson string when available to avoid
-    // re-serializing on every save (breed / reset).
-    const weightsStr = b._weightsJson || JSON.stringify(Array.from(b.weights));
-    if (!b._weightsJson) b._weightsJson = weightsStr;
     ins.run(
-      b.id, generation, b.name, weightsStr,
+      b.id, generation, b.name, getWeightsJson(b),
       b.popMatches, b.popGoalDiff,
       b.fallbackMatches, b.fallbackWins, b.fallbackDraws,
       b.fitness, b.isFrozenSeed ? 1 : 0,
@@ -263,11 +259,13 @@ function newBrain(id, weights, isFrozenSeed = false) {
     id,
     name: randomSurname(),
     weights: w,
-    // Pre-serialize weights to a JSON string fragment exactly once
-    // per brain, when it enters the population. /matchup responses
-    // splice this string in directly — avoids re-running JSON.stringify
-    // on a 1233-element numeric array for every request.
-    _weightsJson: JSON.stringify(Array.from(w)),
+    // Lazy-materialized weights JSON. /matchup is ID-only so the hot
+    // path never needs this; the only consumers are /population (one
+    // request per worker per generation) and savePopulation (one per
+    // breed — which is also throttled). Computing eagerly in newBrain
+    // cost ~30 ms of JSON.stringify per breed × 2 breeds/sec = 6% of
+    // a core doing work nothing was reading.
+    _weightsJson: null,
     popMatches: base.popMatches ?? 0,
     popGoalDiff: base.popGoalDiff ?? 0,
     fallbackMatches: base.fallbackMatches ?? 0,
@@ -276,6 +274,16 @@ function newBrain(id, weights, isFrozenSeed = false) {
     fitness: base.fitness ?? 0,
     isFrozenSeed,
   };
+}
+
+/** Materialise a brain's weights as a JSON string fragment on demand,
+ *  caching the result so repeat calls (same generation) are O(1).
+ *  Used by `/population` and `savePopulation`. */
+function getWeightsJson(brain) {
+  if (brain._weightsJson === null) {
+    brain._weightsJson = JSON.stringify(Array.from(brain.weights));
+  }
+  return brain._weightsJson;
 }
 
 function initPopulationFromWarmStart(config) {
@@ -312,6 +320,7 @@ function initState() {
     state.generation = 1;
     savePopulation(state.generation);
   }
+  lastSavedGeneration = state.generation;
   refreshPopulationIndex();
 }
 
@@ -394,8 +403,31 @@ function tryBreed() {
   state.generation += 1;
   refreshPopulationIndex();
   state.fitnessDirty = true;
-  savePopulation(state.generation);
+  schedulePersist();
   return true;
+}
+
+// ── Coalesced population persistence ──────────────────────────
+//
+// Breeding runs ~2 gens/sec under live load, and each savePopulation
+// does a DELETE + 50 INSERTs with ~12 KB of weights JSON each.
+// That's ~100 DB writes/sec on the hot path. Coalescing to once per
+// N seconds reduces breed-path IO by ~20×, keeps crash recovery
+// within one save interval, and doesn't change semantics for any
+// other endpoint (loadPopulation just picks up whatever's most
+// recently persisted on boot).
+const SAVE_COALESCE_MS = 10_000;
+let lastSavedGeneration = 0;
+let saveTimer = null;
+function schedulePersist() {
+  if (saveTimer !== null) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    if (state.generation !== lastSavedGeneration) {
+      savePopulation(state.generation);
+      lastSavedGeneration = state.generation;
+    }
+  }, SAVE_COALESCE_MS);
 }
 
 // ── Matchup selection ─────────────────────────────────────────
@@ -616,7 +648,7 @@ function handlePopulation(req, res) {
   const brainParts = new Array(pop.length);
   for (let i = 0; i < pop.length; i++) {
     const b = pop[i];
-    brainParts[i] = `{"id":${b.id},"name":${JSON.stringify(b.name)},"weights":${b._weightsJson}}`;
+    brainParts[i] = `{"id":${b.id},"name":${JSON.stringify(b.name)},"weights":${getWeightsJson(b)}}`;
   }
   const body = `{"generation":${state.generation},"brains":[${brainParts.join(',')}]}`;
   const buf = Buffer.from(body);
@@ -760,7 +792,10 @@ function handleReset(req, res) {
   state.showcaseCounter = 0;
   state.fitnessDirty = true;
   refreshPopulationIndex();
+  // Reset is rare; flush synchronously so a crash right after reset
+  // still leaves the warm-start seed on disk.
   savePopulation(state.generation);
+  lastSavedGeneration = state.generation;
   json(res, 200, { ok: true, generation: state.generation });
 }
 
@@ -805,10 +840,45 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
-initState();
+/** Flush any coalesced save and exit cleanly on systemctl stop / SIGTERM
+ *  / SIGINT so we don't lose the last <SAVE_COALESCE_MS ms of training. */
+function flushAndExit(signal) {
+  try {
+    if (state.generation !== lastSavedGeneration) {
+      savePopulation(state.generation);
+      lastSavedGeneration = state.generation;
+    }
+  } catch (err) {
+    process.stderr.write(`[football broker] flush failed on ${signal}: ${err}\n`);
+  }
+  process.exit(0);
+}
+process.on('SIGTERM', () => flushAndExit('SIGTERM'));
+process.on('SIGINT',  () => flushAndExit('SIGINT'));
 
-server.listen(PORT, HOST, () => {
-  process.stdout.write(
-    `[football broker] listening on ${HOST}:${PORT}, generation=${state.generation}, population=${state.population.length}\n`,
-  );
-});
+// Only auto-start when invoked directly (`node broker.mjs`) — tests
+// import this module for its pure helpers and don't want a server
+// listening on a real port or a real DB being opened.
+const IS_MAIN = import.meta.url === `file://${process.argv[1]}`;
+if (IS_MAIN) {
+  initState();
+  server.listen(PORT, HOST, () => {
+    process.stdout.write(
+      `[football broker] listening on ${HOST}:${PORT}, generation=${state.generation}, population=${state.population.length}\n`,
+    );
+  });
+}
+
+// Named exports for tests. These are the pure helpers whose
+// correctness can be checked without spinning up a full broker
+// instance — matchup pool construction, lazy weights JSON caching,
+// brain shape canonicalisation.
+export {
+  newBrain,
+  getWeightsJson,
+  buildMatchupPools,
+  pickMatchupJson,
+  state as _state,          // exposed for tests only
+  refreshPopulationIndex,   // tests can rebuild the id index after mutating state
+  FALLBACK_MATCHUP_EVERY_N,
+};

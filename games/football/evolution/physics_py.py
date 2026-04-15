@@ -36,7 +36,6 @@ BALL_VEL_CUTOFF = 0.1
 BALL_VEL_CUTOFF_SQ = BALL_VEL_CUTOFF * BALL_VEL_CUTOFF
 BALL_RADIUS = 1.8711
 RESPAWN_DROP_Z = 60
-OUT_OF_BOUNDS_MARGIN = 50
 
 # Player
 MAX_PLAYER_SPEED = 10
@@ -269,6 +268,11 @@ def tick(state: dict, p1_act: Optional[list], p2_act: Optional[list]) -> dict:
 
     _update_ball(state)
     _check_ball_score_or_out(state)
+    # Goal-frame collision runs after the scoring check — see the
+    # JS companion for the design.
+    field = state["field"]
+    _resolve_ball_goal_box(state, _goal_box(field, "left"))
+    _resolve_ball_goal_box(state, _goal_box(field, "right"))
 
     if state["tick"] - state["lastKickTick"] > STALL_TICKS:
         _reset_ball(state)
@@ -379,6 +383,78 @@ def _charge_stamina_from_displacement(p: dict, pre_x: float, pre_y: float) -> No
 
 
 # ── Field bounds & goal-frame collision ──────────────────────
+#
+# Mirror of physics.js — see the JS doc block for the design:
+# a single canonical goal-box AABB per side, shared by players
+# (2D) and the ball (3D sphere-as-cube), with push-out along the
+# axis of minimum penetration.
+
+
+def _goal_box(f: dict, side: str) -> dict:
+    if side == "left":
+        return {
+            "minX": f["goalLLeft"], "maxX": f["goalLineL"],
+            "minY": f["goalMouthYMin"], "maxY": f["goalMouthYMax"],
+            "minZ": 0.0, "maxZ": f["goalMouthZMax"],
+        }
+    return {
+        "minX": f["goalLineR"], "maxX": f["goalRRight"],
+        "minY": f["goalMouthYMin"], "maxY": f["goalMouthYMax"],
+        "minZ": 0.0, "maxZ": f["goalMouthZMax"],
+    }
+
+
+def _min_penetration_push(ent: dict, box: dict, use_z: bool, vel: dict):
+    if ent["maxX"] <= box["minX"] or ent["minX"] >= box["maxX"]:
+        return None
+    if ent["maxY"] <= box["minY"] or ent["minY"] >= box["maxY"]:
+        return None
+    if use_z and (ent["maxZ"] <= box["minZ"] or ent["minZ"] >= box["maxZ"]):
+        return None
+
+    vx = vel.get("vx", 0) or 0
+    vy = vel.get("vy", 0) or 0
+    vz = vel.get("vz", 0) or 0
+    push_min_x = ent["maxX"] - box["minX"]
+    push_max_x = box["maxX"] - ent["minX"]
+    push_min_y = ent["maxY"] - box["minY"]
+    push_max_y = box["maxY"] - ent["minY"]
+
+    if vx > 0:
+        dx = -push_min_x
+    elif vx < 0:
+        dx = push_max_x
+    else:
+        dx = -push_min_x if push_min_x < push_max_x else push_max_x
+    if vy > 0:
+        dy = -push_min_y
+    elif vy < 0:
+        dy = push_max_y
+    else:
+        dy = -push_min_y if push_min_y < push_max_y else push_max_y
+
+    EPS = 1e-9
+    tx = abs(dx) / (abs(vx) + EPS)
+    ty = abs(dy) / (abs(vy) + EPS)
+
+    if not use_z:
+        return {"axis": "x", "delta": dx} if tx <= ty else {"axis": "y", "delta": dy}
+
+    push_min_z = ent["maxZ"] - box["minZ"]
+    push_max_z = box["maxZ"] - ent["minZ"]
+    if vz > 0:
+        dz = -push_min_z
+    elif vz < 0:
+        dz = push_max_z
+    else:
+        dz = -push_min_z if push_min_z < push_max_z else push_max_z
+    tz = abs(dz) / (abs(vz) + EPS)
+    if tx <= ty and tx <= tz:
+        return {"axis": "x", "delta": dx}
+    if ty <= tz:
+        return {"axis": "y", "delta": dy}
+    return {"axis": "z", "delta": dz}
+
 
 def _clamp_player_to_field(p: dict, f: dict) -> None:
     if p["x"] < 0:
@@ -394,36 +470,74 @@ def _clamp_player_to_field(p: dict, f: dict) -> None:
 def _clamp_and_collide(state: dict, p: dict) -> None:
     f = state["field"]
     _clamp_player_to_field(p, f)
-    _resolve_goal_collision(p, f["playerWidth"], f["goalLLeft"], f["goalLRight"], f)
-    _resolve_goal_collision(p, f["playerWidth"], f["goalRLeft"], f["goalRRight"], f)
+    _resolve_player_goal_box(p, f["playerWidth"], _goal_box(f, "left"))
+    _resolve_player_goal_box(p, f["playerWidth"], _goal_box(f, "right"))
     # Goal resolution can push the player past a field edge; re-clamp.
     _clamp_player_to_field(p, f)
 
 
-def _resolve_goal_collision(p: dict, pw: float, gxL: float, gxR: float, f: dict) -> None:
-    pxL = p["x"]
-    pxR = p["x"] + pw
-    if pxR <= gxL or pxL >= gxR:
+def _resolve_player_goal_box(p: dict, pw: float, box: dict) -> None:
+    ent = {
+        "minX": p["x"], "maxX": p["x"] + pw,
+        "minY": p["y"], "maxY": p["y"] + PLAYER_HEIGHT,
+    }
+    push = _min_penetration_push(ent, box, False, p)
+    if push is None:
         return
-    if p["y"] + PLAYER_HEIGHT <= f["goalMouthYMin"] or p["y"] >= f["goalMouthYMax"]:
-        return
-
-    push_left = pxR - gxL
-    push_right = gxR - pxL
-    push_up = p["y"] + PLAYER_HEIGHT - f["goalMouthYMin"]
-    push_down = f["goalMouthYMax"] - p["y"]
-
-    x_push = min(push_left, push_right)
-    y_push = min(push_up, push_down)
-
-    if x_push <= y_push:
-        p["x"] += -push_left if push_left <= push_right else push_right
+    if push["axis"] == "x":
+        p["x"] += push["delta"]
         p["vx"] = 0
         p["pushVx"] = 0
     else:
-        p["y"] += -push_up if push_up <= push_down else push_down
+        p["y"] += push["delta"]
         p["vy"] = 0
         p["pushVy"] = 0
+
+
+def _resolve_ball_goal_box(state: dict, box: dict) -> None:
+    ball = state["ball"]
+    if ball.get("frozen"):
+        return
+
+    # Open-mouth exemption — see JS companion.
+    in_mouth_y = (
+        ball["y"] - BALL_RADIUS >= box["minY"]
+        and ball["y"] + BALL_RADIUS <= box["maxY"]
+    )
+    in_mouth_z = ball["z"] + BALL_RADIUS <= box["maxZ"]
+    if in_mouth_y and in_mouth_z:
+        return
+
+    ent = {
+        "minX": ball["x"] - BALL_RADIUS, "maxX": ball["x"] + BALL_RADIUS,
+        "minY": ball["y"] - BALL_RADIUS, "maxY": ball["y"] + BALL_RADIUS,
+        "minZ": ball["z"] - BALL_RADIUS, "maxZ": ball["z"] + BALL_RADIUS,
+    }
+    push = _min_penetration_push(ent, box, True, ball)
+    if push is None:
+        return
+    axis = push["axis"]
+    delta = push["delta"]
+    if axis == "x":
+        ball["x"] += delta
+        if ball["vx"] * delta < 0:
+            pre_vx = abs(ball["vx"])
+            ball["vx"] = -ball["vx"] * BOUNCE_RETAIN
+            _record_bounce(state, "x", pre_vx)
+    elif axis == "y":
+        ball["y"] += delta
+        if ball["vy"] * delta < 0:
+            pre_vy = abs(ball["vy"])
+            ball["vy"] = -ball["vy"] * BOUNCE_RETAIN
+            _record_bounce(state, "y", pre_vy)
+    else:
+        ball["z"] += delta
+        if ball["z"] < 0:
+            ball["z"] = 0
+        if ball["vz"] * delta < 0:
+            pre_vz = abs(ball["vz"])
+            ball["vz"] = -ball["vz"] * BOUNCE_RETAIN
+            _record_bounce(state, "z", pre_vz)
 
 
 # ── Kick state machine ────────────────────────────────────────
@@ -653,7 +767,7 @@ def _check_ball_score_or_out(state: dict) -> None:
     if ball["frozen"]:
         return
 
-    if ball["x"] < -OUT_OF_BOUNDS_MARGIN or ball["x"] > f["width"] + OUT_OF_BOUNDS_MARGIN:
+    if ball["x"] + BALL_RADIUS < 0 or ball["x"] - BALL_RADIUS > f["width"]:
         _ball_out(state)
         return
 
@@ -667,46 +781,16 @@ def _check_ball_score_or_out(state: dict) -> None:
 
     fully_past_l = ball["x"] + BALL_RADIUS <= f["goalLineL"]
     fully_past_r = ball["x"] - BALL_RADIUS >= f["goalLineR"]
-    within_box_l_x = ball["x"] >= f["goalLLeft"]
-    within_box_r_x = ball["x"] <= f["goalRRight"]
     within_mouth_y = (
         ball["y"] - BALL_RADIUS >= f["goalMouthYMin"]
         and ball["y"] + BALL_RADIUS <= f["goalMouthYMax"]
     )
     below_crossbar = ball["z"] + BALL_RADIUS <= f["goalMouthZMax"]
 
-    goal_l = crossed_l and fully_past_l and within_box_l_x and within_mouth_y and below_crossbar
-    goal_r = crossed_r and fully_past_r and within_box_r_x and within_mouth_y and below_crossbar
-
+    goal_l = crossed_l and fully_past_l and within_mouth_y and below_crossbar
+    goal_r = crossed_r and fully_past_r and within_mouth_y and below_crossbar
     if goal_l or goal_r:
         _score_goal(state, "left" if goal_l else "right")
-        return
-
-    # Past the line but not a goal. If still in the mouth (y/z) the ball
-    # is mid-cross — let it continue. Otherwise, only bounce if the ball
-    # is physically against a post or the crossbar. A ball going around
-    # the side of the goal (y well outside the mouth) or over the top
-    # should pass freely so it can travel behind the goal.
-    if within_mouth_y and below_crossbar:
-        return
-
-    near_post_low = abs(ball["y"] - f["goalMouthYMin"]) <= BALL_RADIUS
-    near_post_high = abs(ball["y"] - f["goalMouthYMax"]) <= BALL_RADIUS
-    near_crossbar = within_mouth_y and abs(ball["z"] - f["goalMouthZMax"]) <= BALL_RADIUS
-    if not near_post_low and not near_post_high and not near_crossbar:
-        return
-
-    line = f["goalLineL"] if crossed_l else f["goalLineR"]
-    sign = 1 if crossed_l else -1
-    ball["x"] = line + sign * (BALL_RADIUS + 1)
-    if ball["vx"] * sign < 0:
-        pre_vx = abs(ball["vx"])
-        ball["vx"] = -ball["vx"] * BOUNCE_RETAIN
-        _record_bounce(state, "x", pre_vx)
-    if near_crossbar and ball["vz"] > 0:
-        pre_vz = abs(ball["vz"])
-        ball["vz"] = -pre_vz * BOUNCE_RETAIN
-        _record_bounce(state, "z", pre_vz)
 
 
 BOUNCE_EVENT_MIN = 0.3

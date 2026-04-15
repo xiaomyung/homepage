@@ -31,7 +31,6 @@ const BALL_VEL_CUTOFF = 0.1;
 const BALL_VEL_CUTOFF_SQ = BALL_VEL_CUTOFF * BALL_VEL_CUTOFF;
 export const BALL_RADIUS = 1.8711;
 const RESPAWN_DROP_Z = 60;
-const OUT_OF_BOUNDS_MARGIN = 50;
 
 // Player movement
 export const MAX_PLAYER_SPEED = 10;
@@ -243,6 +242,14 @@ export function tick(state, p1Act, p2Act) {
 
   updateBall(state);
   checkBallScoreOrOut(state);
+  // Goal-frame collision runs after the scoring check — a ball that
+  // legitimately crossed the open mouth has already frozen as a goal
+  // and will short-circuit the resolver. Every other overlap (sides,
+  // back, roof, posts, crossbar, from any direction) is pushed out
+  // along the minimum-penetration axis.
+  const field = state.field;
+  resolveBallGoalBox(state, goalBox(field, 'left'));
+  resolveBallGoalBox(state, goalBox(field, 'right'));
 
   if (state.tick - state.lastKickTick > STALL_TICKS) {
     resetBall(state);
@@ -350,7 +357,88 @@ function chargeStaminaFromDisplacement(p, preX, preY) {
   if (p.stamina < 0) p.stamina = 0;
 }
 
-/* ── Field bounds & goal-frame collision ─────────────────────── */
+/* ── Field bounds & goal-frame collision ──────────────────────
+ *
+ * Goal-frame collision is done against a single canonical "goal
+ * box" primitive per side:
+ *
+ *   LEFT:  [goalLLeft, goalLineL] × [mouthYMin, mouthYMax] × [0, mouthZMax]
+ *   RIGHT: [goalLineR, goalRRight] × [mouthYMin, mouthYMax] × [0, mouthZMax]
+ *
+ * The visible goal structure in the renderer is pinned to these
+ * same bounds (goalLineL/R is the front mouth, goalLLeft/goalRRight
+ * is the back). Both the ball and the stickmen resolve overlap
+ * with this AABB using the shared `minPenetrationPush` helper,
+ * which picks the axis of smallest overlap and returns a
+ * (axis, delta) push vector. The ball treats its sphere as an
+ * AABB of side 2*BALL_RADIUS; players are 2D rectangles (no z).
+ *
+ * Scoring check runs BEFORE ball-goal collision so a ball fully
+ * crossing the open mouth freezes as a goal and is not bounced.
+ */
+
+/** Goal box AABB for one side, in physics units. */
+function goalBox(f, side) {
+  if (side === 'left') {
+    return { minX: f.goalLLeft, maxX: f.goalLineL,
+             minY: f.goalMouthYMin, maxY: f.goalMouthYMax,
+             minZ: 0, maxZ: f.goalMouthZMax };
+  }
+  return { minX: f.goalLineR, maxX: f.goalRRight,
+           minY: f.goalMouthYMin, maxY: f.goalMouthYMax,
+           minZ: 0, maxZ: f.goalMouthZMax };
+}
+
+/**
+ * AABB-AABB push with velocity-biased axis selection. Given an
+ * entity AABB, a box AABB, and the entity's current velocity,
+ * returns `{ axis, delta }` pushing the entity out through the
+ * face it most recently crossed. The "entry face" is found by
+ * dividing each axis's push magnitude by that axis's velocity
+ * magnitude (rewind time) — the axis with the smallest rewind
+ * is the most recent entry, which is the physically correct
+ * face to push back through.
+ *
+ * Pure min-penetration (shallowest overlap) fails for classic
+ * "glancing post" cases where the ball clips a thin sliver of
+ * the box on one axis while entering deeply on another — this
+ * function resolves those by respecting motion direction.
+ *
+ * `useZ=false` ignores z axis — used for 2D players.
+ * Returns null if the AABBs do not overlap.
+ */
+function minPenetrationPush(ent, box, useZ, vel) {
+  if (ent.maxX <= box.minX || ent.minX >= box.maxX) return null;
+  if (ent.maxY <= box.minY || ent.minY >= box.maxY) return null;
+  if (useZ && (ent.maxZ <= box.minZ || ent.minZ >= box.maxZ)) return null;
+
+  // Push magnitudes on each axis, directed opposite to velocity so
+  // the entity is sent back the way it came. If velocity is zero
+  // on an axis, fall back to the shallower overlap side for that
+  // axis (the entity is stationary — push through nearest face).
+  const vx = vel.vx || 0, vy = vel.vy || 0, vz = vel.vz || 0;
+  const pushMinX = ent.maxX - box.minX; // magnitude to push in -x
+  const pushMaxX = box.maxX - ent.minX; // magnitude to push in +x
+  const pushMinY = ent.maxY - box.minY;
+  const pushMaxY = box.maxY - ent.minY;
+
+  const dx = vx > 0 ? -pushMinX : vx < 0 ? pushMaxX : (pushMinX < pushMaxX ? -pushMinX : pushMaxX);
+  const dy = vy > 0 ? -pushMinY : vy < 0 ? pushMaxY : (pushMinY < pushMaxY ? -pushMinY : pushMaxY);
+  const EPS = 1e-9;
+  const tx = Math.abs(dx) / (Math.abs(vx) + EPS);
+  const ty = Math.abs(dy) / (Math.abs(vy) + EPS);
+
+  if (!useZ) {
+    return tx <= ty ? { axis: 'x', delta: dx } : { axis: 'y', delta: dy };
+  }
+  const pushMinZ = ent.maxZ - box.minZ;
+  const pushMaxZ = box.maxZ - ent.minZ;
+  const dz = vz > 0 ? -pushMinZ : vz < 0 ? pushMaxZ : (pushMinZ < pushMaxZ ? -pushMinZ : pushMaxZ);
+  const tz = Math.abs(dz) / (Math.abs(vz) + EPS);
+  if (tx <= ty && tx <= tz) return { axis: 'x', delta: dx };
+  if (ty <= tz) return { axis: 'y', delta: dy };
+  return { axis: 'z', delta: dz };
+}
 
 function clampPlayerToField(p, f) {
   if (p.x < 0) p.x = 0;
@@ -362,35 +450,90 @@ function clampPlayerToField(p, f) {
 function clampAndCollide(state, p) {
   const f = state.field;
   clampPlayerToField(p, f);
-  resolveGoalCollision(p, f.playerWidth, f.goalLLeft, f.goalLRight, f);
-  resolveGoalCollision(p, f.playerWidth, f.goalRLeft, f.goalRRight, f);
+  resolvePlayerGoalBox(p, f.playerWidth, goalBox(f, 'left'));
+  resolvePlayerGoalBox(p, f.playerWidth, goalBox(f, 'right'));
   // The goal-frame resolution can push a player past a field edge (notably
   // the right goal → right wall). Re-clamp so the body stays fully inside.
   clampPlayerToField(p, f);
 }
 
-function resolveGoalCollision(p, pw, gxL, gxR, f) {
-  const pxL = p.x;
-  const pxR = p.x + pw;
-  if (pxR <= gxL || pxL >= gxR) return;
-  if (p.y + PLAYER_HEIGHT <= f.goalMouthYMin || p.y >= f.goalMouthYMax) return;
-
-  const pushLeft = pxR - gxL;
-  const pushRight = gxR - pxL;
-  const pushUp = p.y + PLAYER_HEIGHT - f.goalMouthYMin;
-  const pushDown = f.goalMouthYMax - p.y;
-
-  const xPush = Math.min(pushLeft, pushRight);
-  const yPush = Math.min(pushUp, pushDown);
-
-  if (xPush <= yPush) {
-    p.x += pushLeft <= pushRight ? -pushLeft : pushRight;
+/**
+ * Player-vs-goal-box collision. Player is a 2D AABB [x, x+pw] ×
+ * [y, y+ph] on the ground plane — z is ignored. Pushes the player
+ * out along the axis of minimum penetration and zeroes the velocity
+ * on that axis.
+ */
+function resolvePlayerGoalBox(p, pw, box) {
+  const ent = {
+    minX: p.x, maxX: p.x + pw,
+    minY: p.y, maxY: p.y + PLAYER_HEIGHT,
+  };
+  const push = minPenetrationPush(ent, box, false, p);
+  if (!push) return;
+  if (push.axis === 'x') {
+    p.x += push.delta;
     p.vx = 0;
     p.pushVx = 0;
   } else {
-    p.y += pushUp <= pushDown ? -pushUp : pushDown;
+    p.y += push.delta;
     p.vy = 0;
     p.pushVy = 0;
+  }
+}
+
+/**
+ * Ball-vs-goal-box collision. Ball is a sphere approximated as a
+ * cube of side 2*BALL_RADIUS for AABB math (the 2D game uses
+ * radius-around-center collisions everywhere else, so the inflation
+ * is consistent). Runs AFTER the scoring check so a ball legitimately
+ * crossing the open mouth is frozen as a goal and skips this path.
+ * On collision, the ball is pushed out along the minimum-penetration
+ * axis and the velocity component on that axis flips with a bounce
+ * damping, producing a believable rebound off any face of the goal.
+ */
+function resolveBallGoalBox(state, box) {
+  const ball = state.ball;
+  if (ball.frozen) return;
+
+  // Open-mouth exemption: if the ball sphere is fully inside the
+  // mouth y and z range, the front face is transparent — let the
+  // ball cross unimpeded so the scoring check (which runs one tick
+  // later) can see it "fully past the line". Without this, a ball
+  // straddling the goal line gets bounced back before it can score.
+  const inMouthY = ball.y - BALL_RADIUS >= box.minY
+                && ball.y + BALL_RADIUS <= box.maxY;
+  const inMouthZ = ball.z + BALL_RADIUS <= box.maxZ;
+  if (inMouthY && inMouthZ) return;
+
+  const ent = {
+    minX: ball.x - BALL_RADIUS, maxX: ball.x + BALL_RADIUS,
+    minY: ball.y - BALL_RADIUS, maxY: ball.y + BALL_RADIUS,
+    minZ: ball.z - BALL_RADIUS, maxZ: ball.z + BALL_RADIUS,
+  };
+  const push = minPenetrationPush(ent, box, true, ball);
+  if (!push) return;
+  if (push.axis === 'x') {
+    ball.x += push.delta;
+    if (ball.vx * push.delta < 0) {
+      const preVx = Math.abs(ball.vx);
+      ball.vx = -ball.vx * BOUNCE_RETAIN;
+      recordBounce(state, 'x', preVx);
+    }
+  } else if (push.axis === 'y') {
+    ball.y += push.delta;
+    if (ball.vy * push.delta < 0) {
+      const preVy = Math.abs(ball.vy);
+      ball.vy = -ball.vy * BOUNCE_RETAIN;
+      recordBounce(state, 'y', preVy);
+    }
+  } else {
+    ball.z += push.delta;
+    if (ball.z < 0) ball.z = 0;
+    if (ball.vz * push.delta < 0) {
+      const preVz = Math.abs(ball.vz);
+      ball.vz = -ball.vz * BOUNCE_RETAIN;
+      recordBounce(state, 'z', preVz);
+    }
   }
 }
 
@@ -618,9 +761,10 @@ function checkBallScoreOrOut(state) {
   const ball = state.ball;
   if (ball.frozen) return;
 
-  // Strict ordering: OOB → grace → goal. Freezing on either event keeps the
-  // next tick from re-triggering.
-  if (ball.x < -OUT_OF_BOUNDS_MARGIN || ball.x > f.width + OUT_OF_BOUNDS_MARGIN) {
+  // Out-of-bounds: ball fully past either field end. Fires as soon
+  // as the entire sphere clears the touchline — no margin, ball was
+  // visibly off-field well before the old 50-unit slack.
+  if (ball.x + BALL_RADIUS < 0 || ball.x - BALL_RADIUS > f.width) {
     ballOut(state);
     return;
   }
@@ -631,52 +775,20 @@ function checkBallScoreOrOut(state) {
   const crossedR = ball.x > f.goalLineR;
   if (!crossedL && !crossedR) return;
 
-  // Goal requires the whole ball past the line AND the ball fully inside
-  // the goal frame on all axes (between posts, below crossbar, not past the
-  // back wall).
+  // Goal requires the whole ball past the line AND the ball fully
+  // inside the goal mouth opening (between posts, below crossbar).
+  // Everything else — bouncing off the posts, crossbar, back wall,
+  // roof, or side walls — is handled by resolveBallGoalBox running
+  // immediately after this check.
   const fullyPastL = ball.x + BALL_RADIUS <= f.goalLineL;
   const fullyPastR = ball.x - BALL_RADIUS >= f.goalLineR;
-  const withinBoxLX = ball.x >= f.goalLLeft;
-  const withinBoxRX = ball.x <= f.goalRRight;
   const withinMouthY = ball.y - BALL_RADIUS >= f.goalMouthYMin
                     && ball.y + BALL_RADIUS <= f.goalMouthYMax;
   const belowCrossbar = ball.z + BALL_RADIUS <= f.goalMouthZMax;
 
-  const goalL = crossedL && fullyPastL && withinBoxLX && withinMouthY && belowCrossbar;
-  const goalR = crossedR && fullyPastR && withinBoxRX && withinMouthY && belowCrossbar;
-
-  if (goalL || goalR) {
-    scoreGoal(state, goalL ? 'left' : 'right');
-    return;
-  }
-
-  // Past the line but not a goal. If still in the mouth (y/z), the ball is
-  // mid-cross — let it continue. Otherwise, only bounce if the ball is
-  // physically against a post or the crossbar. A ball going around the
-  // side of the goal (y well outside the mouth) or over the top (z above
-  // the crossbar by more than a ball radius) should pass freely so it
-  // can travel behind the goal.
-  if (withinMouthY && belowCrossbar) return;
-
-  const nearPostLow  = Math.abs(ball.y - f.goalMouthYMin) <= BALL_RADIUS;
-  const nearPostHigh = Math.abs(ball.y - f.goalMouthYMax) <= BALL_RADIUS;
-  const nearCrossbar = withinMouthY
-    && Math.abs(ball.z - f.goalMouthZMax) <= BALL_RADIUS;
-  if (!nearPostLow && !nearPostHigh && !nearCrossbar) return;
-
-  const line = crossedL ? f.goalLineL : f.goalLineR;
-  const sign = crossedL ? 1 : -1;
-  ball.x = line + sign * (BALL_RADIUS + 1);
-  if (ball.vx * sign < 0) {
-    const preVx = Math.abs(ball.vx);
-    ball.vx = -ball.vx * BOUNCE_RETAIN;
-    recordBounce(state, 'x', preVx);
-  }
-  if (nearCrossbar && ball.vz > 0) {
-    const preVz = Math.abs(ball.vz);
-    ball.vz = -preVz * BOUNCE_RETAIN;
-    recordBounce(state, 'z', preVz);
-  }
+  const goalL = crossedL && fullyPastL && withinMouthY && belowCrossbar;
+  const goalR = crossedR && fullyPastR && withinMouthY && belowCrossbar;
+  if (goalL || goalR) scoreGoal(state, goalL ? 'left' : 'right');
 }
 
 /**

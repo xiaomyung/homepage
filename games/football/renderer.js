@@ -14,7 +14,7 @@
  */
 
 import * as THREE from './vendor/three.module.js';
-import { createField, FIELD_HEIGHT, FIELD_WIDTH_REF } from './physics.js?v=40';
+import { createField, FIELD_HEIGHT, FIELD_WIDTH_REF } from './physics.js?v=41';
 
 const POOL_SIZE = 400;
 

@@ -171,7 +171,7 @@ const COLOR_RED = rgb('#f7768e');
 /* ── Renderer ──────────────────────────────────────────────── */
 
 export class Renderer {
-  constructor(canvas, atlas, { fieldWidth = FIELD_WIDTH_REF, debugCam = false } = {}) {
+  constructor(canvas, atlas, { fieldWidth = FIELD_WIDTH_REF } = {}) {
     this.atlas = atlas;
     this.fieldWidth = fieldWidth;
     this._field = createField(fieldWidth);
@@ -184,7 +184,9 @@ export class Renderer {
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(CAMERA_FOV, 2, 0.1, 4000);
     this._placeCamera();
-    if (debugCam) this._initDebugCam();
+    // Debug free-camera is always wired up but starts inactive. UI (or
+    // any other caller) flips it on/off via setDebugCam().
+    this._initDebugCam();
 
     this._baseMaterial = new THREE.ShaderMaterial({
       uniforms: {
@@ -370,7 +372,7 @@ export class Renderer {
       this._pool[i].visible = false;
     }
 
-    if (this._debugCam) this._stepDebugCam();
+    if (this._debugCam && this._debugCam.active) this._stepDebugCam();
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -379,7 +381,7 @@ export class Renderer {
   _placeCamera() {
     // When debug-cam is active, resize() still updates `camera.aspect` but
     // we leave the pose alone — `_stepDebugCam()` owns position/lookAt.
-    if (this._debugCam) return;
+    if (this._debugCam && this._debugCam.active) return;
     const midX = this.fieldWidth / 2;
     const midZ = (FIELD_HEIGHT * Z_STRETCH) / 2;
     const aspect = this.camera.aspect || 4;
@@ -398,10 +400,13 @@ export class Renderer {
     this.camera.updateProjectionMatrix();
   }
 
-  /* ── Debug cam (gated on ?debugCam=1) ───────────────────────
-   * Left-drag orbits yaw/pitch around `target`. WASD pans the target in
-   * the camera's forward/right plane, Q/E lower/raise it. Mouse wheel
-   * zooms distance. R resets to the default showcase pose. */
+  /* ── Debug free-camera (runtime-toggleable) ─────────────────
+   * Listeners are always attached but short-circuit when inactive.
+   * Left-drag orbits yaw/pitch around `target`. WASD pans on the
+   * ground plane (camera-relative forward/right). Q/E lower/raise.
+   * Mouse wheel zooms distance. R resets to the default showcase
+   * pose. setDebugCam(on) flips the `active` flag and restores the
+   * canonical pose when turning off. */
   _initDebugCam() {
     const midX = this.fieldWidth / 2;
     const midZ = (FIELD_HEIGHT * Z_STRETCH) / 2;
@@ -412,6 +417,7 @@ export class Renderer {
     const distance = halfFieldWidth / tanHalfHoriz;
     const defaultPitch = (90 - CAMERA_TILT_DEG) * Math.PI / 180;
     this._debugCam = {
+      active: false,
       target: new THREE.Vector3(midX, 0, midZ),
       defaultTarget: new THREE.Vector3(midX, 0, midZ),
       distance, defaultDistance: distance,
@@ -423,9 +429,14 @@ export class Renderer {
       lastPointerY: 0,
     };
     const canvas = this.renderer.domElement;
-    canvas.style.touchAction = 'none';
+    const isTypingTarget = () => {
+      const el = document.activeElement;
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+    };
     canvas.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return;
+      if (!this._debugCam.active || e.button !== 0) return;
       this._debugCam.dragging = true;
       this._debugCam.lastPointerX = e.clientX;
       this._debugCam.lastPointerY = e.clientY;
@@ -433,7 +444,7 @@ export class Renderer {
     });
     canvas.addEventListener('pointermove', (e) => {
       const dc = this._debugCam;
-      if (!dc.dragging) return;
+      if (!dc.active || !dc.dragging) return;
       const dx = e.clientX - dc.lastPointerX;
       const dy = e.clientY - dc.lastPointerY;
       dc.lastPointerX = e.clientX;
@@ -449,19 +460,35 @@ export class Renderer {
     canvas.addEventListener('pointerup', stopDrag);
     canvas.addEventListener('pointercancel', stopDrag);
     canvas.addEventListener('wheel', (e) => {
-      e.preventDefault();
       const dc = this._debugCam;
+      if (!dc.active) return;
+      e.preventDefault();
       dc.distance = Math.max(40, Math.min(4000, dc.distance * (1 + e.deltaY * 0.001)));
     }, { passive: false });
     window.addEventListener('keydown', (e) => {
+      const dc = this._debugCam;
+      if (!dc.active || isTypingTarget()) return;
       const k = e.key.toLowerCase();
-      if ('wasdqer'.includes(k)) this._debugCam.keys.add(k);
+      if ('wasdqer'.includes(k)) dc.keys.add(k);
     });
     window.addEventListener('keyup', (e) => {
       this._debugCam.keys.delete(e.key.toLowerCase());
     });
-    // eslint-disable-next-line no-console
-    console.log('[football] debug cam on. drag=orbit, wasd=pan, q/e=up-down, wheel=zoom, r=reset');
+  }
+
+  setDebugCam(on) {
+    const dc = this._debugCam;
+    if (!dc || dc.active === !!on) return;
+    dc.active = !!on;
+    if (!dc.active) {
+      dc.keys.clear();
+      dc.dragging = false;
+      this._placeCamera(); // restore showcase pose
+    }
+  }
+
+  isDebugCamActive() {
+    return !!(this._debugCam && this._debugCam.active);
   }
 
   _stepDebugCam() {

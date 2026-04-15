@@ -475,6 +475,24 @@ body {
   text-align: right;
 }
 
+.game-freecam {
+  margin-top: 0.6rem;
+  margin-bottom: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.game-freecam-help {
+  margin-bottom: 0;
+  grid-template-columns: auto 1fr;
+  max-width: 18rem;
+}
+
+.game-freecam-help[data-open="false"] {
+  display: none;
+}
+
 @media (max-width: 720px) {
   .game-stats { grid-template-columns: auto 1fr; }
   .game-config { grid-template-columns: 1fr; }

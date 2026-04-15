@@ -378,6 +378,29 @@ export function createConfigControls({ apiBase }) {
   };
 }
 
+/* ── Free camera toggle ─────────────────────────────────── */
+
+/**
+ * Wires the options-panel freecam toggle to the renderer's debug cam.
+ * Shows a keybind help block while freecam is active.
+ */
+export function createFreeCamToggle({ renderer }) {
+  const btn = document.getElementById('game-freecam-btn');
+  const help = document.getElementById('game-freecam-help');
+  if (!btn || !help) return;
+  const render = () => {
+    const on = renderer.isDebugCamActive();
+    btn.textContent = on ? '[ freecam: on ]' : '[ freecam: off ]';
+    btn.dataset.active = on ? 'true' : 'false';
+    help.dataset.open = on ? 'true' : 'false';
+  };
+  btn.addEventListener('click', () => {
+    renderer.setDebugCam(!renderer.isDebugCamActive());
+    render();
+  });
+  render();
+}
+
 /**
  * Wires the reset button to POST /reset after a confirmation dialog.
  * On success, calls the provided callback (usually to refresh local state).

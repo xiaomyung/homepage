@@ -18,7 +18,7 @@
  */
 
 import { buildAtlas } from './atlas.js';
-import { Renderer } from './renderer.js?v=61';
+import { Renderer } from './renderer.js?v=62';
 import {
   createField,
   createState,
@@ -37,6 +37,7 @@ import {
   createFitnessGraph,
   createConfigControls,
   createResetButton,
+  createFreeCamToggle,
   installAutoPause,
 } from './ui.js';
 
@@ -64,10 +65,8 @@ async function main() {
   const atlas = await buildAtlas();
 
   const canvas = document.getElementById('game-canvas');
-  const debugCam = new URLSearchParams(window.location.search).has('debugCam');
-  renderer = new Renderer(canvas, atlas, { debugCam });
+  renderer = new Renderer(canvas, atlas);
   renderer.autoResize();
-  if (debugCam) window.__footballRenderer = renderer;
 
   scoreboard = createScoreboard();
   statsPanel = createStatsPanel({ apiBase: API_BASE });
@@ -87,6 +86,7 @@ async function main() {
   });
 
   createOptionsToggle();
+  createFreeCamToggle({ renderer });
   createResetButton({
     apiBase: API_BASE,
     onReset: () => {

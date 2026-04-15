@@ -448,13 +448,18 @@ export class Renderer {
     // Center circle + center dot.
     const midZ = (zFar + zNear) / 2;
     const centerR = FIELD_HEIGHT * Z_STRETCH * 0.22;  // ~22% of depth radius
-    this._addArc(w / 2, midZ, centerR, 0, TWO_PI, 48, mutedMat);
-    this._addArc(w / 2, midZ, centerR * 0.06, 0, TWO_PI, 12, mutedMat);
+    this._addArc(w / 2, midZ, centerR, centerR, 0, TWO_PI, 48, mutedMat);
+    this._addArc(w / 2, midZ, centerR * 0.06, centerR * 0.06, 0, TWO_PI, 12, mutedMat);
 
-    // Penalty arcs ("D"s) protruding from each goal line into the field.
-    const arcR = centerR * 0.55;
-    this._addArc(f.goalLineL, midZ, arcR, -Math.PI / 2, Math.PI / 2, 24, mutedMat);
-    this._addArc(f.goalLineR, midZ, arcR, Math.PI / 2, 3 * Math.PI / 2, 24, mutedMat);
+    // Penalty arcs — half-ellipses whose chord is the goal mouth (z-axis
+    // tied to the posts) with the x-semiaxis stretched deeper into the
+    // field. Endpoints stay pinned to the goalposts, curve bulges inward
+    // without wrapping around into a loop.
+    const mouthCenterZ = ((f.goalMouthYMin + f.goalMouthYMax) / 2) * Z_STRETCH;
+    const mouthHalfZ   = ((f.goalMouthYMax - f.goalMouthYMin) / 2) * Z_STRETCH;
+    const arcDepth = mouthHalfZ * 2;  // x-semiaxis = 2× the chord half
+    this._addArc(f.goalLineL, mouthCenterZ, arcDepth, mouthHalfZ, -Math.PI / 2, Math.PI / 2, 48, mutedMat);
+    this._addArc(f.goalLineR, mouthCenterZ, arcDepth, mouthHalfZ, Math.PI / 2, 3 * Math.PI / 2, 48, mutedMat);
 
     const goalDepth = f.goalLRight - f.goalLLeft;
     const goalWidth = (f.goalMouthYMax - f.goalMouthYMin) * Z_STRETCH;
@@ -473,17 +478,18 @@ export class Renderer {
     if (geometry) this._staticGeometries.push(geometry);
   }
 
-  /** Add an XZ-plane arc (or full circle) centered at (cx, cz) from
-   *  `aStart` to `aEnd` radians, sampled with `segments` line segments.
-   *  For full circles, aEnd = aStart + 2π. */
-  _addArc(cx, cz, radius, aStart, aEnd, segments, material) {
+  /** Add an XZ-plane ellipse arc centered at (cx, cz) with x-semiaxis
+   *  `rx` and z-semiaxis `rz`, from parametric angle `aStart` to `aEnd`,
+   *  sampled with `segments` line segments. Pass `rz = rx` for a circle;
+   *  pass `aEnd = aStart + 2π` for a closed loop. */
+  _addArc(cx, cz, rx, rz, aStart, aEnd, segments, material) {
     const points = [];
     for (let i = 0; i <= segments; i++) {
       const a = aStart + (i / segments) * (aEnd - aStart);
       points.push(new THREE.Vector3(
-        cx + Math.cos(a) * radius,
+        cx + Math.cos(a) * rx,
         0,
-        cz + Math.sin(a) * radius,
+        cz + Math.sin(a) * rz,
       ));
     }
     const geom = new THREE.BufferGeometry().setFromPoints(points);

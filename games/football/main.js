@@ -18,14 +18,14 @@
  */
 
 import { buildAtlas } from './atlas.js';
-import { Renderer } from './renderer.js?v=31';
+import { Renderer } from './renderer.js?v=32';
 import {
   createField,
   createState,
   createSeededRng,
   tick as physicsTick,
   buildInputs,
-} from './physics.js?v=31';
+} from './physics.js?v=32';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import {
@@ -51,6 +51,9 @@ let statsPanel = null;
 let configControls = null;
 let workers = [];
 let currentMatch = null;
+// Reused NN input buffers — avoid per-tick allocation in buildInputs().
+const p1InputBuf = new Array(18);
+const p2InputBuf = new Array(18);
 
 async function main() {
   // Load the SDF atlas first — everything else depends on it
@@ -165,14 +168,12 @@ function frame() {
     return;
   }
 
-  const p1Input = buildInputs(state, 'p1');
   const p1Action = p1Brain
-    ? Array.from(p1Brain.forward(p1Input))
+    ? p1Brain.forward(buildInputs(state, 'p1', p1InputBuf))
     : fallbackAction(state, 'p1');
 
-  const p2Input = buildInputs(state, 'p2');
   const p2Action = p2Brain
-    ? Array.from(p2Brain.forward(p2Input))
+    ? p2Brain.forward(buildInputs(state, 'p2', p2InputBuf))
     : fallbackAction(state, 'p2');
 
   physicsTick(state, p1Action, p2Action);

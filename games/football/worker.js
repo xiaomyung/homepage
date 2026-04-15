@@ -113,6 +113,10 @@ async function main() {
 
 /* ── Match runner ───────────────────────────────────────── */
 
+// Reused NN input buffers — avoid per-tick allocation in buildInputs().
+const p1InputBuf = new Array(18);
+const p2InputBuf = new Array(18);
+
 function runMatch(matchup) {
   const field = createField();
   const seed = (Math.random() * 2 ** 31) >>> 0;
@@ -129,16 +133,10 @@ function runMatch(matchup) {
       continue;
     }
 
-    const p1Input = buildInputs(state, 'p1');
-    const p1Action = p1Brain.forward(p1Input);
-
-    let p2Action;
-    if (p2Brain === null) {
-      p2Action = fallbackAction(state, 'p2');
-    } else {
-      const p2Input = buildInputs(state, 'p2');
-      p2Action = p2Brain.forward(p2Input);
-    }
+    const p1Action = p1Brain.forward(buildInputs(state, 'p1', p1InputBuf));
+    const p2Action = p2Brain === null
+      ? fallbackAction(state, 'p2')
+      : p2Brain.forward(buildInputs(state, 'p2', p2InputBuf));
 
     physicsTick(state, p1Action, p2Action);
   }

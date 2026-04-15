@@ -224,8 +224,12 @@ function loadPopulation() {
 }
 
 function savePopulation(generation) {
-  const del = db.prepare('DELETE FROM brains WHERE generation = ?');
-  del.run(generation);
+  // Wipe ALL prior snapshots — the brains table mirrors the current
+  // population, not a history. Historical fitness still lives in the
+  // `generations` table. This also avoids UNIQUE-constraint crashes:
+  // `id` is a global PRIMARY KEY, so leaving old rows around and
+  // inserting id=0..49 for the new generation collides.
+  db.prepare('DELETE FROM brains').run();
   const ins = db.prepare(
     `INSERT INTO brains (
         id, generation, name, weights,
@@ -872,13 +876,27 @@ if (IS_MAIN) {
 // Named exports for tests. These are the pure helpers whose
 // correctness can be checked without spinning up a full broker
 // instance — matchup pool construction, lazy weights JSON caching,
-// brain shape canonicalisation.
+// brain shape canonicalisation, plus a targeted reinit that opens
+// a fresh DB at a caller-supplied path so the persistence path
+// can be exercised against ephemeral /tmp files.
 export {
   newBrain,
   getWeightsJson,
   buildMatchupPools,
   pickMatchupJson,
-  state as _state,          // exposed for tests only
-  refreshPopulationIndex,   // tests can rebuild the id index after mutating state
+  state as _state,
+  refreshPopulationIndex,
+  savePopulation as _savePopulation,
+  loadPopulation as _loadPopulation,
   FALLBACK_MATCHUP_EVERY_N,
 };
+
+/** Test-only: close any currently-open DB and open a fresh one at
+ *  `path`, applying the schema. Lets broker.test.mjs exercise the
+ *  real persistence path against a scratch file in /tmp without
+ *  interfering with the production DB. */
+export function _reopenDbForTest(path) {
+  if (db) try { db.close(); } catch { /* ignore */ }
+  db = new DatabaseSync(path);
+  db.exec(SCHEMA_SQL);
+}

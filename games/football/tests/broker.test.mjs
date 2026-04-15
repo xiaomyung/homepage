@@ -23,9 +23,15 @@ import {
   pickMatchupJson,
   _state,
   refreshPopulationIndex,
+  _savePopulation,
+  _loadPopulation,
+  _reopenDbForTest,
   FALLBACK_MATCHUP_EVERY_N,
 } from '../api/broker.mjs';
 import { WEIGHT_COUNT } from '../evolution/ga.mjs';
+import { unlinkSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /* ── Fixtures ─────────────────────────────────────────────── */
 
@@ -228,6 +234,82 @@ test('pickMatchupJson response has no weight arrays anywhere', () => {
 });
 
 /* ── pools are reused across all picks in one request ─────── */
+
+/* ── Persistence regression ───────────────────────────────── */
+
+test('savePopulation handles repeated saves without UNIQUE constraint errors', () => {
+  // Regression for a real bug: savePopulation used to DELETE only
+  // rows for the generation being saved, but `id` is a global
+  // PRIMARY KEY AUTOINCREMENT. The SECOND breed's save would try
+  // to INSERT id=0 while gen1's id=0 still existed → UNIQUE
+  // constraint failure → broker process exited → systemd restart
+  // loop. This test exercises the real savePopulation against an
+  // ephemeral on-disk DB and runs it TWICE in a row — the first
+  // save with a gen-1 population, the second with a simulated
+  // gen-2 population that reuses the same brain IDs.
+  const tmpPath = join(tmpdir(), `football-save-test-${process.pid}-${Date.now()}.db`);
+  try {
+    _reopenDbForTest(tmpPath);
+
+    // Save 1 — gen 1, ids 0..9.
+    const pop1 = fakePopulation(10);
+    installPopulation(pop1);
+    _state.generation = 1;
+    _savePopulation(1);
+
+    // Save 2 — gen 2, same ids 0..9 (this is how breeding works:
+    // new generation reuses the id space). The DELETE FROM brains
+    // inside savePopulation must wipe gen-1 rows first, or the
+    // INSERT id=0 collides.
+    const pop2 = fakePopulation(10);
+    for (const b of pop2) b.popMatches = 5; // slightly different state
+    installPopulation(pop2);
+    _state.generation = 2;
+    assert.doesNotThrow(
+      () => _savePopulation(2),
+      'savePopulation must be callable repeatedly as breeding advances the generation',
+    );
+
+    // Sanity: after the save, loadPopulation sees gen-2 and only
+    // gen-2 (gen-1 rows have been wiped).
+    const loaded = _loadPopulation();
+    assert.equal(loaded.length, 10, 'loaded population should match most recent save');
+    for (const b of loaded) {
+      assert.equal(b.popMatches, 5, 'loaded brain should reflect gen-2 state, not gen-1');
+    }
+  } finally {
+    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
+  }
+});
+
+test('savePopulation materialises lazy weights JSON on first save', () => {
+  const tmpPath = join(tmpdir(), `football-save-lazy-${process.pid}-${Date.now()}.db`);
+  try {
+    _reopenDbForTest(tmpPath);
+    const pop = fakePopulation(5);
+    // Precondition: all brains start with null _weightsJson after newBrain.
+    for (const b of pop) assert.equal(b._weightsJson, null);
+    installPopulation(pop);
+    _state.generation = 1;
+    _savePopulation(1);
+    // After save, every brain must have a materialised JSON cache
+    // (populated by getWeightsJson during the INSERT loop).
+    for (const b of pop) {
+      assert.ok(typeof b._weightsJson === 'string',
+        'post-save cache must hold the serialised weight string');
+      assert.ok(b._weightsJson.length > 100, 'cache should be non-trivial JSON');
+    }
+    // And the DB roundtrip preserves the weights exactly.
+    const loaded = _loadPopulation();
+    assert.equal(loaded.length, pop.length);
+    for (let i = 0; i < pop.length; i++) {
+      assert.equal(loaded[i].weights.length, WEIGHT_COUNT);
+      assert.equal(loaded[i].weights[0], i + 1, 'first weight should match fakePopulation pattern');
+    }
+  } finally {
+    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
+  }
+});
 
 test('buildMatchupPools result is stable during a single request', () => {
   // The perf fix's whole point is that we compute pools ONCE per

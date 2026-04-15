@@ -93,6 +93,7 @@ PUSH_VICTIM_STAMINA_MULT = 3
 GOAL_BACK_OFFSET = 30
 GOAL_DEPTH = 78
 GOAL_LINE_INSET = 6
+GOAL_POST_RADIUS = 1.2  # must match physics.js and renderer GOAL_BAR_RADIUS
 GOAL_MOUTH_Z = 26  # crossbar height (unchanged)
 GOAL_MOUTH_WIDTH = 28.6  # z-span of the mouth (30% + another 10% wider than the original 20)
 GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - GOAL_MOUTH_WIDTH) / 2
@@ -499,12 +500,14 @@ def _resolve_ball_goal_box(state: dict, box: dict) -> None:
     if ball.get("frozen"):
         return
 
-    # Open-mouth exemption — see JS companion.
+    # Open-mouth exemption — inset by GOAL_POST_RADIUS so a ball
+    # clipping the visible post cylinder still bounces. Matches the
+    # scoring check exactly.
     in_mouth_y = (
-        ball["y"] - BALL_RADIUS >= box["minY"]
-        and ball["y"] + BALL_RADIUS <= box["maxY"]
+        ball["y"] - BALL_RADIUS >= box["minY"] + GOAL_POST_RADIUS
+        and ball["y"] + BALL_RADIUS <= box["maxY"] - GOAL_POST_RADIUS
     )
-    in_mouth_z = ball["z"] + BALL_RADIUS <= box["maxZ"]
+    in_mouth_z = ball["z"] + BALL_RADIUS <= box["maxZ"] - GOAL_POST_RADIUS
     if in_mouth_y and in_mouth_z:
         return
 
@@ -781,11 +784,15 @@ def _check_ball_score_or_out(state: dict) -> None:
 
     fully_past_l = ball["x"] + BALL_RADIUS <= f["goalLineL"]
     fully_past_r = ball["x"] - BALL_RADIUS >= f["goalLineR"]
+    # Mouth inset by GOAL_POST_RADIUS so ball must be fully clear
+    # of the physical post / crossbar cylinders to count as in.
     within_mouth_y = (
-        ball["y"] - BALL_RADIUS >= f["goalMouthYMin"]
-        and ball["y"] + BALL_RADIUS <= f["goalMouthYMax"]
+        ball["y"] - BALL_RADIUS >= f["goalMouthYMin"] + GOAL_POST_RADIUS
+        and ball["y"] + BALL_RADIUS <= f["goalMouthYMax"] - GOAL_POST_RADIUS
     )
-    below_crossbar = ball["z"] + BALL_RADIUS <= f["goalMouthZMax"]
+    below_crossbar = (
+        ball["z"] + BALL_RADIUS <= f["goalMouthZMax"] - GOAL_POST_RADIUS
+    )
 
     goal_l = crossed_l and fully_past_l and within_mouth_y and below_crossbar
     goal_r = crossed_r and fully_past_r and within_mouth_y and below_crossbar

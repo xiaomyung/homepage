@@ -88,6 +88,13 @@ const PUSH_VICTIM_STAMINA_MULT = 3;
 const GOAL_BACK_OFFSET = 30;
 const GOAL_DEPTH = 78;
 const GOAL_LINE_INSET = 6; // scoring line sits this far inside the mouth
+// Physics radius of the goal posts / crossbar — must match the
+// renderer's GOAL_BAR_RADIUS. The mouth opening is inset by this
+// much on each side (y posts and crossbar) so the ball's sphere
+// must be fully past the post's inner surface to count as in the
+// mouth. Without this inset a ball clipping the visible post
+// surface would score through it.
+const GOAL_POST_RADIUS = 1.2;
 const GOAL_MOUTH_Z = 26;  // crossbar height (unchanged)
 const GOAL_MOUTH_WIDTH = 28.6;  // z-span of the mouth (30% + another 10% wider than the original 20)
 const GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - GOAL_MOUTH_WIDTH) / 2;
@@ -496,13 +503,16 @@ function resolveBallGoalBox(state, box) {
   if (ball.frozen) return;
 
   // Open-mouth exemption: if the ball sphere is fully inside the
-  // mouth y and z range, the front face is transparent — let the
-  // ball cross unimpeded so the scoring check (which runs one tick
-  // later) can see it "fully past the line". Without this, a ball
-  // straddling the goal line gets bounced back before it can score.
-  const inMouthY = ball.y - BALL_RADIUS >= box.minY
-                && ball.y + BALL_RADIUS <= box.maxY;
-  const inMouthZ = ball.z + BALL_RADIUS <= box.maxZ;
+  // mouth y and z opening (shrunk by GOAL_POST_RADIUS to account
+  // for the physical post/crossbar thickness), the front face is
+  // transparent — let the ball cross unimpeded so the scoring
+  // check on the next tick can see it "fully past the line".
+  // Matches the scoring withinMouthY/belowCrossbar exactly so any
+  // ball cleared by one is cleared by the other.
+  const inMouthY =
+    ball.y - BALL_RADIUS >= box.minY + GOAL_POST_RADIUS
+    && ball.y + BALL_RADIUS <= box.maxY - GOAL_POST_RADIUS;
+  const inMouthZ = ball.z + BALL_RADIUS <= box.maxZ - GOAL_POST_RADIUS;
   if (inMouthY && inMouthZ) return;
 
   const ent = {
@@ -782,9 +792,14 @@ function checkBallScoreOrOut(state) {
   // immediately after this check.
   const fullyPastL = ball.x + BALL_RADIUS <= f.goalLineL;
   const fullyPastR = ball.x - BALL_RADIUS >= f.goalLineR;
-  const withinMouthY = ball.y - BALL_RADIUS >= f.goalMouthYMin
-                    && ball.y + BALL_RADIUS <= f.goalMouthYMax;
-  const belowCrossbar = ball.z + BALL_RADIUS <= f.goalMouthZMax;
+  // Mouth opening is inset by GOAL_POST_RADIUS so the ball must be
+  // fully clear of the physical post cylinders to count as in the
+  // mouth. Same inset applies below the crossbar.
+  const withinMouthY =
+    ball.y - BALL_RADIUS >= f.goalMouthYMin + GOAL_POST_RADIUS
+    && ball.y + BALL_RADIUS <= f.goalMouthYMax - GOAL_POST_RADIUS;
+  const belowCrossbar =
+    ball.z + BALL_RADIUS <= f.goalMouthZMax - GOAL_POST_RADIUS;
 
   const goalL = crossedL && fullyPastL && withinMouthY && belowCrossbar;
   const goalR = crossedR && fullyPastR && withinMouthY && belowCrossbar;

@@ -529,10 +529,10 @@ export class Renderer {
     const vertX = centerX + dir * halfD;
     const backTopX = centerX - dir * halfD;
     const frontWallX = backTopX - dir * halfD;
-    // Empirical front-post offsets: make the front wall look perpendicular
-    // in screen space under the current 55° camera tilt.
-    const postABotX = vertX - dir * 58;
-    const postBBotX = vertX - dir * 52;
+    // Front mouth is a true vertical plane at frontWallX — both post
+    // bottoms share the same x so the mouth opening is never slanted.
+    const postABotX = frontWallX;
+    const postBBotX = frontWallX;
     const zMin = centerZ - halfW;
     const zMax = centerZ + halfW;
     const P = (x, y, z) => new THREE.Vector3(x, y, z);

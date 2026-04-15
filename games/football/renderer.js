@@ -97,6 +97,13 @@ const PARTICLE_LIFE_VARIANCE = 10;
 const PARTICLE_GRAVITY       = 0.28;
 const PARTICLE_GROUND_DRAG   = 0.45;
 const PARTICLE_SIZE          = 18;
+// Goal-scored burst — much bigger and longer-lived than a bounce.
+// Particles spawn inside the mouth and fan outward toward the field.
+const GOAL_BURST_COUNT       = 42;
+const GOAL_BURST_SPEED       = 1.8;
+const GOAL_BURST_LIFT        = 1.6;   // upward kick
+const GOAL_BURST_LIFE_BASE   = 35;
+const GOAL_BURST_LIFE_VAR    = 20;
 
 // Thin cylinder radius (world units) for goal-frame bars so they render
 // as solid poles. three.js line widths are GPU-dependent, so we use
@@ -427,13 +434,13 @@ export class Renderer {
     this._ballShadow.scale.set(ballShadowR * 2, ballShadowR * 2, 1);
     this._ballShadow._uAlpha.value = ballShadowA;
 
-    // Consume ball-bounce events and spawn splash particles. Physics
-    // clears `state.events` at the top of each tick, so any entries here
-    // are brand-new this frame.
+    // Consume per-frame physics events. `state.events` is cleared at
+    // the top of each tick, so anything here is brand-new this frame.
     if (state.events) {
       for (let i = 0; i < state.events.length; i++) {
         const ev = state.events[i];
         if (ev.type === 'ball_bounce') this._spawnBounceParticles(ev);
+        else if (ev.type === 'goal') this._spawnGoalBurst(ev.scorer);
       }
     }
     this._stepParticles();
@@ -1211,6 +1218,48 @@ export class Renderer {
       }
 
       p.maxLife = PARTICLE_LIFE_BASE + Math.floor(Math.random() * PARTICLE_LIFE_VARIANCE);
+      p.life = p.maxLife;
+    }
+  }
+
+  /** Spawn a big burst of particles when a goal is scored. Spawns inside
+   *  the scored goal's mouth across the full mouth width (y axis) and
+   *  shoots outward toward the field (+x for the LEFT goal, -x for the
+   *  RIGHT goal) with a strong upward lift. `scorer` is 'p1' or 'p2':
+   *  p1 scored = ball into RIGHT goal; p2 scored = ball into LEFT goal. */
+  _spawnGoalBurst(scorer) {
+    const f = this._field;
+    // scorer='p1' scored means ball went into the RIGHT goal, so the
+    // burst origin is f.goalLineR and it fans toward -x (into field).
+    // scorer='p2' means LEFT goal, fans toward +x.
+    const isRight = scorer === 'p1';
+    const mouthX = isRight ? f.goalLineR : f.goalLineL;
+    const outSign = isRight ? -1 : 1;
+    const mouthYMin = f.goalMouthYMin;
+    const mouthYMax = f.goalMouthYMax;
+    const mouthYSpan = mouthYMax - mouthYMin;
+    const mouthZMax = f.goalMouthZMax || 26;
+
+    for (let i = 0; i < GOAL_BURST_COUNT; i++) {
+      const p = this._particles[this._particleNext];
+      this._particleNext = (this._particleNext + 1) % this._particles.length;
+
+      // Spawn across the full mouth opening so the burst looks like it
+      // comes out of the goal, not a single point.
+      p.x = mouthX;
+      p.y = mouthYMin + Math.random() * mouthYSpan;
+      p.z = Math.random() * mouthZMax * 0.8;
+
+      // Outward velocity (into the field) plus side spread and upward
+      // lift. Random magnitude so the burst isn't a uniform shell.
+      const r1 = Math.random();
+      const r2 = (Math.random() - 0.5) * 2;
+      const r3 = Math.random();
+      p.vx = outSign * GOAL_BURST_SPEED * (0.6 + r1 * 0.8);
+      p.vy = r2 * GOAL_BURST_SPEED * 0.5;
+      p.vz = GOAL_BURST_LIFT * (0.7 + r3 * 0.6);
+
+      p.maxLife = GOAL_BURST_LIFE_BASE + Math.floor(Math.random() * GOAL_BURST_LIFE_VAR);
       p.life = p.maxLife;
     }
   }

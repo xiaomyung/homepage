@@ -18,7 +18,7 @@
  */
 
 import { buildAtlas } from './atlas.js';
-import { Renderer } from './renderer.js?v=65';
+import { Renderer } from './renderer.js?v=66';
 import {
   createField,
   createState,
@@ -38,6 +38,7 @@ import {
   createConfigControls,
   createResetButton,
   createFreeCamToggle,
+  createFollowCamToggle,
   installAutoPause,
 } from './ui.js';
 
@@ -88,7 +89,13 @@ async function main() {
   });
 
   createOptionsToggle();
-  createFreeCamToggle({ renderer });
+  // Freecam and follow-cam are mutually exclusive; each toggle
+  // refreshes the other's label after its click so the UI mirrors
+  // the renderer's actual state.
+  let freeCamCtl = null;
+  let followCamCtl = null;
+  freeCamCtl = createFreeCamToggle({ renderer, onChange: () => followCamCtl?.refresh() });
+  followCamCtl = createFollowCamToggle({ renderer, onChange: () => freeCamCtl?.refresh() });
   createResetButton({
     apiBase: API_BASE,
     onReset: () => {

@@ -382,12 +382,14 @@ export function createConfigControls({ apiBase }) {
 
 /**
  * Wires the options-panel freecam toggle to the renderer's debug cam.
- * Shows a keybind help block while freecam is active.
+ * Shows a keybind help block while freecam is active. Mutually
+ * exclusive with follow-cam — the renderer disables one when the
+ * other is enabled, so we re-sync both buttons on every toggle.
  */
-export function createFreeCamToggle({ renderer }) {
+export function createFreeCamToggle({ renderer, onChange }) {
   const btn = document.getElementById('game-freecam-btn');
   const help = document.getElementById('game-freecam-help');
-  if (!btn || !help) return;
+  if (!btn || !help) return null;
   const render = () => {
     const on = renderer.isDebugCamActive();
     btn.textContent = on ? '[ freecam: on ]' : '[ freecam: off ]';
@@ -397,8 +399,33 @@ export function createFreeCamToggle({ renderer }) {
   btn.addEventListener('click', () => {
     renderer.setDebugCam(!renderer.isDebugCamActive());
     render();
+    onChange?.();
   });
   render();
+  return { refresh: render };
+}
+
+/* ── Follow-ball camera toggle ──────────────────────────── */
+
+/**
+ * Wires the options-panel follow-ball toggle to the renderer.
+ * Mutually exclusive with freecam — see createFreeCamToggle.
+ */
+export function createFollowCamToggle({ renderer, onChange }) {
+  const btn = document.getElementById('game-followcam-btn');
+  if (!btn) return null;
+  const render = () => {
+    const on = renderer.isFollowCamActive();
+    btn.textContent = on ? '[ follow ball: on ]' : '[ follow ball: off ]';
+    btn.dataset.active = on ? 'true' : 'false';
+  };
+  btn.addEventListener('click', () => {
+    renderer.setFollowCam(!renderer.isFollowCamActive());
+    render();
+    onChange?.();
+  });
+  render();
+  return { refresh: render };
 }
 
 /**

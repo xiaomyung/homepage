@@ -183,10 +183,12 @@ export class Renderer {
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(CAMERA_FOV, 2, 0.1, 4000);
+    this._followCam = null;
     this._placeCamera();
-    // Debug free-camera is always wired up but starts inactive. UI (or
-    // any other caller) flips it on/off via setDebugCam().
+    // Camera modes — both wired up at construction, start inactive.
+    // Mutually exclusive: enabling one disables the other.
     this._initDebugCam();
+    this._initFollowCam();
 
     this._baseMaterial = new THREE.ShaderMaterial({
       uniforms: {
@@ -372,32 +374,42 @@ export class Renderer {
       this._pool[i].visible = false;
     }
 
-    if (this._debugCam && this._debugCam.active) this._stepDebugCam();
+    if (this._followCam && this._followCam.active) this._stepFollowCam(state);
+    else if (this._debugCam && this._debugCam.active) this._stepDebugCam();
     this.renderer.render(this.scene, this.camera);
   }
 
   /* ── Camera ─────────────────────────────────────────────── */
 
   _placeCamera() {
-    // When debug-cam is active, resize() still updates `camera.aspect` but
-    // we leave the pose alone — `_stepDebugCam()` owns position/lookAt.
+    // When debug-cam OR follow-cam is active, resize() still updates
+    // `camera.aspect` but we leave the pose alone — the active cam
+    // step function owns position/lookAt.
     if (this._debugCam && this._debugCam.active) return;
+    if (this._followCam && this._followCam.active) return;
     const midX = this.fieldWidth / 2;
     const midZ = (FIELD_HEIGHT * Z_STRETCH) / 2;
-    const aspect = this.camera.aspect || 4;
 
-    const halfFovVert = (CAMERA_FOV / 2) * Math.PI / 180;
-    const tanHalfHoriz = Math.tan(halfFovVert) * aspect;
-    const halfFieldWidth = (this.fieldWidth / 2) * HORIZONTAL_MARGIN;
-    const distance = halfFieldWidth / tanHalfHoriz;
-
-    const tiltRad = CAMERA_TILT_DEG * Math.PI / 180;
-    const height = distance * Math.cos(tiltRad);
-    const backOff = distance * Math.sin(tiltRad);
-
+    const { height, backOff } = this._computeDistance(1.0);
     this.camera.position.set(midX, height, midZ + backOff);
     this.camera.lookAt(midX, 0, midZ);
     this.camera.updateProjectionMatrix();
+  }
+
+  /** Compute the camera height / back-offset for a zoom multiplier
+   *  `zoom` (1.0 = default showcase fit). Smaller zoom = closer. */
+  _computeDistance(zoom) {
+    const aspect = this.camera.aspect || 4;
+    const halfFovVert = (CAMERA_FOV / 2) * Math.PI / 180;
+    const tanHalfHoriz = Math.tan(halfFovVert) * aspect;
+    const halfFieldWidth = (this.fieldWidth / 2) * HORIZONTAL_MARGIN;
+    const distance = (halfFieldWidth / tanHalfHoriz) * zoom;
+    const tiltRad = CAMERA_TILT_DEG * Math.PI / 180;
+    return {
+      distance,
+      height: distance * Math.cos(tiltRad),
+      backOff: distance * Math.sin(tiltRad),
+    };
   }
 
   /* ── Debug free-camera (runtime-toggleable) ─────────────────
@@ -479,6 +491,9 @@ export class Renderer {
   setDebugCam(on) {
     const dc = this._debugCam;
     if (!dc || dc.active === !!on) return;
+    if (on && this._followCam && this._followCam.active) {
+      this.setFollowCam(false);
+    }
     dc.active = !!on;
     if (!dc.active) {
       dc.keys.clear();
@@ -519,6 +534,109 @@ export class Renderer {
     const offZ = Math.cos(dc.yaw) * cosP * dc.distance;
     this.camera.position.set(dc.target.x + offX, dc.target.y + offY, dc.target.z + offZ);
     this.camera.lookAt(dc.target.x, dc.target.y, dc.target.z);
+    this.camera.updateProjectionMatrix();
+  }
+
+  /* ── Follow camera (runtime-toggleable) ─────────────────────
+   * Slides along a horizontal x-rail at a fixed height + z-offset,
+   * smoothly tracking a weighted action center (ball + both players
+   * with ball weighted 2x). Uses a critically-damped spring so fast
+   * ball movement never snaps the camera — it accelerates and
+   * decelerates. LookAt lags independently and is biased by a
+   * signed lead offset (based on which half of the field the ball
+   * is in) so the action sits around the 1/3 line of the screen
+   * with the goal side showing more space. Zoom is tighter than
+   * the showcase view so both players + ball fill the frame. */
+  _initFollowCam() {
+    this._followCam = {
+      active: false,
+      initialized: false,
+      posX: 0,     velX: 0,  // rail position
+      lookX: 0,    lookVX: 0, // lookAt target x
+      leadX: 0,    leadVX: 0, // smoothed lead offset (sign = ball's half)
+    };
+  }
+
+  setFollowCam(on) {
+    const fc = this._followCam;
+    if (!fc || fc.active === !!on) return;
+    if (on && this._debugCam && this._debugCam.active) {
+      this.setDebugCam(false);
+    }
+    fc.active = !!on;
+    if (!fc.active) {
+      this._placeCamera(); // restore showcase pose
+    } else {
+      fc.initialized = false; // snap to first target on next step
+    }
+  }
+
+  isFollowCamActive() {
+    return !!(this._followCam && this._followCam.active);
+  }
+
+  _stepFollowCam(state) {
+    const fc = this._followCam;
+    // Player x positions come through a +9 offset in _addStickman;
+    // here we just use the raw physics x since the framing tolerance
+    // is well above that shift.
+    const ballX = state.ball.x;
+    const p1X = state.p1.x;
+    const p2X = state.p2.x;
+    // Weighted action center — ball gets 2x weight so the camera
+    // follows it more tightly than the players' midpoint.
+    const actionX = (ballX * 2 + p1X + p2X) / 4;
+    // Lead sign: +1 when ball is past mid-field on the right half,
+    // -1 on the left half. Magnitude scales with camera distance so
+    // the visible screen fraction is stable regardless of zoom.
+    const midX = this.fieldWidth / 2;
+    const ballSide = ballX > midX ? 1 : (ballX < midX ? -1 : 0);
+
+    // Critically-damped spring coefficients (per frame @ 60Hz).
+    // stiffness k ≈ 0.015 → response time ~1.3s; c = 2*sqrt(k) for
+    // critical damping, which prevents overshoot on ball direction
+    // flips and gives a smooth accel/decel curve.
+    const K_POS  = 0.012;
+    const C_POS  = 2 * Math.sqrt(K_POS);
+    const K_LOOK = 0.020;
+    const C_LOOK = 2 * Math.sqrt(K_LOOK);
+    const K_LEAD = 0.008;
+    const C_LEAD = 2 * Math.sqrt(K_LEAD);
+
+    // Follow-cam zoom: ~60% of the showcase distance so players +
+    // ball fill more of the frame. Lead magnitude scales with that.
+    const ZOOM = 0.60;
+    const { distance, height, backOff } = this._computeDistance(ZOOM);
+    // Lead magnitude: offset the lookAt by a fraction of the
+    // camera-to-target horizontal span so the target sits roughly
+    // at the 1/3 line of the screen.
+    const LEAD_FRACTION = 0.22;
+    const leadTarget = ballSide * distance * LEAD_FRACTION;
+
+    if (!fc.initialized) {
+      fc.posX = actionX;
+      fc.velX = 0;
+      fc.lookX = actionX;
+      fc.lookVX = 0;
+      fc.leadX = leadTarget;
+      fc.leadVX = 0;
+      fc.initialized = true;
+    }
+
+    // Spring integration — applies accel toward target, friction
+    // proportional to velocity. Damping ratio = 1 (critically damped).
+    const stepSpring = (pos, vel, target, k, c) => {
+      const accel = (target - pos) * k - vel * c;
+      const newVel = vel + accel;
+      return [pos + newVel, newVel];
+    };
+    [fc.posX,  fc.velX]  = stepSpring(fc.posX,  fc.velX,  actionX,    K_POS,  C_POS);
+    [fc.lookX, fc.lookVX] = stepSpring(fc.lookX, fc.lookVX, actionX,   K_LOOK, C_LOOK);
+    [fc.leadX, fc.leadVX] = stepSpring(fc.leadX, fc.leadVX, leadTarget, K_LEAD, C_LEAD);
+
+    const midZ = (FIELD_HEIGHT * Z_STRETCH) / 2;
+    this.camera.position.set(fc.posX, height, midZ + backOff);
+    this.camera.lookAt(fc.lookX + fc.leadX, 0, midZ);
     this.camera.updateProjectionMatrix();
   }
 

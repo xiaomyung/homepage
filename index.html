@@ -6,7 +6,7 @@
   <title>home.arpa</title>
   <link rel="preload" href="fonts/iosevka-term-regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/iosevka-term-medium.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="style.css?v=131">
+  <link rel="stylesheet" href="style.css?v=132">
 </head>
 <body>
 
@@ -218,6 +218,8 @@
         <label><span>mut rate</span><input type="range" id="cfg-mutrate" min="0" max="0.5" step="0.01"><span class="game-cfg-val" id="cfg-mutrate-val">—</span></label>
       </div>
       <div class="game-freecam">
+        <button type="button" class="game-btn" id="game-followcam-btn">[ follow ball: off ]</button>
+        <div class="game-followcam-help">smooth rail cam that tracks the ball with both players in frame; mutually exclusive with freecam</div>
         <button type="button" class="game-btn" id="game-freecam-btn">[ freecam: off ]</button>
         <dl class="game-stats game-freecam-help" id="game-freecam-help" data-open="false">
           <dt>drag</dt>     <dd>orbit target</dd>
@@ -232,7 +234,7 @@
   </section>
 
   <script src="app.js?v=8"></script>
-  <script type="module" src="games/football/main.js?v=37"></script>
+  <script type="module" src="games/football/main.js?v=38"></script>
   <script type="module" src="games/blackhole/blackhole.js"></script>
 </body>
 </html>

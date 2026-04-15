@@ -493,6 +493,13 @@ body {
   display: none;
 }
 
+.game-followcam-help {
+  font-size: 0.55rem;
+  color: var(--text-dim);
+  max-width: 24rem;
+  line-height: 1.4;
+}
+
 @media (max-width: 720px) {
   .game-stats { grid-template-columns: auto 1fr; }
   .game-config { grid-template-columns: 1fr; }

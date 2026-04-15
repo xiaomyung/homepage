@@ -87,17 +87,14 @@ export class NeuralNet {
       const bOffset = wOffset + fanIn * fanOut;
       const next = this._layerBufs[layer];
 
-      // Loop order: i outer, j inner. Weights are laid out row-major
-      // as weights[wOffset + i*fanOut + j], so stepping `j` inside the
-      // hot loop is a sequential stride-1 walk through the array —
-      // cache-friendly and SIMD-vectorizable by V8's optimizer. The
-      // earlier j-outer form strode by `fanOut` per inner iteration
-      // and lost ~2× compute to cache misses. Mathematically identical
-      // to the column-ordered form.
+      // Loop order: i outer, j inner. Inner `j` is a stride-1 walk
+      // through weights (row-major layout) so V8's JIT and the
+      // hardware prefetcher both hit. Tried manual unrolls and
+      // j-outer — all measurably slower than this simple form on
+      // the small (≤20) layer widths.
       for (let j = 0; j < fanOut; j++) next[j] = weights[bOffset + j];
       for (let i = 0; i < fanIn; i++) {
         const inI = current[i];
-        if (inI === 0) continue;
         const rowOff = wOffset + i * fanOut;
         for (let j = 0; j < fanOut; j++) {
           next[j] += inI * weights[rowOff + j];

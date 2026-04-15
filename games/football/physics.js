@@ -154,7 +154,9 @@ export function createField(width = FIELD_WIDTH_REF) {
   const goalLRight = goalLLeft + GOAL_DEPTH;
   const goalRRight = width - GOAL_BACK_OFFSET;
   const goalRLeft = goalRRight - GOAL_DEPTH;
-  return {
+  const goalLineL = goalLRight - GOAL_LINE_INSET;
+  const goalLineR = goalRLeft + GOAL_LINE_INSET;
+  const field = {
     width,
     height: FIELD_HEIGHT,
     ceiling: CEILING,
@@ -164,8 +166,8 @@ export function createField(width = FIELD_WIDTH_REF) {
     goalLRight,
     goalRLeft,
     goalRRight,
-    goalLineL: goalLRight - GOAL_LINE_INSET,
-    goalLineR: goalRLeft + GOAL_LINE_INSET,
+    goalLineL,
+    goalLineR,
     goalMouthYMin: GOAL_MOUTH_Y_MIN,
     goalMouthYMax: GOAL_MOUTH_Y_MAX,
     goalMouthZMax: GOAL_MOUTH_Z,
@@ -173,6 +175,20 @@ export function createField(width = FIELD_WIDTH_REF) {
     aiLimitL: goalLLeft + GOAL_LINE_INSET,
     aiLimitR: goalRRight - GOAL_LINE_INSET,
   };
+  // Precomputed goal-box AABBs — called on every physics tick for
+  // player + ball collisions. Freezing them here kills ~6 object
+  // allocations per tick that used to happen inside `goalBox(f, side)`.
+  field.goalBoxLeft = {
+    minX: goalLLeft, maxX: goalLineL,
+    minY: GOAL_MOUTH_Y_MIN, maxY: GOAL_MOUTH_Y_MAX,
+    minZ: 0, maxZ: GOAL_MOUTH_Z,
+  };
+  field.goalBoxRight = {
+    minX: goalLineR, maxX: goalRRight,
+    minY: GOAL_MOUTH_Y_MIN, maxY: GOAL_MOUTH_Y_MAX,
+    minZ: 0, maxZ: GOAL_MOUTH_Z,
+  };
+  return field;
 }
 
 function createPlayer(side, field) {
@@ -532,15 +548,11 @@ function chargeStaminaFromDisplacement(p, preX, preY) {
  */
 
 /** Goal box AABB for one side, in physics units. */
+// Thin accessor kept for call-site readability. The actual AABBs
+// are precomputed on the field at creation time so this returns the
+// same object every tick — no allocation.
 function goalBox(f, side) {
-  if (side === 'left') {
-    return { minX: f.goalLLeft, maxX: f.goalLineL,
-             minY: f.goalMouthYMin, maxY: f.goalMouthYMax,
-             minZ: 0, maxZ: f.goalMouthZMax };
-  }
-  return { minX: f.goalLineR, maxX: f.goalRRight,
-           minY: f.goalMouthYMin, maxY: f.goalMouthYMax,
-           minZ: 0, maxZ: f.goalMouthZMax };
+  return side === 'left' ? f.goalBoxLeft : f.goalBoxRight;
 }
 
 /**
@@ -583,15 +595,18 @@ function minPenetrationPush(ent, box, useZ, vel) {
   const ty = Math.abs(dy) / (Math.abs(vy) + EPS);
 
   if (!useZ) {
-    return tx <= ty ? { axis: 'x', delta: dx } : { axis: 'y', delta: dy };
+    if (tx <= ty) { _scratchPush.axis = 'x'; _scratchPush.delta = dx; }
+    else          { _scratchPush.axis = 'y'; _scratchPush.delta = dy; }
+    return _scratchPush;
   }
   const pushMinZ = ent.maxZ - box.minZ;
   const pushMaxZ = box.maxZ - ent.minZ;
   const dz = vz > 0 ? -pushMinZ : vz < 0 ? pushMaxZ : (pushMinZ < pushMaxZ ? -pushMinZ : pushMaxZ);
   const tz = Math.abs(dz) / (Math.abs(vz) + EPS);
-  if (tx <= ty && tx <= tz) return { axis: 'x', delta: dx };
-  if (ty <= tz) return { axis: 'y', delta: dy };
-  return { axis: 'z', delta: dz };
+  if (tx <= ty && tx <= tz)      { _scratchPush.axis = 'x'; _scratchPush.delta = dx; }
+  else if (ty <= tz)             { _scratchPush.axis = 'y'; _scratchPush.delta = dy; }
+  else                           { _scratchPush.axis = 'z'; _scratchPush.delta = dz; }
+  return _scratchPush;
 }
 
 function clampPlayerToField(p, f) {
@@ -617,11 +632,21 @@ function clampAndCollide(state, p) {
  * out along the axis of minimum penetration and zeroes the velocity
  * on that axis.
  */
+// Module-level scratch AABBs reused by the collision resolvers.
+// Physics runs synchronously on the main thread (or per-worker) so
+// a single shared scratch is safe — the caller consumes the result
+// before anyone else can see it.
+const _scratchEnt2D = { minX: 0, maxX: 0, minY: 0, maxY: 0 };
+const _scratchEnt3D = { minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 };
+// Scratch output for `minPenetrationPush`. Filled in place and
+// returned by reference — no object allocation on the hit path.
+// Caller inspects `.axis` ('x' / 'y' / 'z') and `.delta`.
+const _scratchPush = { axis: 'x', delta: 0 };
+
 function resolvePlayerGoalBox(p, pw, box) {
-  const ent = {
-    minX: p.x, maxX: p.x + pw,
-    minY: p.y, maxY: p.y + PLAYER_HEIGHT,
-  };
+  const ent = _scratchEnt2D;
+  ent.minX = p.x; ent.maxX = p.x + pw;
+  ent.minY = p.y; ent.maxY = p.y + PLAYER_HEIGHT;
   const push = minPenetrationPush(ent, box, false, p);
   if (!push) return;
   if (push.axis === 'x') {
@@ -662,11 +687,10 @@ function resolveBallGoalBox(state, box) {
   const inMouthZ = ball.z + BALL_RADIUS <= box.maxZ - GOAL_POST_RADIUS;
   if (inMouthY && inMouthZ) return;
 
-  const ent = {
-    minX: ball.x - BALL_RADIUS, maxX: ball.x + BALL_RADIUS,
-    minY: ball.y - BALL_RADIUS, maxY: ball.y + BALL_RADIUS,
-    minZ: ball.z - BALL_RADIUS, maxZ: ball.z + BALL_RADIUS,
-  };
+  const ent = _scratchEnt3D;
+  ent.minX = ball.x - BALL_RADIUS; ent.maxX = ball.x + BALL_RADIUS;
+  ent.minY = ball.y - BALL_RADIUS; ent.maxY = ball.y + BALL_RADIUS;
+  ent.minZ = ball.z - BALL_RADIUS; ent.maxZ = ball.z + BALL_RADIUS;
   const push = minPenetrationPush(ent, box, true, ball);
   if (!push) return;
   if (push.axis === 'x') {

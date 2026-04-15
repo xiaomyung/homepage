@@ -105,7 +105,8 @@ const PARTICLE_LIFE_BASE     = 18;   // frames
 const PARTICLE_LIFE_VARIANCE = 10;
 const PARTICLE_GRAVITY       = 0.28;
 const PARTICLE_GROUND_DRAG   = 0.45;
-const PARTICLE_SIZE          = 18;
+// World-space radius of a new particle sphere, scaled down as it ages.
+const PARTICLE_VISUAL_RADIUS = 0.9;
 // Goal-scored burst — much bigger and longer-lived than a bounce.
 // Particles spawn inside the mouth and fan outward toward the field.
 const GOAL_BURST_COUNT       = 42;
@@ -417,6 +418,35 @@ export class Renderer {
       });
     }
     this._particleNext = 0;
+
+    // Single InstancedMesh draws all live particles in one draw call.
+    // Low-poly sphere (6×4) is more than enough at the visual size.
+    // Per-instance matrix handles position + age-scaled size; per-
+    // instance color encodes the age fade (rgb → 0 as the particle
+    // dies). `.count` is set each frame to the number of live
+    // particles so dead slots don't render.
+    const particleGeom = new THREE.SphereGeometry(1, 6, 4);
+    const particleMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 1,
+    });
+    this._particleMesh = new THREE.InstancedMesh(particleGeom, particleMat, PARTICLE_POOL);
+    this._particleMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this._particleMesh.count = 0;
+    this._particleMesh.frustumCulled = false;
+    this._staticGeometries.push(particleGeom);
+    this._staticMaterials.push(particleMat);
+    this.scene.add(this._particleMesh);
+    // Scratch matrix reused when writing instance transforms.
+    this._scratchMat = new THREE.Matrix4();
+    this._scratchScaleVec = new THREE.Vector3();
+    this._scratchZeroQ = new THREE.Quaternion();
+    this._scratchPos = new THREE.Vector3();
+    // Per-instance color buffer (r, g, b as floats). Instanced color
+    // attribute gives us age fading without a shader rewrite.
+    this._particleColorArr = new Float32Array(PARTICLE_POOL * 3);
+    this._particleColorAttr = new THREE.InstancedBufferAttribute(this._particleColorArr, 3);
+    this._particleColorAttr.setUsage(THREE.DynamicDrawUsage);
+    this._particleMesh.instanceColor = this._particleColorAttr;
 
     this._buildFieldLines();
 
@@ -1421,19 +1451,39 @@ export class Renderer {
     }
   }
 
-  /** Draw all live particles. Glyph fades `*` → `'` → `.` as age grows. */
+  /** Write live particles into the InstancedMesh. Position maps
+   *  physics (x, y, z) → world (x, z, y*Z_STRETCH); per-instance
+   *  color fades the rgb channels from full to black as the
+   *  particle ages. Size shrinks slightly with age too. Dead
+   *  particles are packed to the front so .count skips the tail. */
   _drawParticles() {
+    const q = this._scratchZeroQ;
+    const pos = this._scratchPos;
+    const scl = this._scratchScaleVec;
+    const mat = this._scratchMat;
+    const colors = this._particleColorArr;
+    let n = 0;
     for (let i = 0; i < this._particles.length; i++) {
       const p = this._particles[i];
       if (p.life <= 0) continue;
       const ageFrac = p.life / p.maxLife;
-      const glyph = ageFrac > 0.66 ? this._glyphSparkA
-                  : ageFrac > 0.33 ? this._glyphSparkB
-                  : this._glyphSparkC;
-      this._placeGlyph(
-        glyph, p.x, 0, p.y, PARTICLE_SIZE * (0.6 + 0.4 * ageFrac), COLOR_WHITE,
-        0, p.z * 0.5,
-      );
+      const size = PARTICLE_VISUAL_RADIUS * (0.4 + 0.6 * ageFrac);
+      pos.set(p.x, Math.max(0, p.z) + size, p.y * Z_STRETCH);
+      scl.set(size, size, size);
+      mat.compose(pos, q, scl);
+      this._particleMesh.setMatrixAt(n, mat);
+      // Age fade: bright near spawn, dim toward end of life.
+      const c = ageFrac;
+      const idx = n * 3;
+      colors[idx + 0] = c;
+      colors[idx + 1] = c;
+      colors[idx + 2] = c;
+      n++;
+    }
+    this._particleMesh.count = n;
+    if (n > 0) {
+      this._particleMesh.instanceMatrix.needsUpdate = true;
+      this._particleColorAttr.needsUpdate = true;
     }
   }
 

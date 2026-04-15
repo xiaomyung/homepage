@@ -99,8 +99,9 @@ test('player pushed while standing still is still charged for displacement', () 
 test('player cannot penetrate left goal frame', () => {
   const state = freshState();
   const f = state.field;
-  // Position p1 just outside the right edge of the left goal box
-  state.p1.x = f.goalLRight + 1;
+  // Position p1 just in front of the left goal mouth (goalLineL is
+  // the canonical front-face x of the unified goal collision box).
+  state.p1.x = f.goalLineL + 1;
   state.p1.y = FIELD_HEIGHT / 2;
 
   // Walk into the goal for 30 ticks
@@ -108,17 +109,17 @@ test('player cannot penetrate left goal frame', () => {
     tick(state, moveAction(-1), NOOP);
   }
 
-  // p1.x must never be less than goalLRight (can't enter the goal box)
+  // p1.x must never be less than goalLineL (mouth line / front face).
   assert.ok(
-    state.p1.x >= f.goalLRight - 0.01,
-    `player penetrated left goal frame: x=${state.p1.x}, goalLRight=${f.goalLRight}`
+    state.p1.x >= f.goalLineL - 0.01,
+    `player penetrated left goal frame: x=${state.p1.x}, goalLineL=${f.goalLineL}`
   );
 });
 
 test('player cannot penetrate right goal frame', () => {
   const state = freshState();
   const f = state.field;
-  state.p2.x = f.goalRLeft - f.playerWidth - 1;
+  state.p2.x = f.goalLineR - f.playerWidth - 1;
   state.p2.y = FIELD_HEIGHT / 2;
 
   for (let i = 0; i < 30; i++) {
@@ -126,7 +127,7 @@ test('player cannot penetrate right goal frame', () => {
   }
 
   assert.ok(
-    state.p2.x + f.playerWidth <= f.goalRLeft + 0.01,
+    state.p2.x + f.playerWidth <= f.goalLineR + 0.01,
     `player penetrated right goal frame: x=${state.p2.x}`
   );
 });
@@ -250,42 +251,41 @@ test('ball past the OOB margin triggers out, not goal', () => {
   assert.equal(state.scoreR, 0);
 });
 
-test('ball above crossbar crossing goal line bounces off the crossbar', () => {
+test('ball grazing the crossbar from above bounces off the top', () => {
   const state = freshState();
   const f = state.field;
-  // Place ball just past the right goal line, inside the mouth Y range,
-  // but above the crossbar z, moving +x (into the goal from the field)
-  state.ball.x = f.goalLineR + 5;
+  // Ball center inside the goal x/y, altitude just above the crossbar
+  // so the sphere overlaps the box z range and the unified collision
+  // fires on the z axis, flipping vz.
+  state.ball.x = f.goalLineR + 2;
   state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
-  state.ball.z = f.goalMouthZMax + 10;
-  state.ball.vx = 3;
+  state.ball.z = f.goalMouthZMax + 0.5;
+  state.ball.vx = 0;
   state.ball.vy = 0;
-  state.ball.vz = 0;
+  state.ball.vz = -2; // descending onto the crossbar
+  state.ball.frozen = false;
 
-  tick(state, NOOP, NOOP);
+  for (let i = 0; i < 4; i++) tick(state, NOOP, NOOP);
 
-  assert.equal(state.scoreL, 0, 'ball above crossbar must not score');
-  assert.equal(state.scoreR, 0);
-  assert.ok(
-    !state.events.some(e => e.type === 'goal'),
-    'no goal event when above crossbar'
-  );
-  // Ball should bounce back (velocity reversed, position pushed back past line)
-  assert.ok(state.ball.vx < 0, `expected vx to be reversed, got ${state.ball.vx}`);
-  assert.ok(state.ball.x <= f.goalLineR, `expected ball pushed back, got x=${state.ball.x}`);
+  assert.equal(state.scoreL, 0, 'ball grazing crossbar must not score');
+  assert.ok(state.ball.vz >= 0, `expected vz to flip to non-negative, got ${state.ball.vz}`);
 });
 
-test('ball crossing goal line outside mouth Y range bounces off the post', () => {
+test('ball clipping the post from outside the mouth bounces back', () => {
   const state = freshState();
   const f = state.field;
+  // y just outside the mouth edge by less than BALL_RADIUS so the
+  // ball sphere overlaps the mouth y range and collides with the
+  // post cylinder, but the center is NOT inside the mouth.
   state.ball.x = f.goalLineR + 2;
-  state.ball.y = f.goalMouthYMin - 3; // outside mouth Y range
+  state.ball.y = f.goalMouthYMin - 0.5;
   state.ball.z = 0;
   state.ball.vx = 4;
   state.ball.vy = 0;
   state.ball.vz = 0;
+  state.ball.frozen = false;
 
-  tick(state, NOOP, NOOP);
+  for (let i = 0; i < 6; i++) tick(state, NOOP, NOOP);
 
   assert.equal(state.scoreL, 0, 'post-bounce must not score');
   assert.ok(state.ball.vx < 0, `expected vx reversed, got ${state.ball.vx}`);
@@ -431,4 +431,216 @@ test('buildInputs produces 18 floats in [-1, 1]', () => {
     assert.ok(v >= -1 && v <= 1, `input out of range: ${v}`);
     assert.ok(Number.isFinite(v), `non-finite input: ${v}`);
   }
+});
+
+/* ── Task #59: OOB only via left/right, touchlines bounce ──
+ *
+ * OOB fires when the ball crosses the short field edges (x<0 or
+ * x>width). The long touchlines (y=0 and y=FIELD_HEIGHT) are
+ * solid walls — the ball bounces with vy flipped and stays in
+ * play. Verifying both axes here so a regression is caught. */
+
+test('ball crossing left field edge triggers OOB', () => {
+  const state = freshState();
+  state.ball.x = 5;
+  state.ball.y = 27;
+  state.ball.z = 0;
+  state.ball.vx = -6;
+  state.ball.vy = 0;
+  state.ball.frozen = false;
+  for (let i = 0; i < 10 && state.pauseState === null; i++) tick(state, NOOP, NOOP);
+  // Out triggers reposition pause (ballOut() in physics.js)
+  assert.ok(
+    state.pauseState !== null,
+    'ball going off left edge should trigger OOB / ball reposition',
+  );
+});
+
+test('ball crossing right field edge triggers OOB', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = f.width - 5;
+  state.ball.y = 27;
+  state.ball.z = 0;
+  state.ball.vx = 6;
+  state.ball.vy = 0;
+  state.ball.frozen = false;
+  for (let i = 0; i < 10 && state.pauseState === null; i++) tick(state, NOOP, NOOP);
+  assert.ok(
+    state.pauseState !== null,
+    'ball going off right edge should trigger OOB / ball reposition',
+  );
+});
+
+test('ball hitting top touchline bounces and stays in play', () => {
+  const state = freshState();
+  state.ball.x = 450;
+  state.ball.y = FIELD_HEIGHT - 2;
+  state.ball.z = 0;
+  state.ball.vx = 0;
+  state.ball.vy = 4;          // heading toward the touchline
+  state.ball.frozen = false;
+  // Let it bounce
+  for (let i = 0; i < 20; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.pauseState, null, 'top touchline must not trigger OOB');
+  assert.ok(
+    state.ball.vy < 0,
+    `top touchline should flip vy to negative after bounce, got ${state.ball.vy}`,
+  );
+  assert.ok(
+    state.ball.y < FIELD_HEIGHT,
+    'ball must remain inside the field after bouncing off the top touchline',
+  );
+});
+
+test('ball hitting bottom touchline bounces and stays in play', () => {
+  const state = freshState();
+  state.ball.x = 450;
+  state.ball.y = 2;
+  state.ball.z = 0;
+  state.ball.vx = 0;
+  state.ball.vy = -4;
+  state.ball.frozen = false;
+  for (let i = 0; i < 20; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.pauseState, null, 'bottom touchline must not trigger OOB');
+  assert.ok(
+    state.ball.vy > 0,
+    `bottom touchline should flip vy to positive after bounce, got ${state.ball.vy}`,
+  );
+  assert.ok(state.ball.y > 0);
+});
+
+test('airborne ball hitting ceiling bounces and stays in play', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = 450;
+  state.ball.y = 27;
+  state.ball.z = f.ceiling - 2;
+  state.ball.vx = 0;
+  state.ball.vy = 0;
+  state.ball.vz = 4;
+  state.ball.frozen = false;
+  for (let i = 0; i < 20; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.pauseState, null, 'ceiling bounce must not trigger OOB');
+  assert.ok(
+    state.ball.vz < 0,
+    `ceiling should flip vz to negative after bounce, got ${state.ball.vz}`,
+  );
+  assert.ok(state.ball.z <= f.ceiling);
+});
+
+/* ── Task #63: goal scoring stability at various angles ────
+ *
+ * Smoke battery covering the full mouth — center, both post
+ * edges (clipping the cylinder should bounce, not score),
+ * above and below the crossbar, and diagonal approaches. */
+
+test('goal scored from mouth center', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = 120;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  for (let i = 0; i < 40 && state.pauseState !== 'celebrate'; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.pauseState, 'celebrate');
+  assert.equal(state.scoreR, 1, 'p2 should have scored on the left goal');
+});
+
+test('goal scored from mouth center on the right', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = f.width - 120;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = 5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  for (let i = 0; i < 40 && state.pauseState !== 'celebrate'; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.pauseState, 'celebrate');
+  assert.equal(state.scoreL, 1);
+});
+
+test('ball clipping lower post bounces, does not score', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = 120;
+  state.ball.y = f.goalMouthYMin;  // exactly on the post line
+  state.ball.z = 0;
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  for (let i = 0; i < 40; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.pauseState, null, 'post clip must not score');
+  assert.equal(state.scoreR, 0);
+  assert.ok(state.ball.vx > 0, 'post clip should flip vx to positive (bounce back)');
+});
+
+test('ball clipping upper post bounces, does not score', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = 120;
+  state.ball.y = f.goalMouthYMax;
+  state.ball.z = 0;
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  for (let i = 0; i < 40; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.pauseState, null, 'post clip must not score');
+  assert.equal(state.scoreR, 0);
+  assert.ok(state.ball.vx > 0);
+});
+
+test('shot well wide of the goal passes behind without scoring', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = 120;
+  state.ball.y = 5;                // way below mouth y
+  state.ball.z = 0;
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  // Should NOT score; should travel past the goal area and eventually OOB
+  // when it crosses x < -BALL_RADIUS.
+  for (let i = 0; i < 60 && state.pauseState === null; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.scoreR, 0);
+  // After enough time the ball goes OOB on the left edge.
+  assert.ok(
+    state.pauseState !== null || state.ball.x > 0,
+    'wide ball should either OOB or still be traveling, never score',
+  );
+});
+
+test('diagonal shot into the mouth center scores', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = 140;
+  state.ball.y = 15;
+  state.ball.z = 0;
+  state.ball.vx = -5; state.ball.vy = 1.2; state.ball.vz = 0;
+  state.ball.frozen = false;
+  for (let i = 0; i < 40 && state.pauseState !== 'celebrate'; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.pauseState, 'celebrate', 'diagonal into mouth must score');
+});
+
+test('shot over the crossbar with no dip does not score', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = 120;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = f.goalMouthZMax + 10;  // well above crossbar
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 1; // slight lift so it stays high
+  state.ball.frozen = false;
+  // Goal scoring requires belowCrossbar — with vz positive enough to beat
+  // gravity for a few ticks, ball stays above the crossbar as it crosses
+  // the line. It should NOT score on the first few ticks.
+  let scoredEarly = false;
+  for (let i = 0; i < 6; i++) {
+    tick(state, NOOP, NOOP);
+    if (state.pauseState === 'celebrate' && state.ball.z + BALL_RADIUS > f.goalMouthZMax) {
+      scoredEarly = true;
+      break;
+    }
+  }
+  assert.ok(
+    !scoredEarly,
+    'ball above the crossbar should not register a goal while still above it',
+  );
 });

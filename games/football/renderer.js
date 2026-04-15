@@ -293,23 +293,32 @@ export class Renderer {
     this._staticGeometries = [];
     this._staticMaterials = [];
 
-    // Lighting for the ball sphere. The rest of the scene is rendered
-    // with unlit line / basic materials, so these lights only affect
-    // meshes that use a lit material (MeshLambertMaterial etc.). Low
-    // ambient + soft directional gives the ball shaded hemispheres
-    // without washing it out.
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.75));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.55);
+    // Lighting for the ball sphere and cylindrical stickmen. The
+    // rest of the scene is rendered with unlit line / basic materials,
+    // so these lights only affect meshes that use a lit material.
+    // Low ambient + strong directional gives pronounced terminator
+    // shading so the ball and stickmen read as solid 3D objects
+    // instead of flat discs / pipes.
+    this.scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.15);
     dirLight.position.set(0.6, 1.0, 0.4);  // from upper-front
     this.scene.add(dirLight);
+    // Second dim fill light from the opposite side so the shadow
+    // side of the ball doesn't go completely dead — gives a soft
+    // rim where the shaded half curves back around.
+    const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+    fill.position.set(-0.4, 0.3, -0.5);
+    this.scene.add(fill);
 
     // Dedicated ball mesh: a real 3D sphere in world space at
     // (ball.x, ball.z, ball.y * Z_STRETCH). Physics collision still
-    // uses BALL_RADIUS (~1.4 world units); visual sphere is larger
+    // uses BALL_RADIUS (~1.7 world units); visual sphere is larger
     // for readability — same mismatch as stickman-glyph vs PLAYER_WIDTH.
     const ballGeom = new THREE.SphereGeometry(1, 20, 14);
-    const ballMat = new THREE.MeshLambertMaterial({
+    const ballMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(COLOR_TEXT[0], COLOR_TEXT[1], COLOR_TEXT[2]),
+      roughness: 0.55,
+      metalness: 0.05,
     });
     this._ballMesh = new THREE.Mesh(ballGeom, ballMat);
     this._ballMesh.frustumCulled = false;

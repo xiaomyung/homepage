@@ -18,7 +18,7 @@
  */
 
 import { buildAtlas } from './atlas.js';
-import { Renderer } from './renderer.js?v=79';
+import { Renderer } from './renderer.js?v=80';
 import {
   createField,
   createState,

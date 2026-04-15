@@ -297,28 +297,44 @@ export function createFitnessGraph({ apiBase, pollIntervalMs = 5000 }) {
 /* ── Config sliders + reset button ──────────────────────── */
 
 /**
- * Binds the three config sliders (match duration, worker count, mutation
- * rate) to the Flask broker's /config endpoint. Changes debounce-POST on
- * input, then update the value labels inline.
- *
- * Returns a handle with `getWorkerCount()` so main.js can spawn workers
- * to match the slider without a separate state source.
+ * Binds the match-duration and mutation-rate sliders to the broker's
+ * /config endpoint (debounce-POST on input, inline value label update)
+ * and the client-side worker-count stepper buttons. Returns a handle
+ * with `getWorkerCount()` so main.js can spawn workers to match the
+ * current stepper value without a separate state source.
  */
 export function createConfigControls({ apiBase }) {
   const controls = {
-    duration: { input: document.getElementById('cfg-duration'), val: document.getElementById('cfg-duration-val'), key: 'match_duration_ms' },
-    workers: { input: document.getElementById('cfg-workers'), val: document.getElementById('cfg-workers-val'), key: null },
-    mutrate: { input: document.getElementById('cfg-mutrate'), val: document.getElementById('cfg-mutrate-val'), key: 'mutation_rate' },
+    duration: { input: document.getElementById('cfg-duration'), val: document.getElementById('cfg-duration-val') },
+    mutrate:  { input: document.getElementById('cfg-mutrate'),  val: document.getElementById('cfg-mutrate-val') },
+  };
+  const workerStepper = {
+    dec: document.getElementById('cfg-workers-dec'),
+    inc: document.getElementById('cfg-workers-inc'),
+    val: document.getElementById('cfg-workers-val'),
   };
 
-  // Workers is a client-side setting, not persisted in /config
+  // Worker count is a client-side-only setting clamped to [1, hardwareMax].
   const hardwareMax = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 8));
-  const defaultWorkers = Math.max(1, Math.floor(hardwareMax / 2));
-  controls.workers.input.max = hardwareMax;
-  controls.workers.input.value = defaultWorkers;
-  controls.workers.val.textContent = defaultWorkers;
+  let workerCount = Math.max(1, Math.floor(hardwareMax / 2));
+  const workerChangeListeners = [];
+  const renderWorkerStepper = () => {
+    workerStepper.val.textContent = workerCount;
+    workerStepper.dec.disabled = workerCount <= 1;
+    workerStepper.inc.disabled = workerCount >= hardwareMax;
+  };
+  const setWorkerCount = (n) => {
+    const clamped = Math.max(1, Math.min(hardwareMax, n));
+    if (clamped === workerCount) return;
+    workerCount = clamped;
+    renderWorkerStepper();
+    for (const fn of workerChangeListeners) fn(workerCount);
+  };
+  workerStepper.dec.addEventListener('click', () => setWorkerCount(workerCount - 1));
+  workerStepper.inc.addEventListener('click', () => setWorkerCount(workerCount + 1));
+  renderWorkerStepper();
 
-  // Initialize from /config
+  // Initialize slider values from /config
   fetch(`${apiBase}/config`)
     .then((r) => (r.ok ? r.json() : null))
     .then((cfg) => {
@@ -346,30 +362,20 @@ export function createConfigControls({ apiBase }) {
     }, 200);
   };
 
-  // Duration slider — server-side
   controls.duration.input.addEventListener('input', () => {
     const ms = parseInt(controls.duration.input.value, 10);
     controls.duration.val.textContent = (ms / 1000).toFixed(0) + 's';
     debouncedSend({ match_duration_ms: ms });
   });
 
-  // Mutation rate slider — server-side
   controls.mutrate.input.addEventListener('input', () => {
     const rate = parseFloat(controls.mutrate.input.value);
     controls.mutrate.val.textContent = rate.toFixed(2);
     debouncedSend({ mutation_rate: rate });
   });
 
-  // Worker count slider — client-side only
-  const workerChangeListeners = [];
-  controls.workers.input.addEventListener('input', () => {
-    const n = parseInt(controls.workers.input.value, 10);
-    controls.workers.val.textContent = n;
-    for (const fn of workerChangeListeners) fn(n);
-  });
-
   return {
-    getWorkerCount: () => parseInt(controls.workers.input.value, 10),
+    getWorkerCount: () => workerCount,
     getMatchDurationMs: () => {
       const v = parseInt(controls.duration.input.value, 10);
       return Number.isFinite(v) && v > 0 ? v : 30000;

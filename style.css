@@ -475,6 +475,36 @@ body {
   text-align: right;
 }
 
+.game-cfg-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  justify-self: end;
+}
+
+.game-cfg-stepper .game-cfg-val {
+  min-width: 1.5em;
+  text-align: center;
+}
+
+.game-cfg-step {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+.game-cfg-step:hover {
+  color: var(--text);
+}
+
+.game-cfg-step:disabled {
+  color: var(--accent-dim);
+  cursor: default;
+}
+
 .game-freecam {
   margin-top: 0.6rem;
   margin-bottom: 0.6rem;

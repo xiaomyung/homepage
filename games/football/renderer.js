@@ -352,10 +352,14 @@ export class Renderer {
     // shares the same lighting response and reads as one monochrome
     // figure.
     const torsoBodyLen = STICKMAN_SHOULDER_OFY - 2 * STICKMAN_TORSO_RADIUS;
-    // Fill capsule spans the same hip→neck distance (== SHOULDER_OFY)
-    // as the outline but at a smaller radius, so its body segment is
-    // longer to compensate.
-    const torsoFillBodyLen = STICKMAN_SHOULDER_OFY - 2 * STICKMAN_TORSO_FILL_RADIUS;
+    // Fill capsule reuses the outline's body length exactly — only the
+    // radius shrinks. This produces a uniform shell of thickness
+    // `STICKMAN_TORSO_SHELL_THICKNESS` on every side: radially, AND on
+    // the top + bottom hemispherical caps. The fill's total end-to-end
+    // length is therefore `2 * STICKMAN_TORSO_SHELL_THICKNESS` shorter
+    // than the outline's, so `_placeTorso` insets the clipping range
+    // accordingly (otherwise stamina=0/1 would map outside the fill).
+    const torsoFillBodyLen = torsoBodyLen;
     const armBodyLen = STICKMAN_LIMB_FULL_H - 2 * STICKMAN_ARM_RADIUS;
     const legBodyLen = STICKMAN_LIMB_FULL_H - 2 * STICKMAN_LEG_RADIUS;
     const stickmanTorsoGeom     = new THREE.CapsuleGeometry(STICKMAN_TORSO_RADIUS,      torsoBodyLen,     4, 12);
@@ -1559,7 +1563,16 @@ export class Renderer {
     const tint = staminaColorInto(this._staminaColorBuf, staminaFrac);
     this._orientBetween(outline, ax, ay, az, bx, by, bz, color);
     this._orientBetween(fill,    ax, ay, az, bx, by, bz, tint);
-    const fillWorldY = updateStaminaClipPlane(plane, ay, by, staminaFrac);
+    // The fill capsule is inset by the shell thickness on both caps,
+    // so its y-extent is shorter than the hip→neck distance. Clip the
+    // stamina range over the fill's actual range, not the outline's,
+    // so stamina=0 maps to the fill's bottom and stamina=1 maps to
+    // its top.
+    const hipY  = ay < by ? ay : by;
+    const neckY = ay < by ? by : ay;
+    const insetHipY  = hipY  + STICKMAN_TORSO_SHELL_THICKNESS;
+    const insetNeckY = neckY - STICKMAN_TORSO_SHELL_THICKNESS;
+    const fillWorldY = updateStaminaClipPlane(plane, insetHipY, insetNeckY, staminaFrac);
 
     const disc = this._stickmanTorsoDisc[idx];
     const midY = (ay + by) * 0.5;

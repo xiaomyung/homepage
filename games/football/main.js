@@ -16,7 +16,7 @@
  * the user clicks [start].
  */
 
-import { Renderer } from './renderer.js?v=85';
+import { Renderer } from './renderer.js?v=86';
 import {
   createField,
   createState,

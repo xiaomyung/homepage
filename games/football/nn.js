@@ -10,9 +10,10 @@
  * Total 1233 weights (420 + 336 + 306 + 171). Inputs 18 and 19 are
  * cos/sin of the player's heading — see physics.js:buildInputs().
  *
- * Forward-pass only. Training is done offline in Python (see
- * evolution/build_warm_start.py) and the resulting weights are serialized
- * as a JSON array and shipped in the repo as warm_start_weights.json.
+ * Forward-pass only. Initial weights come from offline imitation
+ * training (see evolution/build-warm-start.mjs), serialized as a
+ * flat JSON array shipped in the repo as warm_start_weights.json.
+ * Runtime weights evolve via the GA in evolution/ga.mjs.
  */
 
 /** Layer sizes. Changing this invalidates committed warm_start_weights.json. */

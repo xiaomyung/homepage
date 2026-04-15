@@ -5,9 +5,6 @@
  * loop calls tick() once per animation frame; training workers call it in a
  * tight loop. Determinism relies on the caller passing a seeded PRNG into
  * createState(); the bundled createSeededRng() is the canonical source.
- *
- * A Python port at evolution/physics_py.py must stay bit-identical on
- * seeded runs. Enforced by tests/test_parity.py.
  */
 
 /* ── Constants ────────────────────────────────────────────────── */
@@ -1071,8 +1068,7 @@ export const NN_INPUT_SIZE = 20;
 /**
  * Build the NN input vector for one player, normalized to [-1, 1].
  * Length is NN_INPUT_SIZE. The `out` parameter lets callers reuse
- * a buffer and skip the per-tick Array allocation. Must stay
- * bit-identical to physics_py.py:build_inputs.
+ * a buffer and skip the per-tick Array allocation.
  *
  * Inputs 18 and 19 are cos/sin of the player's heading — a direct
  * signal of which way the stickman is pointed, so a stationary

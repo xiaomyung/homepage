@@ -2,10 +2,10 @@
  * Football v2 — deterministic fallback AI.
  *
  * Handcoded opponent + imitation teacher for the warm-start seed:
- * build_warm_start.py runs fallback-vs-fallback matches, pairs
- * (buildInputs(state), fallbackAction(state)) each tick, and fits
- * the NN to the resulting policy. Output is a 9-float action vector
- * in the same layout the NN produces.
+ * evolution/build-warm-start.mjs runs fallback-vs-fallback matches,
+ * pairs (buildInputs(state), fallbackAction(state)) each tick, and
+ * fits the NN to the resulting policy. Output is a 9-float action
+ * vector in the same layout the NN produces.
  *
  * The whole point of this module is that the policy is a pure
  * deterministic function of state — the v1 version had a 3% random

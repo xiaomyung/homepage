@@ -326,17 +326,12 @@ export function createFitnessGraph({ apiBase, pollIntervalMs = 5000 }) {
 /* ── Config sliders + reset button ──────────────────────── */
 
 /**
- * Binds the match-duration and mutation-rate sliders to the broker's
- * /config endpoint (debounce-POST on input, inline value label update)
- * and the client-side worker-count stepper buttons. Returns a handle
- * with `getWorkerCount()` so main.js can spawn workers to match the
- * current stepper value without a separate state source.
+ * Binds the client-side worker-count stepper buttons. Match duration and
+ * mutation rate are fixed at the broker's /config defaults — the UI no
+ * longer surfaces them. Returns a handle with `getWorkerCount()` so
+ * main.js can spawn workers to match the current stepper value.
  */
-export function createConfigControls({ apiBase }) {
-  const controls = {
-    duration: { input: document.getElementById('cfg-duration'), val: document.getElementById('cfg-duration-val') },
-    mutrate:  { input: document.getElementById('cfg-mutrate'),  val: document.getElementById('cfg-mutrate-val') },
-  };
+export function createConfigControls() {
   const workerStepper = {
     dec: document.getElementById('cfg-workers-dec'),
     inc: document.getElementById('cfg-workers-inc'),
@@ -363,52 +358,8 @@ export function createConfigControls({ apiBase }) {
   workerStepper.inc.addEventListener('click', () => setWorkerCount(workerCount + 1));
   renderWorkerStepper();
 
-  // Initialize slider values from /config
-  fetch(`${apiBase}/config`)
-    .then((r) => (r.ok ? r.json() : null))
-    .then((cfg) => {
-      if (!cfg) return;
-      controls.duration.input.value = cfg.match_duration_ms;
-      controls.duration.val.textContent = (cfg.match_duration_ms / 1000).toFixed(0) + 's';
-      controls.mutrate.input.value = cfg.mutation_rate;
-      controls.mutrate.val.textContent = cfg.mutation_rate.toFixed(2);
-    })
-    .catch(() => {});
-
-  let debounceTimer = null;
-  const debouncedSend = (payload) => {
-    if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(async () => {
-      try {
-        await fetch(`${apiBase}/config`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-      } catch {
-        /* ignore */
-      }
-    }, 200);
-  };
-
-  controls.duration.input.addEventListener('input', () => {
-    const ms = parseInt(controls.duration.input.value, 10);
-    controls.duration.val.textContent = (ms / 1000).toFixed(0) + 's';
-    debouncedSend({ match_duration_ms: ms });
-  });
-
-  controls.mutrate.input.addEventListener('input', () => {
-    const rate = parseFloat(controls.mutrate.input.value);
-    controls.mutrate.val.textContent = rate.toFixed(2);
-    debouncedSend({ mutation_rate: rate });
-  });
-
   return {
     getWorkerCount: () => workerCount,
-    getMatchDurationMs: () => {
-      const v = parseInt(controls.duration.input.value, 10);
-      return Number.isFinite(v) && v > 0 ? v : 30000;
-    },
     onWorkerCountChange: (fn) => workerChangeListeners.push(fn),
   };
 }

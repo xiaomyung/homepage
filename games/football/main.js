@@ -42,9 +42,13 @@ import {
 } from './ui.js';
 
 const API_BASE = '/api/football';
-// Hard safety limit — a stalled match still times out even if the config
-// slider was pushed past this. Real match length comes from the config
-// controls via getMatchDurationMs().
+// Showcase match length, in milliseconds. Fixed — no longer surfaced in
+// the UI. Training workers pick up the broker's /config default (which
+// currently matches this constant) so visual and headless match
+// durations stay consistent.
+const SHOWCASE_MATCH_MS = 30000;
+// Hard safety limit — a stalled match still times out even if the
+// physics state is wedged for some reason.
 const MAX_SHOWCASE_TICKS = 4000;
 
 /* ── Bootstrap ────────────────────────────────────────── */
@@ -70,7 +74,7 @@ async function main() {
   scoreboard = createScoreboard();
   statsPanel = createStatsPanel({ apiBase: API_BASE });
   createFitnessGraph({ apiBase: API_BASE });
-  configControls = createConfigControls({ apiBase: API_BASE });
+  configControls = createConfigControls();
 
   startStopBtn = createStartStopButton({
     onStart: () => startWorkers(configControls.getWorkerCount()),
@@ -170,8 +174,7 @@ function frame() {
   if (!currentMatch) return;
   const { state, p1Brain, p2Brain } = currentMatch;
 
-  const matchDurationMs = configControls?.getMatchDurationMs() ?? 30000;
-  const matchDurationTicks = Math.ceil(matchDurationMs / TICK_MS);
+  const matchDurationTicks = Math.ceil(SHOWCASE_MATCH_MS / TICK_MS);
 
   if (state.matchOver || state.tick >= matchDurationTicks || state.tick > MAX_SHOWCASE_TICKS) {
     nextShowcase();
@@ -197,7 +200,7 @@ function frame() {
   scoreboard.setScore(state.scoreL, state.scoreR);
   scoreboard.setTimer(
     (state.tick * TICK_MS) / 1000,
-    matchDurationMs / 1000,
+    SHOWCASE_MATCH_MS / 1000,
   );
   renderer.renderState(state);
 }

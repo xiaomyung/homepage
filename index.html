@@ -6,7 +6,7 @@
   <title>home.arpa</title>
   <link rel="preload" href="fonts/iosevka-term-regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/iosevka-term-medium.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="style.css?v=134">
+  <link rel="stylesheet" href="style.css?v=135">
 </head>
 <body>
 
@@ -212,14 +212,14 @@
         <dt>fb win</dt>    <dd id="stat-fbwr">—</dd>
       </dl>
       <canvas class="game-fitness-graph" id="game-fitness-canvas" width="800" height="100"></canvas>
-      <div class="game-config">
-        <label><span>match ms</span><input type="range" id="cfg-duration" min="10000" max="60000" step="1000"><span class="game-cfg-val" id="cfg-duration-val">—</span></label>
-        <label><span>workers</span><div class="game-cfg-stepper" id="cfg-workers-stepper"><button type="button" class="game-cfg-step" id="cfg-workers-dec" aria-label="decrease workers">[ − ]</button><span class="game-cfg-val" id="cfg-workers-val">—</span><button type="button" class="game-cfg-step" id="cfg-workers-inc" aria-label="increase workers">[ + ]</button></div></label>
-        <label><span>mut rate</span><input type="range" id="cfg-mutrate" min="0" max="0.5" step="0.01"><span class="game-cfg-val" id="cfg-mutrate-val">—</span></label>
+      <div class="game-workers">
+        <span class="game-workers-label">workers</span>
+        <button type="button" class="game-workers-step" id="cfg-workers-dec" aria-label="decrease workers">[ − ]</button>
+        <span class="game-workers-val" id="cfg-workers-val">—</span>
+        <button type="button" class="game-workers-step" id="cfg-workers-inc" aria-label="increase workers">[ + ]</button>
       </div>
       <div class="game-freecam">
         <button type="button" class="game-btn" id="game-followcam-btn">[ follow ball: off ]</button>
-        <div class="game-followcam-help">smooth rail cam that tracks the ball with both players in frame; mutually exclusive with freecam</div>
         <button type="button" class="game-btn" id="game-freecam-btn">[ freecam: off ]</button>
         <dl class="game-stats game-freecam-help" id="game-freecam-help" data-open="false">
           <dt>drag</dt>     <dd>orbit target</dd>
@@ -234,7 +234,7 @@
   </section>
 
   <script src="app.js?v=8"></script>
-  <script type="module" src="games/football/main.js?v=51"></script>
+  <script type="module" src="games/football/main.js?v=52"></script>
   <script type="module" src="games/blackhole/blackhole.js"></script>
 </body>
 </html>

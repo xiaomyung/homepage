@@ -1023,7 +1023,11 @@ export class Renderer {
     const tiltC = Math.cos(upperTilt);
     const tiltS = Math.sin(upperTilt);
 
-    const hipBaseY  = s * 0.10 + bob * s + jumpY;
+    // Hips sit exactly one full leg-length above y=0 so straight-hanging
+    // legs land their feet on the ground plane. Bob (walk cycle) and
+    // jumpY (celebration) only add upward offsets, so the foot never
+    // sinks below ground.
+    const hipBaseY  = STICKMAN_LIMB_FULL_H + bob * s + jumpY;
     const upperHipY = hipBaseY + pushBodyDip;
 
     // Torso / shoulders / head rotate around the hip by upperTilt.

@@ -24,15 +24,28 @@
  */
 
 import { createField, createState, createSeededRng, tick as physicsTick, buildInputs, TICK_MS, NN_INPUT_SIZE } from './physics.js';
-import { NeuralNet } from './nn.js';
+import { NeuralNet, WEIGHT_COUNT } from './nn.js';
 import { fallbackAction } from './fallback.js';
 
-const BATCH_SIZE = 10;
+// Fetch this many matchups per /matchup GET. Amortizes HTTP latency +
+// JSON decode across many matches — at ~60 matches/sec per worker, a
+// batch of 20 means one /matchup fetch every ~330ms instead of one per
+// match. Bigger batches lose less work to breeding staleness but waste
+// more on cache-miss rebuilds.
+const MATCHUP_BATCH_SIZE = 20;
+// Post this many results per /results POST.
+const RESULT_BATCH_SIZE = 20;
 const DEFAULT_MATCH_TICKS = 1500; // ~24s of simulated play at 16ms/tick
 
 let running = false;
 let apiBase = '/api/football';
 let matchTicks = DEFAULT_MATCH_TICKS;
+
+// Persistent NN instances reused across all matches. Each holds its
+// own pre-allocated weights Float64Array and layer scratch buffers,
+// so matches only need to memcpy fresh weights in (no allocations).
+const p1Brain = new NeuralNet(new Float64Array(WEIGHT_COUNT));
+const p2Brain = new NeuralNet(new Float64Array(WEIGHT_COUNT));
 
 self.onmessage = (ev) => {
   const msg = ev.data;
@@ -66,45 +79,49 @@ async function main() {
     // Use defaults if /config is unreachable
   }
 
-  const batch = [];
+  const results = [];
   let simsSinceReport = 0;
   let reportStart = Date.now();
 
   while (running) {
-    let matchup;
+    let matchups;
     try {
-      matchup = await fetchMatchup();
+      matchups = await fetchMatchupBatch(MATCHUP_BATCH_SIZE);
     } catch {
       // Broker unreachable — back off briefly and retry.
       await sleep(1000);
       continue;
     }
-    if (!matchup) continue;
+    if (!matchups || matchups.length === 0) {
+      await sleep(100);
+      continue;
+    }
 
-    const result = runMatch(matchup);
-    batch.push(result);
-    simsSinceReport++;
+    for (const matchup of matchups) {
+      if (!running) break;
+      results.push(runMatch(matchup));
+      simsSinceReport++;
 
-    if (batch.length >= BATCH_SIZE) {
-      try {
-        await postResults(batch);
-      } catch {
-        // Drop the batch on failure; the broker's population is eventually
-        // consistent and one lost batch doesn't break training.
+      if (results.length >= RESULT_BATCH_SIZE) {
+        try {
+          await postResults(results);
+        } catch {
+          /* drop on failure — broker is eventually consistent */
+        }
+        const elapsed = (Date.now() - reportStart) / 1000;
+        const simsPerSec = simsSinceReport / Math.max(0.001, elapsed);
+        self.postMessage({ type: 'batch', posted: results.length, simsPerSec });
+        results.length = 0;
+        simsSinceReport = 0;
+        reportStart = Date.now();
       }
-      const elapsed = (Date.now() - reportStart) / 1000;
-      const simsPerSec = simsSinceReport / Math.max(0.001, elapsed);
-      self.postMessage({ type: 'batch', posted: batch.length, simsPerSec });
-      batch.length = 0;
-      simsSinceReport = 0;
-      reportStart = Date.now();
     }
   }
 
   // Flush any remaining results on shutdown
-  if (batch.length > 0) {
+  if (results.length > 0) {
     try {
-      await postResults(batch);
+      await postResults(results);
     } catch {
       /* drop on shutdown */
     }
@@ -113,9 +130,11 @@ async function main() {
 
 /* ── Match runner ───────────────────────────────────────── */
 
-// Reused NN input buffers — avoid per-tick allocation in buildInputs().
-const p1InputBuf = new Array(NN_INPUT_SIZE);
-const p2InputBuf = new Array(NN_INPUT_SIZE);
+// Reused NN input buffers — typed so the NN forward loop can read
+// them via Float64Array fast paths without deopting on mixed-type
+// element access.
+const p1InputBuf = new Float64Array(NN_INPUT_SIZE);
+const p2InputBuf = new Float64Array(NN_INPUT_SIZE);
 
 function runMatch(matchup) {
   const field = createField();
@@ -123,8 +142,9 @@ function runMatch(matchup) {
   const state = createState(field, createSeededRng(seed));
   state.graceFrames = 0;
 
-  const p1Brain = new NeuralNet(matchup.p1.weights);
-  const p2Brain = matchup.type === 'fallback' ? null : new NeuralNet(matchup.p2.weights);
+  p1Brain.loadWeights(matchup.p1.weights);
+  const p2IsFallback = matchup.type === 'fallback';
+  if (!p2IsFallback) p2Brain.loadWeights(matchup.p2.weights);
 
   for (let i = 0; i < matchTicks; i++) {
     if (state.matchOver) break;
@@ -134,7 +154,7 @@ function runMatch(matchup) {
     }
 
     const p1Action = p1Brain.forward(buildInputs(state, 'p1', p1InputBuf));
-    const p2Action = p2Brain === null
+    const p2Action = p2IsFallback
       ? fallbackAction(state, 'p2')
       : p2Brain.forward(buildInputs(state, 'p2', p2InputBuf));
 
@@ -143,7 +163,7 @@ function runMatch(matchup) {
 
   return {
     p1_id: matchup.p1.id,
-    p2_id: matchup.type === 'fallback' ? null : matchup.p2.id,
+    p2_id: p2IsFallback ? null : matchup.p2.id,
     goals_p1: state.scoreL,
     goals_p2: state.scoreR,
   };
@@ -151,10 +171,13 @@ function runMatch(matchup) {
 
 /* ── HTTP ─────────────────────────────────────────────────── */
 
-async function fetchMatchup() {
-  const res = await fetch(`${apiBase}/matchup`);
+async function fetchMatchupBatch(count) {
+  const res = await fetch(`${apiBase}/matchup?count=${count}`);
   if (!res.ok) throw new Error(`matchup fetch: ${res.status}`);
-  return res.json();
+  const body = await res.json();
+  // Broker responds with an array when `count` is present, a single
+  // object otherwise — accept both for backward compatibility.
+  return Array.isArray(body) ? body : [body];
 }
 
 async function postResults(batch) {

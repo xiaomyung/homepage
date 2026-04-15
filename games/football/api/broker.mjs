@@ -512,8 +512,30 @@ function readJsonBody(req) {
 
 // ── Route handlers ────────────────────────────────────────────
 
+// Hard upper bound on the number of matchups returned per request —
+// prevents a malicious or buggy client from asking for a huge batch
+// that stalls the server serializing weight arrays.
+const MATCHUP_BATCH_MAX = 64;
+
 function handleMatchup(req, res) {
-  json(res, 200, pickMatchup());
+  const url = req.url || '';
+  const qi = url.indexOf('?');
+  let count = 0;
+  if (qi >= 0) {
+    const params = new URLSearchParams(url.slice(qi + 1));
+    const raw = params.get('count');
+    if (raw !== null) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n > 0) count = Math.min(n, MATCHUP_BATCH_MAX);
+    }
+  }
+  if (count === 0) {
+    json(res, 200, pickMatchup());
+    return;
+  }
+  const batch = new Array(count);
+  for (let i = 0; i < count; i++) batch[i] = pickMatchup();
+  json(res, 200, batch);
 }
 
 async function handleResults(req, res) {

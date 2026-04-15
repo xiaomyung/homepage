@@ -339,8 +339,11 @@ export function createConfigControls() {
   };
 
   // Worker count is a client-side-only setting clamped to [1, hardwareMax].
+  // Default is the full hardware count so training ramps up to the
+  // client's maximum throughput the moment [start] is pressed — users
+  // who want to throttle back can step down manually.
   const hardwareMax = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 8));
-  let workerCount = Math.max(1, Math.floor(hardwareMax / 2));
+  let workerCount = hardwareMax;
   const workerChangeListeners = [];
   const renderWorkerStepper = () => {
     workerStepper.val.textContent = workerCount;

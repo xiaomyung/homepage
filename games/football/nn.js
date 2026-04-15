@@ -53,36 +53,76 @@ export class NeuralNet {
         ? weights
         : Float64Array.from(weights);
     }
+    // Pre-allocated per-layer scratch buffers so `forward()` is fully
+    // allocation-free on the training hot path (~1500 calls per match
+    // per brain × dozens of matches per second per worker). One typed
+    // array per layer output; the final one is returned directly.
+    this._layerBufs = new Array(ARCH.length - 1);
+    for (let i = 1; i < ARCH.length; i++) {
+      this._layerBufs[i - 1] = new Float64Array(ARCH[i]);
+    }
   }
 
   /**
-   * Run a forward pass. Allocates only the minimum intermediate buffers.
+   * Run a forward pass. Zero allocations on the hot path — all layer
+   * outputs write into pre-allocated scratch buffers owned by this NN
+   * instance. The returned Float64Array is the last layer buffer, so
+   * the caller must consume it before the next `forward()` call on
+   * the same instance overwrites it.
    *
    * @param {number[]|Float64Array} inputs — ARCH[0]-float input vector
-   * @returns {number[]} 9-float output vector
+   * @returns {Float64Array} ARCH[last]-float output vector (owned buffer)
    */
   forward(inputs) {
     if (inputs.length !== ARCH[0]) {
       throw new Error(`input size mismatch: expected ${ARCH[0]}, got ${inputs.length}`);
     }
+    const weights = this.weights;
+    const lastLayer = ARCH.length - 2;
     let current = inputs;
     for (let layer = 0; layer < ARCH.length - 1; layer++) {
       const fanIn = ARCH[layer];
       const fanOut = ARCH[layer + 1];
       const wOffset = LAYER_OFFSETS[layer];
       const bOffset = wOffset + fanIn * fanOut;
-      const isOutputLayer = layer === ARCH.length - 2;
-      const next = new Array(fanOut);
-      for (let j = 0; j < fanOut; j++) {
-        let sum = this.weights[bOffset + j];
-        for (let i = 0; i < fanIn; i++) {
-          sum += current[i] * this.weights[wOffset + i * fanOut + j];
+      const next = this._layerBufs[layer];
+      if (layer === lastLayer) {
+        for (let j = 0; j < fanOut; j++) {
+          let sum = weights[bOffset + j];
+          for (let i = 0; i < fanIn; i++) {
+            sum += current[i] * weights[wOffset + i * fanOut + j];
+          }
+          next[j] = Math.tanh(sum);
         }
-        next[j] = isOutputLayer ? Math.tanh(sum) : leakyRelu(sum);
+      } else {
+        for (let j = 0; j < fanOut; j++) {
+          let sum = weights[bOffset + j];
+          for (let i = 0; i < fanIn; i++) {
+            sum += current[i] * weights[wOffset + i * fanOut + j];
+          }
+          next[j] = sum >= 0 ? sum : sum * LEAKY_SLOPE;
+        }
       }
       current = next;
     }
     return current;
+  }
+
+  /**
+   * Copy fresh weights into this NN's existing buffer without
+   * reallocating. Lets callers (notably worker.js) reuse a single NN
+   * instance across thousands of matches — the scratch buffers and
+   * the weight Float64Array stay pinned, only the floats flip.
+   *
+   * @param {number[]|Float64Array} source
+   */
+  loadWeights(source) {
+    if (source.length !== WEIGHT_COUNT) {
+      throw new Error(
+        `weight count mismatch: expected ${WEIGHT_COUNT}, got ${source.length}`
+      );
+    }
+    this.weights.set(source);
   }
 
   /**

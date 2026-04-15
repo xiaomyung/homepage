@@ -13,7 +13,7 @@
 /* ── Constants ────────────────────────────────────────────────── */
 
 export const FIELD_WIDTH_REF = 900;
-export const FIELD_HEIGHT = 42;
+export const FIELD_HEIGHT = 54.6;
 export const CEILING = 100;
 
 export const TICK_MS = 16;
@@ -89,9 +89,10 @@ const PUSH_VICTIM_STAMINA_MULT = 3;
 const GOAL_BACK_OFFSET = 30;
 const GOAL_DEPTH = 78;
 const GOAL_LINE_INSET = 6; // scoring line sits this far inside the mouth
-const GOAL_MOUTH_Z = 26;  // 30% taller than the original 20
-const GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - 20) / 2;
-const GOAL_MOUTH_Y_MAX = (FIELD_HEIGHT + 20) / 2;
+const GOAL_MOUTH_Z = 26;  // crossbar height (unchanged)
+const GOAL_MOUTH_WIDTH = 26;  // z-span of the mouth (30% wider than the original 20)
+const GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - GOAL_MOUTH_WIDTH) / 2;
+const GOAL_MOUTH_Y_MAX = (FIELD_HEIGHT + GOAL_MOUTH_WIDTH) / 2;
 
 // Match
 export const WIN_SCORE = 3;

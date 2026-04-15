@@ -18,7 +18,7 @@
  */
 
 import { buildAtlas } from './atlas.js';
-import { Renderer } from './renderer.js?v=66';
+import { Renderer } from './renderer.js?v=67';
 import {
   createField,
   createState,
@@ -26,7 +26,7 @@ import {
   tick as physicsTick,
   buildInputs,
   TICK_MS,
-} from './physics.js?v=35';
+} from './physics.js?v=36';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import {

@@ -18,7 +18,7 @@ from typing import Optional
 # ── Constants (must match physics.js) ──────────────────────────
 
 FIELD_WIDTH_REF = 900
-FIELD_HEIGHT = 42
+FIELD_HEIGHT = 54.6
 CEILING = 100
 
 TICK_MS = 16
@@ -94,9 +94,10 @@ PUSH_VICTIM_STAMINA_MULT = 3
 GOAL_BACK_OFFSET = 30
 GOAL_DEPTH = 78
 GOAL_LINE_INSET = 6
-GOAL_MOUTH_Z = 26  # 30% taller than the original 20
-GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - 20) / 2
-GOAL_MOUTH_Y_MAX = (FIELD_HEIGHT + 20) / 2
+GOAL_MOUTH_Z = 26  # crossbar height (unchanged)
+GOAL_MOUTH_WIDTH = 26  # z-span of the mouth (30% wider than the original 20)
+GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - GOAL_MOUTH_WIDTH) / 2
+GOAL_MOUTH_Y_MAX = (FIELD_HEIGHT + GOAL_MOUTH_WIDTH) / 2
 
 # Match
 WIN_SCORE = 3

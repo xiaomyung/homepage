@@ -529,10 +529,12 @@ export class Renderer {
     const vertX = centerX + dir * halfD;
     const backTopX = centerX - dir * halfD;
     const frontWallX = backTopX - dir * halfD;
-    // Front mouth is a true vertical plane at frontWallX — both post
-    // bottoms share the same x so the mouth opening is never slanted.
-    const postABotX = frontWallX;
-    const postBBotX = frontWallX;
+    // Post bottoms sit on the scoring goal line (= backTopX in these
+    // coords, = f.goalLineL/R in physics coords, = where the penalty
+    // arcs are anchored). Both posts share this x so the mouth base is
+    // parallel to z and the visible line matches the scoring boundary.
+    const postABotX = backTopX;
+    const postBBotX = backTopX;
     const zMin = centerZ - halfW;
     const zMax = centerZ + halfW;
     const P = (x, y, z) => new THREE.Vector3(x, y, z);

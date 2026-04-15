@@ -99,20 +99,20 @@
 <div class="strip"><canvas class="strip-main" id="s-goal-burst"></canvas></div>
 
 <script type="module">
-import { Renderer } from './renderer.js?v=90';
+import { Renderer } from './renderer.js?v=91';
 import {
   createField,
   createState,
   createSeededRng,
   tick,
   FIELD_WIDTH_REF,
-  FIELD_HEIGHT,
   KICK_WINDUP_MS,
   KICK_DURATION_MS,
   AIRKICK_MS,
+  AIRKICK_PEAK_FRAC,
   TICK_MS,
   Z_STRETCH,
-} from './physics.js?v=44';
+} from './physics.js?v=46';
 
 // Close-up camera distance for animated strips. Smaller = tighter
 // crop on the stickman. Tuned so the whole figure + raised arms
@@ -303,7 +303,7 @@ try {
         p.kick.timer += TICK_MS;
         const frac = Math.min(p.kick.timer / AIRKICK_MS, 1);
         p.airZ = Math.sin(frac * Math.PI) * AIRKICK_MAX_Z;
-        if (!p.kick.fired && frac >= 0.4) p.kick.fired = true;
+        if (!p.kick.fired && frac >= AIRKICK_PEAK_FRAC) p.kick.fired = true;
         if (frac >= 1) { reset(p); p.airZ = 0; }
       }
     });

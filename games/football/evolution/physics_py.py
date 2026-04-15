@@ -349,9 +349,10 @@ def _apply_action(state: dict, p: dict, out: list) -> None:
         _start_kick(p, out[3], out[4], out[5], out[6])
 
 
-# ── Movement ───────────────────────────────────────────────────
+# ── Angle helpers ──────────────────────────────────────────────
 
-def _wrap_angle(a: float) -> float:
+
+def wrap_angle(a: float) -> float:
     """Shortest-arc signed difference in (-pi, pi]. Matches physics.js."""
     while a > math.pi:
         a -= 2 * math.pi
@@ -361,7 +362,7 @@ def _wrap_angle(a: float) -> float:
 
 
 def _turn_toward(current: float, target: float) -> float:
-    diff = _wrap_angle(target - current)
+    diff = wrap_angle(target - current)
     if diff > PLAYER_TURN_RATE:
         return current + PLAYER_TURN_RATE
     if diff < -PLAYER_TURN_RATE:
@@ -369,10 +370,17 @@ def _turn_toward(current: float, target: float) -> float:
     return target
 
 
-def _angle_to_target(p: dict, world_x: float, world_z: float) -> float:
+def facing_toward(p: dict, world_x: float, world_z: float, tol: float) -> bool:
+    """True iff p's heading points at (world_x, world_z) within tol radians.
+    Shared by _can_kick, _try_push, and fallback_py — single source for
+    the alignment rule."""
     center_x = p["x"] + PLAYER_WIDTH / 2
     center_z = (p["y"] + PLAYER_HEIGHT / 2) * Z_STRETCH
-    return math.atan2(world_z - center_z, world_x - center_x)
+    want = math.atan2(world_z - center_z, world_x - center_x)
+    return abs(wrap_angle(want - p["heading"])) < tol
+
+
+# ── Movement ───────────────────────────────────────────────────
 
 
 def _apply_movement(state: dict, p: dict, move_x: float, move_y: float) -> None:
@@ -616,13 +624,11 @@ def _can_kick(state: dict, p: dict) -> bool:
     f = state["field"]
     center_x = p["x"] + f["playerWidth"] / 2
     center_y = p["y"] + PLAYER_HEIGHT / 2
-    close_x = abs(state["ball"]["x"] - center_x) < f["playerWidth"] * KICK_REACH_X_MULT
-    close_y = abs(state["ball"]["y"] - center_y) < KICK_REACH_Y
-    if not (close_x and close_y):
+    if abs(state["ball"]["x"] - center_x) >= f["playerWidth"] * KICK_REACH_X_MULT:
         return False
-    ball_z = state["ball"]["y"] * Z_STRETCH
-    want_angle = _angle_to_target(p, state["ball"]["x"], ball_z)
-    return abs(_wrap_angle(want_angle - p["heading"])) < KICK_FACE_TOL
+    if abs(state["ball"]["y"] - center_y) >= KICK_REACH_Y:
+        return False
+    return facing_toward(p, state["ball"]["x"], state["ball"]["y"] * Z_STRETCH, KICK_FACE_TOL)
 
 
 def _start_kick(p: dict, dx: float, dy: float, dz: float, power: float) -> None:
@@ -766,8 +772,7 @@ def _try_push(state: dict, pusher: dict, victim: dict, power_norm: float) -> Non
         return
 
     victim_z = (victim["y"] + PLAYER_HEIGHT / 2) * Z_STRETCH
-    want_angle = _angle_to_target(pusher, victim_center_x, victim_z)
-    if abs(_wrap_angle(want_angle - pusher["heading"])) > PUSH_FACE_TOL:
+    if not facing_toward(pusher, victim_center_x, victim_z, PUSH_FACE_TOL):
         return
 
     power01 = (_clamp(power_norm, -1, 1) + 1) / 2

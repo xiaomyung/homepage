@@ -14,7 +14,7 @@
 
 export const FIELD_WIDTH_REF = 900;
 export const FIELD_HEIGHT = 54.6;
-export const CEILING = 100;
+const CEILING = 100;
 
 export const TICK_MS = 16;
 const STALL_TICKS = Math.ceil(10000 / TICK_MS);
@@ -69,7 +69,7 @@ const STAMINA_KICK_DRAIN = 0.3;
 const STAMINA_AIRKICK_DRAIN = 0.1;
 
 // Kick
-export const MAX_KICK_POWER = 22;
+const MAX_KICK_POWER = 22;
 const MIN_KICK_POWER = 0.15;
 const MIN_KICK_STAMINA = 0.2;
 const KICK_NOISE_SCALE = 0.3;
@@ -86,7 +86,7 @@ export const KICK_REACH_Y = PLAYER_HEIGHT / 2 + BALL_RADIUS + KICK_REACH_SLACK_Y
 // lets the player tilt into the ball a touch past the standing footprint.
 const AIRKICK_REACH_SLACK_Y = 3;
 const AIRKICK_REACH_X_MULT = 1.5;
-export const AIRKICK_REACH_Y = PLAYER_HEIGHT / 2 + BALL_RADIUS + AIRKICK_REACH_SLACK_Y;
+const AIRKICK_REACH_Y = PLAYER_HEIGHT / 2 + BALL_RADIUS + AIRKICK_REACH_SLACK_Y;
 const AIRKICK_MAX_Z = 20;
 export const AIRKICK_MS = 350;
 export const AIRKICK_PEAK_FRAC = 0.4;
@@ -107,7 +107,7 @@ export const PUSH_RANGE_X = 30;
 // range from top-to-top, plus a small slack for animation timing.
 const PUSH_RANGE_SLACK_Y = 1;
 export const PUSH_RANGE_Y = PLAYER_HEIGHT + PUSH_RANGE_SLACK_Y;
-export const MAX_PUSH_FORCE = 200;
+const MAX_PUSH_FORCE = 200;
 const PUSH_DAMP = 0.88;
 const PUSH_APPLY = 0.12;
 const PUSH_VEL_THRESHOLD = 0.5;
@@ -134,7 +134,7 @@ const GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - GOAL_MOUTH_WIDTH) / 2;
 const GOAL_MOUTH_Y_MAX = (FIELD_HEIGHT + GOAL_MOUTH_WIDTH) / 2;
 
 // Match
-export const WIN_SCORE = 3;
+const WIN_SCORE = 3;
 const CELEBRATE_TICKS = Math.ceil(1500 / TICK_MS);
 const MATCHEND_PAUSE_TICKS = Math.ceil(3000 / TICK_MS);
 const RESPAWN_GRACE = 30;
@@ -346,10 +346,10 @@ function applyAction(state, p, out) {
   }
 }
 
-/* ── Movement ─────────────────────────────────────────────────── */
+/* ── Angle helpers ────────────────────────────────────────────── */
 
 /** Shortest-arc signed difference between two angles, in (-π, π]. */
-function wrapAngle(a) {
+export function wrapAngle(a) {
   while (a > Math.PI) a -= 2 * Math.PI;
   while (a <= -Math.PI) a += 2 * Math.PI;
   return a;
@@ -363,15 +363,17 @@ function turnToward(current, target) {
   return target;
 }
 
-/** Signed heading difference between a player's current heading and
- *  the world-space direction toward (worldX, worldZ). Used by both
- *  kick and push alignment gates, and by the renderer for the limb
- *  swing frame (via the exported helper below). */
-function angleToTarget(p, worldX, worldZ) {
+/** True iff `p`'s heading points at world-space (worldX, worldZ) within
+ *  `tol` radians. Shared by canKick, tryPush, and both fallbacks so the
+ *  "is this action aligned" rule lives in exactly one place. */
+export function facingToward(p, worldX, worldZ, tol) {
   const centerX = p.x + PLAYER_WIDTH / 2;
   const centerZ = (p.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
-  return Math.atan2(worldZ - centerZ, worldX - centerX);
+  const want = Math.atan2(worldZ - centerZ, worldX - centerX);
+  return Math.abs(wrapAngle(want - p.heading)) < tol;
 }
+
+/* ── Movement ─────────────────────────────────────────────────── */
 
 function applyMovement(state, p, moveX, moveY) {
   const effSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina);
@@ -646,15 +648,9 @@ function canKick(state, p) {
   const f = state.field;
   const centerX = p.x + f.playerWidth / 2;
   const centerY = p.y + PLAYER_HEIGHT / 2;
-  const closeX = Math.abs(state.ball.x - centerX) < f.playerWidth * KICK_REACH_X_MULT;
-  const closeY = Math.abs(state.ball.y - centerY) < KICK_REACH_Y;
-  if (!(closeX && closeY)) return false;
-  // Face gate: the player must be pointed toward the ball (within a
-  // ~60° cone) to connect. This is what forces the brain to turn
-  // before kicking — same rule for ground and air kicks.
-  const ballZ = state.ball.y * Z_STRETCH;
-  const wantAngle = angleToTarget(p, state.ball.x, ballZ);
-  return Math.abs(wrapAngle(wantAngle - p.heading)) < KICK_FACE_TOL;
+  if (Math.abs(state.ball.x - centerX) >= f.playerWidth * KICK_REACH_X_MULT) return false;
+  if (Math.abs(state.ball.y - centerY) >= KICK_REACH_Y) return false;
+  return facingToward(p, state.ball.x, state.ball.y * Z_STRETCH, KICK_FACE_TOL);
 }
 
 function startKick(p, dx, dy, dz, power) {
@@ -793,10 +789,8 @@ function tryPush(state, pusher, victim, powerNorm) {
   if (Math.abs(pusherCenterX - victimCenterX) > PUSH_RANGE_X) return;
   if (Math.abs(pusher.y - victim.y) > PUSH_RANGE_Y) return;
 
-  // Face gate: the pusher must be pointed toward the victim.
   const victimZ = (victim.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
-  const wantAngle = angleToTarget(pusher, victimCenterX, victimZ);
-  if (Math.abs(wrapAngle(wantAngle - pusher.heading)) > PUSH_FACE_TOL) return;
+  if (!facingToward(pusher, victimCenterX, victimZ, PUSH_FACE_TOL)) return;
 
   const power01 = (clamp(powerNorm, -1, 1) + 1) / 2;
   const force = power01 * MAX_PUSH_FORCE * Math.max(MIN_PUSH_STAMINA, pusher.stamina);

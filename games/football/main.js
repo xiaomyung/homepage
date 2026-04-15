@@ -16,7 +16,7 @@
  * the user clicks [start].
  */
 
-import { Renderer } from './renderer.js?v=90';
+import { Renderer } from './renderer.js?v=91';
 import {
   createField,
   createState,
@@ -25,7 +25,7 @@ import {
   buildInputs,
   TICK_MS,
   NN_INPUT_SIZE,
-} from './physics.js?v=45';
+} from './physics.js?v=46';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import {

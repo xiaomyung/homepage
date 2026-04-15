@@ -21,8 +21,9 @@ import {
   KICK_WINDUP_MS,
   KICK_DURATION_MS,
   AIRKICK_MS,
+  AIRKICK_PEAK_FRAC,
   Z_STRETCH as PHYSICS_Z_STRETCH,
-} from './physics.js?v=44';
+} from './physics.js?v=46';
 
 // Physics field depth (42) is ~21× narrower than its width (900); stretch
 // render-space z so the field fills more of the canvas vertically. Re-
@@ -124,13 +125,11 @@ const KICK_FWD_TILT       = 0.22;                        // rad — body lean fo
 const KICK_CROUCH_DEPTH   = 0.12 * STICKMAN_GLYPH_SIZE;  // body dip during windup
 
 // Airkick: the player leaps (player.airZ supplies the world-y lift)
-// and the leg swings through a steeper arc. The physics fire point
-// for airkicks lives at AIRKICK_PEAK_FRAC of AIRKICK_MS (import-time
-// constant from physics.js would double the surface area; instead we
-// duplicate the fraction and keep the two modules in sync via tests).
-const AIRKICK_FIRE_T       = 0.4;  // matches physics AIRKICK_PEAK_FRAC
+// and the leg swings through a steeper arc. Fire point comes from
+// physics.AIRKICK_PEAK_FRAC so the visual strike syncs with the
+// moment the physics applies force to the ball.
 const AIRKICK_STRIKE_SPAN_T = 0.20;
-const AIRKICK_STRIKE_END_T = Math.min(0.95, AIRKICK_FIRE_T + AIRKICK_STRIKE_SPAN_T);
+const AIRKICK_STRIKE_END_T = Math.min(0.95, AIRKICK_PEAK_FRAC + AIRKICK_STRIKE_SPAN_T);
 const AIRKICK_WINDUP_ANGLE = -Math.PI * 0.22;            // smaller windup, more time in the air
 const AIRKICK_STRIKE_ANGLE =  Math.PI * 0.80;            // foot near horizontal-forward (bicycle kick)
 const AIRKICK_BACK_TILT    = 0.55;                        // rad — body leans way back on volley
@@ -1713,7 +1712,7 @@ function kickLegAngleAt(t) {
 }
 
 function airkickLegAngleAt(t) {
-  return swingCurve(t, AIRKICK_FIRE_T, AIRKICK_STRIKE_END_T, AIRKICK_WINDUP_ANGLE, AIRKICK_STRIKE_ANGLE);
+  return swingCurve(t, AIRKICK_PEAK_FRAC, AIRKICK_STRIKE_END_T, AIRKICK_WINDUP_ANGLE, AIRKICK_STRIKE_ANGLE);
 }
 
 /**
@@ -1770,8 +1769,8 @@ function kickTiltAt(t) {
  * leap, settles as the player lands.
  */
 function airkickTiltAt(t) {
-  if (t < AIRKICK_FIRE_T) {
-    const p = t / AIRKICK_FIRE_T;
+  if (t < AIRKICK_PEAK_FRAC) {
+    const p = t / AIRKICK_PEAK_FRAC;
     return -AIRKICK_BACK_TILT * easeOut(p);
   }
   if (t < AIRKICK_STRIKE_END_T) return -AIRKICK_BACK_TILT;

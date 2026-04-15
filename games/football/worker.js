@@ -74,8 +74,8 @@ async function main() {
     let matchup;
     try {
       matchup = await fetchMatchup();
-    } catch (err) {
-      // If the broker is unreachable, back off briefly and retry
+    } catch {
+      // Broker unreachable — back off briefly and retry.
       await sleep(1000);
       continue;
     }

@@ -117,6 +117,8 @@ export class Renderer {
     this._glyphSlash = this._glyphGeometries.get('/');
     this._glyphBackslash = this._glyphGeometries.get('\\');
     this._glyphPipe = this._glyphGeometries.get('|');
+    this._glyphLParen = this._glyphGeometries.get('(');
+    this._glyphRParen = this._glyphGeometries.get(')');
 
     // Pool of meshes, each with its own cloned material + cached uniform refs
     // so the hot path writes via `mesh._uColor.set(...)` directly.
@@ -407,27 +409,62 @@ export class Renderer {
   /* ── Stickman & pool ────────────────────────────────────── */
 
   _addStickman(player, color, tick) {
-    // 6-glyph figure, view-space stacked so parts always align on screen:
-    //     o       head
-    //    /|\      arm-L, body, arm-R
-    //    / \      legs (walk animation alternates)
+    // 6-glyph billboarded figure. Walk cycle is 4 frames (plant-R, lift,
+    // plant-L, lift) × 7 ticks each = ~450ms per cycle. Head bobs up on
+    // lift frames, arms swap their back/forward slash on plant frames.
     const x = player.x + 9;
     const z = player.y;
     const s = STICKMAN_GLYPH_SIZE;
 
-    this._placeGlyph(this._glyphO,         x, 0, z, s, color, 0,          s * 1.4);
-    this._placeGlyph(this._glyphSlash,     x, 0, z, s, color, -s * 0.55,  s * 0.6);
-    this._placeGlyph(this._glyphPipe,      x, 0, z, s, color, 0,          s * 0.6);
-    this._placeGlyph(this._glyphBackslash, x, 0, z, s, color, s * 0.55,   s * 0.6);
-
     const speedSq = player.vx * player.vx + player.vy * player.vy;
-    const walkFrame = speedSq > WALK_ANIM_SPEED_THRESHOLD_SQ ? Math.floor(tick / 6) % 2 : 0;
-    if (walkFrame === 0) {
-      this._placeGlyph(this._glyphSlash,     x, 0, z, s, color, -s * 0.28, -s * 0.25);
-      this._placeGlyph(this._glyphBackslash, x, 0, z, s, color,  s * 0.28, -s * 0.25);
+    const walking = speedSq > WALK_ANIM_SPEED_THRESHOLD_SQ;
+    const frame = walking ? Math.floor(tick / 7) % 4 : -1;
+    const lifted = frame === 1 || frame === 3;
+    // Legs stay planted; the head+body rise on lift frames so the figure
+    // visibly grows taller mid-stride.
+    const bob = lifted ? 0.10 : 0;
+
+    const headY = s * (1.4 + bob);
+    const bodyY = s * (0.6 + bob);
+    const legY  = s * -0.25;
+
+    // Head
+    this._placeGlyph(this._glyphO, x, 0, z, s, color, 0, headY);
+
+    // Arms + body row. Plant frames swap one side's slash for a paren to
+    // suggest the arm swinging back; lift/idle frames are symmetric `/|\`.
+    let armL = this._glyphSlash;
+    let armR = this._glyphBackslash;
+    if (frame === 0) {
+      // Right leg planted forward → right arm swung back, left arm forward
+      armL = this._glyphLParen;
+      armR = this._glyphBackslash;
+    } else if (frame === 2) {
+      // Left leg planted forward → left arm swung back, right arm forward
+      armL = this._glyphSlash;
+      armR = this._glyphRParen;
+    }
+    this._placeGlyph(armL,            x, 0, z, s, color, -s * 0.55, bodyY);
+    this._placeGlyph(this._glyphPipe, x, 0, z, s, color,  0,        bodyY);
+    this._placeGlyph(armR,            x, 0, z, s, color,  s * 0.55, bodyY);
+
+    // Legs
+    if (frame === 0) {
+      // Plant-R: right leg out wide, left leg planted straight
+      this._placeGlyph(this._glyphPipe,      x, 0, z, s, color, -s * 0.14, legY);
+      this._placeGlyph(this._glyphBackslash, x, 0, z, s, color,  s * 0.32, legY);
+    } else if (frame === 2) {
+      // Plant-L: left leg out wide, right leg planted straight
+      this._placeGlyph(this._glyphSlash,     x, 0, z, s, color, -s * 0.32, legY);
+      this._placeGlyph(this._glyphPipe,      x, 0, z, s, color,  s * 0.14, legY);
+    } else if (frame === 1 || frame === 3) {
+      // Lift: legs together under the hips (mid-stride)
+      this._placeGlyph(this._glyphPipe, x, 0, z, s, color, -s * 0.12, legY);
+      this._placeGlyph(this._glyphPipe, x, 0, z, s, color,  s * 0.12, legY);
     } else {
-      this._placeGlyph(this._glyphPipe, x, 0, z, s, color, -s * 0.16, -s * 0.25);
-      this._placeGlyph(this._glyphPipe, x, 0, z, s, color,  s * 0.16, -s * 0.25);
+      // Idle: legs spread symmetrically
+      this._placeGlyph(this._glyphSlash,     x, 0, z, s, color, -s * 0.28, legY);
+      this._placeGlyph(this._glyphBackslash, x, 0, z, s, color,  s * 0.28, legY);
     }
   }
 

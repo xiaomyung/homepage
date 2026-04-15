@@ -808,6 +808,54 @@ export class Renderer {
     this._addArc(f.goalLineL, mouthCenterZ, arcDepth, mouthHalfZ, -Math.PI / 2, Math.PI / 2, 48, mutedMat);
     this._addArc(f.goalLineR, mouthCenterZ, arcDepth, mouthHalfZ, Math.PI / 2, 3 * Math.PI / 2, 48, mutedMat);
 
+    // Penalty area (18-yard box) — rectangle on the ground in front
+    // of each goal, centered on the goal line and extending forward
+    // into the field. 6-yard goal area nested inside. Both boxes are
+    // drawn with the touchline-sized scale, roughly 2× the mouth
+    // y-span wide and extending outward by some depth into the field.
+    const penaltyHalfY = mouthHalfZ * 2.2;          // ~2.2× mouth half
+    const penaltyDepth = mouthHalfZ * 2.0;           // forward into field
+    const goalAreaHalfY = mouthHalfZ * 1.35;
+    const goalAreaDepth = mouthHalfZ * 0.75;
+    const drawBox = (lineX, inward) => {
+      // `inward` = +1 for LEFT goal (box extends in +x), -1 for RIGHT.
+      const penaltyInX = lineX + inward * penaltyDepth;
+      const goalAreaX  = lineX + inward * goalAreaDepth;
+      const penaltyZMin = mouthCenterZ - penaltyHalfY;
+      const penaltyZMax = mouthCenterZ + penaltyHalfY;
+      const goalAreaZMin = mouthCenterZ - goalAreaHalfY;
+      const goalAreaZMax = mouthCenterZ + goalAreaHalfY;
+      // Penalty area: 3 sides (back side is the goal line itself).
+      const pen = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(lineX,     0, penaltyZMin),
+        new THREE.Vector3(penaltyInX, 0, penaltyZMin),
+        new THREE.Vector3(penaltyInX, 0, penaltyZMax),
+        new THREE.Vector3(lineX,     0, penaltyZMax),
+      ]);
+      this._addStatic(new THREE.Line(pen, mutedMat), pen);
+      // Goal area (smaller nested box).
+      const ga = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(lineX,     0, goalAreaZMin),
+        new THREE.Vector3(goalAreaX, 0, goalAreaZMin),
+        new THREE.Vector3(goalAreaX, 0, goalAreaZMax),
+        new THREE.Vector3(lineX,     0, goalAreaZMax),
+      ]);
+      this._addStatic(new THREE.Line(ga, mutedMat), ga);
+    };
+    drawBox(f.goalLineL, +1);
+    drawBox(f.goalLineR, -1);
+
+    // Corner arcs — quarter-circles at the 4 touchline corners,
+    // sweeping from the goal-line-end into the field by a small
+    // radius. `_addArc` takes a parametric sweep with its own angle
+    // convention: angle 0 = +x, π/2 = +z. For a corner at (0, 0)
+    // we want the arc sweeping from (+x, 0) to (0, +z) i.e. 0 → π/2.
+    const cornerR = mouthHalfZ * 0.42;
+    this._addArc(0,      zFar,  cornerR, cornerR, 0,            Math.PI / 2, 12, mutedMat);
+    this._addArc(w,      zFar,  cornerR, cornerR, Math.PI / 2,  Math.PI,     12, mutedMat);
+    this._addArc(w,      zNear, cornerR, cornerR, Math.PI,      3 * Math.PI / 2, 12, mutedMat);
+    this._addArc(0,      zNear, cornerR, cornerR, 3 * Math.PI / 2, TWO_PI,   12, mutedMat);
+
     const goalWidth = (f.goalMouthYMax - f.goalMouthYMin) * Z_STRETCH;
     const goalHeight = f.goalMouthZMax * 2.25;
     const goalCenterZ = ((f.goalMouthYMin + f.goalMouthYMax) / 2) * Z_STRETCH;

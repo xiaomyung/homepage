@@ -28,7 +28,6 @@ const HORIZONTAL_MARGIN = 1.15;
 const STICKMAN_GLYPH_SIZE = 22;
 const BALL_GLYPH_SIZE = 24;
 const WALK_ANIM_SPEED_THRESHOLD = 0.3;
-const WALK_ANIM_SPEED_THRESHOLD_SQ = WALK_ANIM_SPEED_THRESHOLD * WALK_ANIM_SPEED_THRESHOLD;
 
 const CAMERA_FOV = 60;
 const CAMERA_TILT_DEG = 55;
@@ -37,16 +36,22 @@ const CAMERA_TILT_DEG = 55;
 
 const VERTEX_SHADER = /* glsl */ `
   uniform vec2 uViewOffset;
+  uniform float uRotation;
   varying vec2 vUv;
 
   void main() {
     // Billboarded quad: compute world center, transform to view space,
-    // then add view-space offset + vertex position scaled uniformly.
-    // Stackable in screen space regardless of camera pitch.
+    // then add view-space offset + vertex position scaled uniformly and
+    // (optionally) rotated by uRotation. Rotation lets a single vertical
+    // glyph (like the pipe character) act as a limb at any angle, with
+    // the visual top anchored to the pivot the caller chose.
     vec3 worldCenter = vec3(modelMatrix[3][0], modelMatrix[3][1], modelMatrix[3][2]);
     vec4 viewCenter = viewMatrix * vec4(worldCenter, 1.0);
     float sx = length(vec3(modelMatrix[0][0], modelMatrix[0][1], modelMatrix[0][2]));
-    viewCenter.xy += uViewOffset + position.xy * sx;
+    float c = cos(uRotation);
+    float si = sin(uRotation);
+    vec2 rotated = vec2(position.x * c - position.y * si, position.x * si + position.y * c);
+    viewCenter.xy += uViewOffset + rotated * sx;
     gl_Position = projectionMatrix * viewCenter;
     vUv = uv;
   }
@@ -97,6 +102,7 @@ export class Renderer {
         sdfTexture: { value: atlas.texture },
         uColor: { value: new THREE.Vector3(1, 1, 1) },
         uViewOffset: { value: new THREE.Vector2(0, 0) },
+        uRotation: { value: 0 },
       },
       vertexShader: VERTEX_SHADER,
       fragmentShader: FRAGMENT_SHADER,
@@ -130,6 +136,7 @@ export class Renderer {
           sdfTexture: { value: atlas.texture },
           uColor: { value: new THREE.Vector3(1, 1, 1) },
           uViewOffset: { value: new THREE.Vector2(0, 0) },
+          uRotation: { value: 0 },
         },
         vertexShader: VERTEX_SHADER,
         fragmentShader: FRAGMENT_SHADER,
@@ -142,6 +149,7 @@ export class Renderer {
       mesh.frustumCulled = false;
       mesh._uColor = material.uniforms.uColor.value;
       mesh._uViewOffset = material.uniforms.uViewOffset.value;
+      mesh._uRotation = material.uniforms.uRotation;
       this.scene.add(mesh);
       this._pool.push(mesh);
     }
@@ -409,66 +417,81 @@ export class Renderer {
   /* ── Stickman & pool ────────────────────────────────────── */
 
   _addStickman(player, color, tick) {
-    // 6-glyph billboarded figure. Walk cycle is 4 frames (plant-R, lift,
-    // plant-L, lift) × 7 ticks each = ~450ms per cycle. Head bobs up on
-    // lift frames, arms swap their back/forward slash on plant frames.
+    // 6-glyph billboarded figure (head, torso, 2 arms, 2 legs). Limbs
+    // pivot continuously from their shoulder/hip using sin/cos of a phase
+    // that scales with player speed. Glyph character per limb is picked
+    // by angle bucket (pipe near-vertical, slash/backslash when tilted).
     const x = player.x + 9;
     const z = player.y;
     const s = STICKMAN_GLYPH_SIZE;
 
-    const speedSq = player.vx * player.vx + player.vy * player.vy;
-    const walking = speedSq > WALK_ANIM_SPEED_THRESHOLD_SQ;
-    const frame = walking ? Math.floor(tick / 7) % 4 : -1;
-    const lifted = frame === 1 || frame === 3;
-    // Legs stay planted; the head+body rise on lift frames so the figure
-    // visibly grows taller mid-stride.
-    const bob = lifted ? 0.10 : 0;
+    const speed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
+    const walking = speed > WALK_ANIM_SPEED_THRESHOLD;
 
-    const headY = s * (1.4 + bob);
-    const bodyY = s * (0.6 + bob);
-    const legY  = s * -0.25;
+    // Swing rate and amplitude both scale with speed: slow walk = slow
+    // narrow swing, run = fast wide swing. At speed 1 the cycle is
+    // ~3.5s, at speed 10 it's ~0.35s. Amplitude ramps from near-zero at
+    // threshold up to full Minecraft-Steve swing around speed 8.
+    const swingRate = walking ? speed * 0.03 : 0;
+    const phase = tick * swingRate;
+    const swing = walking ? Math.sin(phase) : 0;
+    // Amplitude ramps cleanly with speed — tiny at a stroll, full at run.
+    const amplitude = walking ? Math.min(speed * 0.2, 1.0) : 0;
 
-    // Head
-    this._placeGlyph(this._glyphO, x, 0, z, s, color, 0, headY);
+    // Body bob — peaks when feet are planted under the body (twice per
+    // cycle). Amplitude also scales so low-speed walks barely bob.
+    const bob = walking ? Math.abs(swing) * 0.08 * amplitude : 0;
 
-    // Arms + body row. Plant frames swap one side's slash for a paren to
-    // suggest the arm swinging back; lift/idle frames are symmetric `/|\`.
-    let armL = this._glyphSlash;
-    let armR = this._glyphBackslash;
-    if (frame === 0) {
-      // Right leg planted forward → right arm swung back, left arm forward
-      armL = this._glyphLParen;
-      armR = this._glyphBackslash;
-    } else if (frame === 2) {
-      // Left leg planted forward → left arm swung back, right arm forward
-      armL = this._glyphSlash;
-      armR = this._glyphRParen;
-    }
-    this._placeGlyph(armL,            x, 0, z, s, color, -s * 0.55, bodyY);
-    this._placeGlyph(this._glyphPipe, x, 0, z, s, color,  0,        bodyY);
-    this._placeGlyph(armR,            x, 0, z, s, color,  s * 0.55, bodyY);
+    const headY     = s * (1.40 + bob);
+    const shoulderY = s * (0.80 + bob);
+    const torsoMidY = s * (0.45 + bob);
+    const hipY      = s * (0.10 + bob);
+    const legRestY  = s * (-0.22);
 
-    // Legs
-    if (frame === 0) {
-      // Plant-R: right leg out wide, left leg planted straight
-      this._placeGlyph(this._glyphPipe,      x, 0, z, s, color, -s * 0.14, legY);
-      this._placeGlyph(this._glyphBackslash, x, 0, z, s, color,  s * 0.32, legY);
-    } else if (frame === 2) {
-      // Plant-L: left leg out wide, right leg planted straight
-      this._placeGlyph(this._glyphSlash,     x, 0, z, s, color, -s * 0.32, legY);
-      this._placeGlyph(this._glyphPipe,      x, 0, z, s, color,  s * 0.14, legY);
-    } else if (frame === 1 || frame === 3) {
-      // Lift: legs together under the hips (mid-stride)
-      this._placeGlyph(this._glyphPipe, x, 0, z, s, color, -s * 0.12, legY);
-      this._placeGlyph(this._glyphPipe, x, 0, z, s, color,  s * 0.12, legY);
+    // Head + torso
+    this._placeGlyph(this._glyphO,    x, 0, z, s, color, 0, headY);
+    this._placeGlyph(this._glyphPipe, x, 0, z, s, color, 0, torsoMidY);
+
+    if (walking) {
+      // Pendulum limbs. Max swings at running speed (amplitude=1):
+      //   arms ±29°, legs ±20°. Walking is narrower because of amplitude.
+      // Contralateral rule: left leg + right arm move together — that
+      // falls out naturally because legAngle = -armAngle, and the left
+      // and right sides of each pair use opposite-signed angles.
+      const armAngle = swing * 0.5 * amplitude;
+      const legAngle = -swing * 0.35 * amplitude;
+      this._placeLimb(x, z, s, color, -s * 0.15, shoulderY,  armAngle);
+      this._placeLimb(x, z, s, color,  s * 0.15, shoulderY, -armAngle);
+      this._placeLimb(x, z, s, color, -s * 0.12, hipY,       legAngle);
+      this._placeLimb(x, z, s, color,  s * 0.12, hipY,      -legAngle);
     } else {
-      // Idle: legs spread symmetrically
-      this._placeGlyph(this._glyphSlash,     x, 0, z, s, color, -s * 0.28, legY);
-      this._placeGlyph(this._glyphBackslash, x, 0, z, s, color,  s * 0.28, legY);
+      // Idle: arms hang as (|) parens at the sides; legs as /\ stance.
+      this._placeGlyph(this._glyphLParen,    x, 0, z, s, color, -s * 0.48, torsoMidY);
+      this._placeGlyph(this._glyphRParen,    x, 0, z, s, color,  s * 0.48, torsoMidY);
+      this._placeGlyph(this._glyphSlash,     x, 0, z, s, color, -s * 0.22, legRestY);
+      this._placeGlyph(this._glyphBackslash, x, 0, z, s, color,  s * 0.22, legRestY);
     }
   }
 
-  _placeGlyph(geom, x, y, z, scale, color, viewOffsetX, viewOffsetY) {
+  /** Place a single glyph that represents a limb pivoting at (pivotX,
+   *  pivotY). The visual TOP of the glyph stays exactly at the pivot
+   *  point — only the character itself changes slant as the swing angle
+   *  grows. This mimics a pendulum fixed at the top: the shoulder/hip
+   *  attachment never moves, only the bottom of the limb. */
+  _placeLimb(x, z, s, color, pivotX, pivotY, angle) {
+    // True pendulum: a single pipe glyph rotated in the shader so its
+    // visual top is anchored exactly at (pivotX, pivotY) for every angle.
+    // Glyph center = pivot + halfH * (sin(angle), -cos(angle)).
+    // Verified: after rotating a unit quad by `angle` and placing its
+    // center there, the rotated (0, +halfH) vertex lands exactly at the
+    // pivot. Smooth motion, no character swaps, no detached attachments.
+    const halfH = s * 0.45;
+    const cx = pivotX + Math.sin(angle) * halfH;
+    const cy = pivotY - Math.cos(angle) * halfH;
+    this._placeGlyph(this._glyphPipe, x, 0, z, s, color, cx, cy, angle);
+  }
+
+  _placeGlyph(geom, x, y, z, scale, color, viewOffsetX, viewOffsetY, rotation = 0) {
     if (!geom || this._poolCursor >= this._pool.length) return;
     const mesh = this._pool[this._poolCursor++];
     mesh.geometry = geom;
@@ -476,6 +499,7 @@ export class Renderer {
     mesh.scale.set(scale, scale, 1);
     mesh._uColor.set(color[0], color[1], color[2]);
     mesh._uViewOffset.set(viewOffsetX, viewOffsetY);
+    mesh._uRotation.value = rotation;
     mesh.visible = true;
   }
 }

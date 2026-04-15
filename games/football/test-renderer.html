@@ -7,7 +7,7 @@
   body { font-family: monospace; background: #0a0a0a; color: #d0d0d0; padding: 2rem; }
   canvas { display: block; margin-top: 0.6rem; border: 1px solid #333; background: #111; width: 100%; max-width: 900px; }
   canvas.main { aspect-ratio: 5 / 2; }
-  canvas.strip { aspect-ratio: 8 / 1; }
+  canvas.strip { aspect-ratio: 5 / 1; }
   .ok { color: #9ece6a; }
   .fail { color: #f7768e; }
   h2 { font-size: 0.9rem; color: #a0a0a0; margin: 1.2rem 0 0.4rem; }
@@ -29,13 +29,19 @@
   <h2>full scene (animated, state.tick increments)</h2>
   <canvas id="stage-full" class="main"></canvas>
 
-  <h2>walk cycle preview: 8 stickmen frozen at tick 0, 4, 7, 11, 14, 18, 21, 25</h2>
-  <canvas id="stage-walk" class="strip"></canvas>
+  <h2>idle pose</h2>
+  <canvas id="stage-idle" class="strip"></canvas>
+
+  <h2>walk cycle (slow, vx=1.5): 10 frames sampled across one cycle</h2>
+  <canvas id="stage-walk-slow" class="strip"></canvas>
+
+  <h2>run cycle (fast, vx=8): 10 frames sampled across one cycle</h2>
+  <canvas id="stage-walk-fast" class="strip"></canvas>
 
 <script type="module">
-  import { buildAtlas } from './atlas.js?v=62';
-  import { Renderer } from './renderer.js?v=62';
-  import { createField, createState, createSeededRng, FIELD_HEIGHT } from './physics.js?v=62';
+  import { buildAtlas } from './atlas.js?v=69';
+  import { Renderer } from './renderer.js?v=69';
+  import { createField, createState, createSeededRng, FIELD_HEIGHT } from './physics.js?v=69';
 
   const log = document.getElementById('log');
   function write(cls, msg) {
@@ -91,47 +97,48 @@
       frame();
       write('ok', 'animation running');
 
-      /* ── Walk cycle preview ──────────────────────── */
+      /* ── Idle / walk / run preview strips ──────── */
 
-      const walkCanvas = document.getElementById('stage-walk');
-      // Narrow field so 8 stickmen fit across.
       const stripFieldWidth = 900;
-      const stripRenderer = new Renderer(walkCanvas, atlas, { fieldWidth: stripFieldWidth });
-      stripRenderer.autoResize();
 
-      // One state shared; we mutate p1 position + tick for each render and
-      // stamp a snapshot into the strip. three.js doesn't support multiple
-      // snapshots per-frame natively, so we fake it with a custom renderState
-      // that paints 8 stickmen by cycling tick+position per glyph group.
-      const stripState = createState(createField(stripFieldWidth), createSeededRng(2));
-      stripState.p1.stamina = 1;
-      stripState.p2.stamina = 1;
-      stripState.p1.vx = 5;  // force walking
-      stripState.p2.vx = 5;
-      stripState.ball.x = -500; // offscreen — hide ball in strip
-      stripState.ball.y = 0;
+      function makeStrip(canvasId, vx, ticks) {
+        const canvas = document.getElementById(canvasId);
+        const r = new Renderer(canvas, atlas, { fieldWidth: stripFieldWidth });
+        r.autoResize();
 
-      // We want to override renderState for this instance to paint 8 stickmen
-      // in one draw call. Hook it directly.
-      const ticks = [0, 4, 7, 11, 14, 18, 21, 25];
-      const spacing = stripFieldWidth / (ticks.length + 1);
-      const originalRender = stripRenderer.renderState.bind(stripRenderer);
-      stripRenderer.renderState = function() {
-        const prevCursor = this._poolCursor;
-        this._poolCursor = 0;
-        // No ball — just stickmen at 8 positions with 8 tick values.
-        for (let i = 0; i < ticks.length; i++) {
-          const px = spacing * (i + 1) - 9;
-          stripState.p1.x = px;
-          stripState.p1.y = FIELD_HEIGHT / 2;
-          stripState.p1.vx = 5;
-          this._addStickman(stripState.p1, [0.82, 0.82, 0.82], ticks[i]);
-        }
-        for (let i = this._poolCursor; i < prevCursor; i++) this._pool[i].visible = false;
-        this.renderer.render(this.scene, this.camera);
-      };
-      stripRenderer.renderState();
-      write('ok', 'walk strip rendered');
+        const stripState = createState(createField(stripFieldWidth), createSeededRng(2));
+        stripState.p1.stamina = 1;
+        stripState.p1.vx = vx;
+        stripState.ball.x = -500; stripState.ball.y = 0; // hide ball
+
+        const spacing = stripFieldWidth / (ticks.length + 1);
+        r.renderState = function() {
+          const prevCursor = this._poolCursor;
+          this._poolCursor = 0;
+          for (let i = 0; i < ticks.length; i++) {
+            stripState.p1.x = spacing * (i + 1) - 9;
+            stripState.p1.y = FIELD_HEIGHT / 2;
+            stripState.p1.vx = vx;
+            this._addStickman(stripState.p1, [0.82, 0.82, 0.82], ticks[i]);
+          }
+          for (let i = this._poolCursor; i < prevCursor; i++) this._pool[i].visible = false;
+          this.renderer.render(this.scene, this.camera);
+        };
+        r.renderState();
+      }
+
+      // swingRate = speed * 0.03; full cycle = 2π/rate ticks
+      function sampleCycle(speed, n) {
+        if (speed <= 0) return new Array(n).fill(0);
+        const cycleTicks = (2 * Math.PI) / (speed * 0.03);
+        const out = [];
+        for (let i = 0; i < n; i++) out.push(Math.round((i / n) * cycleTicks));
+        return out;
+      }
+      makeStrip('stage-idle', 0, sampleCycle(0, 10));
+      makeStrip('stage-walk-slow', 1.5, sampleCycle(1.5, 10));
+      makeStrip('stage-walk-fast', 8, sampleCycle(8, 10));
+      write('ok', 'idle + slow + fast strips rendered');
     } catch (err) {
       write('fail', `ERROR: ${err.message}`);
       console.error(err);

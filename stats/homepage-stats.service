@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/srv/services/web/homepage/stats
-ExecStart=/srv/services/web/homepage/venv/bin/python app.py
+ExecStart=/usr/bin/node /srv/services/web/homepage/stats/app.mjs
 Restart=always
 RestartSec=3
 User=apollo

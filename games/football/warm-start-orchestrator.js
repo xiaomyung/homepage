@@ -40,13 +40,12 @@ export async function runWarmStart({
 }) {
   if (workerCount <= 0) throw new Error('workerCount must be > 0');
   const shards = splitShards(matches, workerCount).filter((s) => s.count > 0);
-  const actualWorkerCount = shards.length;
   const workers = [];
   try {
     // Spawn + init all workers. Each loads its shard in parallel, so
     // dataset collection costs ~1 s on the slowest worker instead of
     // N × 1 s sequentially.
-    for (let i = 0; i < actualWorkerCount; i++) {
+    for (let i = 0; i < shards.length; i++) {
       const w = new Worker(workerUrl, { type: 'module' });
       workers.push(w);
     }
@@ -79,8 +78,8 @@ export async function runWarmStart({
       });
     })));
 
-    // Deterministic master-weight init. Using the same seed as the
-    // Node CLI (12345) so client and CLI starting points match.
+    // Deterministic master-weight init so every browser starts from
+    // the same point (shard seeds handle training diversity).
     const masterWeights = heInit(createSeededRng(12345));
     const history = [];
 

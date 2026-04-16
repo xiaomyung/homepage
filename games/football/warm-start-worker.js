@@ -27,10 +27,10 @@ import {
   collectImitationDataset,
   createTrainingState,
   epochStep,
+  WARM_START_HYPERPARAMS,
 } from './evolution/warm-start-lib.js';
 
-const BATCH_SIZE = 256;
-const LR = 0.005;
+const { batchSize: BATCH_SIZE, lr: LR } = WARM_START_HYPERPARAMS;
 
 let state = null;
 let shardInputs = null;

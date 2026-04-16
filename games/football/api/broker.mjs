@@ -33,6 +33,11 @@ import {
   gaussianMutate,
   createGaRng,
 } from '../evolution/ga.mjs';
+import {
+  runtimeNowMs as runtimeNowMsPure,
+  recordRuntimeActivity as recordRuntimeActivityPure,
+  flushRuntime as flushRuntimePure,
+} from './runtime-timer.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EVOLUTION = path.join(HERE, '..', 'evolution');
 // DB_PATH and PORT are overridable via env for tests and local boot;
@@ -208,12 +213,6 @@ function persistRuntimeMsTotal(ms) {
     'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
   ).run('runtime_ms_total', String(Math.floor(ms)));
 }
-
-import {
-  runtimeNowMs as runtimeNowMsPure,
-  recordRuntimeActivity as recordRuntimeActivityPure,
-  flushRuntime as flushRuntimePure,
-} from './runtime-timer.js';
 
 /** Total active training ms since last reset. */
 function runtimeNowMs() {

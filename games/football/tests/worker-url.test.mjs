@@ -23,9 +23,10 @@ const UI_JS = resolve(HERE, '..', 'ui.js');
 
 test('warm-start worker URL in ui.js resolves to a real file', () => {
   const src = readFileSync(UI_JS, 'utf8');
-  const match = src.match(/new URL\(\s*['"]([^'"]+warm-start-worker\.js)['"]\s*,\s*import\.meta\.url\s*\)/);
+  const match = src.match(/new URL\(\s*['"]([^'"]+warm-start-worker\.js(?:\?[^'"]*)?)['"]\s*,\s*import\.meta\.url\s*\)/);
   assert.ok(match, 'ui.js must spawn the warm-start worker via new URL(..., import.meta.url)');
-  const relPath = match[1];
+  // Strip any ?v=N cache-bust suffix before checking the file on disk.
+  const relPath = match[1].split('?')[0];
   // ui.js is at games/football/ui.js; resolve the worker URL relative to it.
   const resolved = resolve(dirname(UI_JS), relPath);
   assert.ok(

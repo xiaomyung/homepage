@@ -25,6 +25,7 @@ import {
   forwardCached,
   LAYER_COUNT,
   OUTPUT_SIZE,
+  WARM_START_HYPERPARAMS,
 } from './warm-start-lib.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -64,16 +65,17 @@ function selfCheck() {
 async function main() {
   selfCheck();
 
+  const { matches, ticksPerMatch, baseSeed, epochs, batchSize, lr } = WARM_START_HYPERPARAMS;
   console.log('Collecting imitation dataset...');
-  const { inputs, actions } = collectImitationDataset(50, 1000, 1);
+  const { inputs, actions } = collectImitationDataset(matches, ticksPerMatch, baseSeed);
   console.log(`  dataset size: ${inputs.length} samples`);
 
   console.log('Training imitation NN...');
   const { weights, history } = await trainWarmStartWeights(inputs, actions, {
-    epochs: 200,
-    batchSize: 256,
-    lr: 0.005,
-    seed: 1,
+    epochs,
+    batchSize,
+    lr,
+    seed: baseSeed,
   });
   console.log(`  loss: ${history[0].toFixed(4)} → ${history[history.length - 1].toFixed(4)}`);
   console.log(`  weight count: ${weights.length}`);

@@ -31,7 +31,7 @@ import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import { createTrainingOrchestrator } from './training-orchestrator.js?v=2';
 import { computeTicks } from './frame-loop.js';
-import { renderStageLabel, RELOAD_STAGE } from './api/reset-pipeline.js';
+import { renderStageLabel } from './api/reset-pipeline.js';
 import {
   createScoreboard,
   createStartStopButton,
@@ -43,7 +43,7 @@ import {
   createFreeCamToggle,
   createFollowCamToggle,
   installAutoPause,
-} from './ui.js?v=8';
+} from './ui.js?v=10';
 
 const API_BASE = '/api/football';
 // Showcase match length, in milliseconds. Fixed — no longer surfaced in
@@ -97,9 +97,12 @@ async function main() {
   configControls = createConfigControls();
 
   // Shared label renderers: both reset and start (during seeding)
-  // drive the button label through the pipeline's cycling dots.
+  // drive the button label through the pipeline's cycling dots. The
+  // reloading path receives its stage name from the caller so the UI
+  // can distinguish "restarting broker" (slow) from "reloading page"
+  // (brief tail) — see RESPAWN_STAGE/RELOAD_STAGE in reset-pipeline.js.
   const renderLabel = (stage, elapsed, interval, progress) => `[ ${renderStageLabel(stage, elapsed, interval, progress)} ]`;
-  const renderReloading = (elapsed, interval) => `[ ${renderStageLabel(RELOAD_STAGE, elapsed, interval)} ]`;
+  const renderReloading = (stage, elapsed, interval) => `[ ${renderStageLabel(stage, elapsed, interval)} ]`;
 
   startStopBtn = createStartStopButton({
     apiBase: API_BASE,

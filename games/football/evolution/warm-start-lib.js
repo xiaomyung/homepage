@@ -201,6 +201,18 @@ const BETA1 = 0.9;
 const BETA2 = 0.999;
 const EPS = 1e-8;
 
+/** Hyperparameters shared by the Node CLI (`build-warm-start.mjs`) and
+ *  the browser Web Worker (`warm-start-worker.js`) so both paths
+ *  produce comparable models. */
+export const WARM_START_HYPERPARAMS = Object.freeze({
+  epochs: 200,
+  batchSize: 256,
+  lr: 0.005,
+  matches: 50,
+  ticksPerMatch: 1000,
+  baseSeed: 1,
+});
+
 /** Run one epoch of Adam SGD over `inputs`/`actions`, mutating
  *  `state.weights`, `state.m`, `state.v`, `state.t` in place. Returns
  *  the mean per-batch loss for the epoch. */
@@ -255,12 +267,11 @@ export function epochStep(state, inputs, actions, { batchSize, lr }) {
   return epochLoss / nBatches;
 }
 
-export async function trainWarmStartWeights(inputs, actions, { epochs, batchSize, lr, seed, onEpoch }) {
+export async function trainWarmStartWeights(inputs, actions, { epochs, batchSize, lr, seed }) {
   const state = createTrainingState(seed);
   for (let epoch = 0; epoch < epochs; epoch++) {
     const loss = epochStep(state, inputs, actions, { batchSize, lr });
     state.history.push(loss);
-    if (onEpoch) onEpoch(epoch + 1, epochs, loss);
     // Yield between epochs so the worker can drain its message queue
     // (abort signals, progress polls, etc). setTimeout(0) works both
     // in browser Workers and in Node; setImmediate is Node-only.
@@ -269,4 +280,4 @@ export async function trainWarmStartWeights(inputs, actions, { epochs, batchSize
   return { weights: state.weights, history: state.history };
 }
 
-export { LAYER_COUNT, OUTPUT_SIZE, LAYER_OFFSETS };
+export { LAYER_COUNT, OUTPUT_SIZE };

@@ -43,7 +43,7 @@ import {
   createFreeCamToggle,
   createFollowCamToggle,
   installAutoPause,
-} from './ui.js?v=6';
+} from './ui.js?v=7';
 
 const API_BASE = '/api/football';
 // Showcase match length, in milliseconds. Fixed — no longer surfaced in

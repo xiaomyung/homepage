@@ -537,7 +537,7 @@ function runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloadi
   stageStartedAt.set(currentStage, Date.now());
 
   const worker = new Worker(
-    new URL('../warm-start-worker.js', import.meta.url),
+    new URL('./warm-start-worker.js', import.meta.url),
     { type: 'module' },
   );
   worker.addEventListener('message', async (ev) => {
@@ -570,7 +570,9 @@ function runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloadi
       reloadingStartedAt = reloadingStart();
     }
   });
-  worker.addEventListener('error', () => {
+  worker.addEventListener('error', (ev) => {
+    // eslint-disable-next-line no-console
+    console.error('[reset] warm-start worker failed:', ev.message || ev);
     worker.terminate();
     phase = PHASE_RELOADING;
     reloadingStartedAt = reloadingStart();

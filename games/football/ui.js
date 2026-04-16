@@ -13,6 +13,16 @@
  * main.js composes the pieces and holds the top-level state.
  */
 
+import {
+  PHASE_TRAINING,
+  PHASE_RELOADING,
+  PHASE_DONE,
+  phaseAfterStatsPoll,
+} from './api/reset-client.js';
+import { DEFAULT_DOT_INTERVAL_MS, RESPAWN_STAGE, RELOAD_STAGE } from './api/reset-pipeline.js';
+import { runWarmStart } from './warm-start-orchestrator.js';
+import { WARM_START_HYPERPARAMS } from './evolution/warm-start-lib.js';
+
 /* ── Scoreboard ─────────────────────────────────────────── */
 
 export function createScoreboard() {
@@ -64,7 +74,7 @@ export function createScoreboard() {
  *   - idle:      seeded, not running → clicking spawns workers
  *   - running:   workers spawned → clicking stops them
  */
-export function createStartStopButton({ apiBase, onStart, onStop, renderLabel, renderReloading }) {
+export function createStartStopButton({ apiBase, onStart, onStop, renderLabel, renderReloading, getWorkerCount }) {
   const btn = document.getElementById('game-start-btn');
   let running = false;
   let seeded = true;  // optimistic until first /stats poll says otherwise
@@ -84,7 +94,11 @@ export function createStartStopButton({ apiBase, onStart, onStop, renderLabel, r
   btn.addEventListener('click', async () => {
     if (!seeded) {
       btn.disabled = true;
-      await runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloading });
+      await runResetPipelineWithProgress(apiBase, btn, {
+        renderLabel,
+        renderReloading,
+        workerCount: getWorkerCount?.() ?? 1,
+      });
       return;  // page reloads on completion
     }
     if (running) {
@@ -113,9 +127,6 @@ export function createStartStopButton({ apiBase, onStart, onStop, renderLabel, r
     },
     isRunning() {
       return running;
-    },
-    isSeeded() {
-      return seeded;
     },
   };
 }
@@ -498,102 +509,126 @@ export function createFollowCamToggle({ renderer, onChange }) {
 }
 
 /**
- * Drive a button's label through the broker's reset pipeline stages.
- * Called by both the reset button and the start button (when the
- * population is empty on a fresh clone). Responsibilities:
+ * Drive a button's label through the full reset pipeline. Used by
+ * both the reset button and the start button (when the broker has
+ * population=0 on a fresh install).
  *
- *   1. POST /reset?hard=1 to kick off the broker's async pipeline.
- *   2. Poll /reset/status every ~300 ms; update the button label to
- *      "<stage> ." / ".." / "..." cycling on a fixed cadence so the
- *      user sees progress regardless of whether the stage is instant
- *      (wiping db) or a slow CPU run (training seed).
- *   3. When polling fails (broker exited for systemd to respawn), flip
- *      the label to "reloading page ..." and wait for /stats to
- *      respond 200 again — that's the respawned broker with a fresh
- *      population loaded.
- *   4. Hard-reload the page with a cache-bust query string so every
- *      JS/worker file is re-fetched from Caddy.
+ * Flow:
+ *   1. Orchestrator spawns N Web Workers (N = configured count) that
+ *      each run one epoch of SGD on their shard; main thread averages
+ *      their weights per epoch. ~N× faster than single-worker.
+ *   2. On completion: POST averaged weights to /reset?hard=1.
+ *   3. Broker wipes, seeds from the POSTed weights, exits → systemd respawn.
+ *   4. Client polls /stats waiting for the respawned broker.
+ *   5. Cache-bust reload.
  */
-async function runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloading }) {
-  try {
-    const r = await fetch(`${apiBase}/reset?hard=1`, { method: 'POST' });
-    if (!r.ok && r.status !== 202) throw new Error(`reset kickoff: ${r.status}`);
-  } catch {
-    /* Broker may have already exited mid-response — continue to polling. */
-  }
-  // Stage polling loop — update label at a fixed cadence regardless
-  // of whether we just polled this tick, so dot animation stays smooth.
-  const stageStartedAt = new Map();
+function runResetPipelineWithProgress(apiBase, btn, {
+  renderLabel,
+  renderReloading,
+  workerCount,
+  epochs = WARM_START_HYPERPARAMS.epochs,
+  matches = WARM_START_HYPERPARAMS.matches,
+  ticksPerMatch = WARM_START_HYPERPARAMS.ticksPerMatch,
+  baseSeed = WARM_START_HYPERPARAMS.baseSeed,
+}) {
   const pollIntervalMs = 300;
-  const dotIntervalMs = 400;
-  let currentStage = null;
-  let brokerDown = false;
+  const dotIntervalMs = DEFAULT_DOT_INTERVAL_MS;
+  const currentStage = 'training seed';
+  const stageStartedAt = Date.now();
+  let phase = PHASE_TRAINING;
+  let currentProgress = null;
+  let reloadingStartedAt = 0;
+  let reloadingStage = RESPAWN_STAGE;
   let lastPoll = 0;
-  const loopStart = Date.now();
-  // Animation + polling run off one setInterval so the two never drift.
+
+  const trainPromise = runWarmStart({
+    workerCount,
+    workerUrl: new URL('./warm-start-worker.js', import.meta.url),
+    epochs,
+    matches,
+    ticksPerMatch,
+    baseSeed,
+    onProgress: ({ current, total }) => {
+      currentProgress = { current, total };
+    },
+  });
+
+  // Handle orchestrator completion separately from the animation loop
+  // so a slow POST doesn't stall the label animation. Every outcome
+  // (ok, HTTP error, network error) transitions to RELOADING — the
+  // broker exits on hard=1 so a network error is expected, and we
+  // want a fresh load either way.
+  const afterTrain = (async () => {
+    try {
+      const { weights } = await trainPromise;
+      await fetch(`${apiBase}/reset?hard=1`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ weights: Array.from(weights) }),
+      });
+    } catch (err) {
+      console.error('[reset] warm-start failed:', err);
+    }
+    phase = PHASE_RELOADING;
+    reloadingStartedAt = Date.now();
+  })();
+  afterTrain.catch(() => { /* already handled */ });
+
   return new Promise((resolve) => {
     const timer = setInterval(() => {
       const now = Date.now();
-      // Poll at pollIntervalMs; animate every tick.
-      if (now - lastPoll >= pollIntervalMs) {
-        lastPoll = now;
-        fetch(`${apiBase}/reset/status`, { cache: 'no-store' })
-          .then((res) => {
-            if (!res.ok) throw new Error(`${res.status}`);
-            return res.json();
-          })
-          .then(({ status }) => {
-            if (!status) return;
-            if (status.stage !== currentStage) {
-              currentStage = status.stage;
-              stageStartedAt.set(currentStage, now);
-            }
-          })
-          .catch(() => {
-            // Broker is down (expected after "restarting broker" stage).
-            brokerDown = true;
-          });
-      }
-      // Animate + render.
-      if (brokerDown) {
-        // Broker exited — show reloading state and test whether it's back.
-        const elapsed = now - loopStart;
-        btn.textContent = renderReloading(elapsed, dotIntervalMs);
-        fetch(`${apiBase}/stats`, { cache: 'no-store' })
-          .then((res) => {
-            if (!res.ok) return;
-            clearInterval(timer);
-            const url = new URL(window.location.href);
-            url.searchParams.set('_cb', Date.now().toString(36));
-            window.location.replace(url.toString());
-            resolve();
-          })
-          .catch(() => { /* still down, keep waiting */ });
-      } else if (currentStage) {
-        const elapsed = now - (stageStartedAt.get(currentStage) ?? now);
-        btn.textContent = renderLabel(currentStage, elapsed, dotIntervalMs);
+
+      if (phase === PHASE_TRAINING) {
+        const elapsed = now - stageStartedAt;
+        btn.textContent = renderLabel(currentStage, elapsed, dotIntervalMs, currentProgress);
+      } else if (phase === PHASE_RELOADING) {
+        const elapsed = now - reloadingStartedAt;
+        btn.textContent = renderReloading(reloadingStage, elapsed, dotIntervalMs);
+        if (now - lastPoll >= pollIntervalMs) {
+          lastPoll = now;
+          fetch(`${apiBase}/stats`, { cache: 'no-store' })
+            .then((res) => {
+              if (res.ok) {
+                // Broker is back. Flip to the "reloading page" label and
+                // hold for a beat — otherwise the DONE branch fires on
+                // the next tick and the browser navigates before the new
+                // label ever paints, leaving "restarting broker" on
+                // screen right up to the unload. 250ms is perceptible
+                // against a ~5 s wait without feeling like added drag.
+                reloadingStage = RELOAD_STAGE;
+                reloadingStartedAt = Date.now();
+                setTimeout(() => { phase = PHASE_DONE; }, 250);
+                return;
+              }
+              phase = phaseAfterStatsPoll({ ok: false, networkError: false });
+            })
+            .catch(() => {
+              phase = phaseAfterStatsPoll({ ok: false, networkError: true });
+            });
+        }
+      } else if (phase === PHASE_DONE) {
+        clearInterval(timer);
+        const url = new URL(window.location.href);
+        url.searchParams.set('_cb', Date.now().toString(36));
+        window.location.replace(url.toString());
+        resolve();
       }
     }, 100);
   });
 }
 
-export function createResetButton({ apiBase, renderLabel, renderReloading, onStart }) {
+export function createResetButton({ apiBase, renderLabel, renderReloading, getWorkerCount }) {
   const btn = document.getElementById('game-reset-btn');
   btn.addEventListener('click', async () => {
     if (!confirm('Nuke the training run? Broker restarts and the page reloads with a cache-bust.')) return;
     btn.disabled = true;
-    onStart?.();
-    await runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloading });
+    await runResetPipelineWithProgress(apiBase, btn, {
+      renderLabel,
+      renderReloading,
+      workerCount: getWorkerCount?.() ?? 1,
+    });
   });
 }
-
-/**
- * Expose the shared pipeline runner so the start button can invoke it
- * when the broker has an empty population (fresh clone / deleted
- * weights file). The UI layer handles which button to drive; this
- * module owns the polling + label cadence.
- */
-export { runResetPipelineWithProgress };
 
 /* ── Auto-pause gate ────────────────────────────────────── */
 

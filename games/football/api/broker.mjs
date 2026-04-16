@@ -14,11 +14,12 @@
  *   GET  /history    — fitness history (downsampled)
  *   GET  /config     — current tunables
  *   POST /config     — partial merge of tunables
- *   POST /reset      — wipe population, re-init from warm-start seed
+ *   POST /reset      — body {weights: [...]}; wipe DB + re-seed from
+ *                      client-trained warm-start weights + optional
+ *                      hard=1 query flag to exit for systemd respawn
  */
 
 import http from 'node:http';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -33,17 +34,15 @@ import {
   createGaRng,
 } from '../evolution/ga.mjs';
 import {
-  collectImitationDataset,
-  trainWarmStartWeights,
-} from '../evolution/build-warm-start.mjs';
-import { RESET_STAGES } from './reset-pipeline.js';
-
+  runtimeNowMs as runtimeNowMsPure,
+  recordRuntimeActivity as recordRuntimeActivityPure,
+  flushRuntime as flushRuntimePure,
+} from './runtime-timer.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EVOLUTION = path.join(HERE, '..', 'evolution');
 // DB_PATH and PORT are overridable via env for tests and local boot;
 // production systemd unit uses the compiled-in defaults.
 const DB_PATH = process.env.FOOTBALL_DB_PATH || path.join(EVOLUTION, 'football.db');
-const WARM_START_PATH = path.join(HERE, '..', 'warm_start_weights.json');
 
 const ROUTE_PREFIX = '/api/football';
 const PORT = Number(process.env.FOOTBALL_PORT || 5050);
@@ -160,10 +159,6 @@ const state = {
   runtimeMsTotal: 0,
   runtimeActiveStart: null,
   runtimeLastPostAt: null,
-  // Current reset pipeline stage — null when idle, otherwise
-  // { stage, startedAt } where stage ∈ RESET_STAGES. Clients poll
-  // /reset/status to animate the reset button through stages.
-  resetStatus: null,
 };
 
 // Gap between consecutive /results POSTs beyond which the broker
@@ -218,12 +213,6 @@ function persistRuntimeMsTotal(ms) {
     'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
   ).run('runtime_ms_total', String(Math.floor(ms)));
 }
-
-import {
-  runtimeNowMs as runtimeNowMsPure,
-  recordRuntimeActivity as recordRuntimeActivityPure,
-  flushRuntime as flushRuntimePure,
-} from './runtime-timer.js';
 
 /** Total active training ms since last reset. */
 function runtimeNowMs() {
@@ -361,21 +350,39 @@ function getWeightsJson(brain) {
   return brain._weightsJson;
 }
 
-function initPopulationFromWarmStart(config) {
-  const raw = JSON.parse(fs.readFileSync(WARM_START_PATH, 'utf8'));
-  if (!Array.isArray(raw) || raw.length !== WEIGHT_COUNT) {
-    throw new Error(
-      `warm_start_weights.json has ${Array.isArray(raw) ? raw.length : 'non-array'} entries, expected ${WEIGHT_COUNT}`,
-    );
+/** Build a population by mutating the given frozen-seed weights.
+ *  Brain 0 is the untouched seed; brains 1..N are Gaussian-perturbed
+ *  copies so the initial GA pool has variance. Called from boot (when
+ *  DB has weights but no population) and from /reset (seed arrives
+ *  via request body). */
+function buildPopulationFromSeed(seedWeights, config) {
+  if (!(seedWeights instanceof Float64Array) || seedWeights.length !== WEIGHT_COUNT) {
+    throw new Error(`seed weights must be Float64Array of length ${WEIGHT_COUNT}`);
   }
-  const seed = new Float64Array(raw);
   const rng = createGaRng((Math.random() * 2 ** 31) >>> 0);
-  const population = [newBrain(0, seed, true)];
+  const population = [newBrain(0, seedWeights, true)];
   for (let i = 1; i < config.population_size; i++) {
-    const mutated = gaussianMutate(seed, 0.3, 0.1, rng);
+    const mutated = gaussianMutate(seedWeights, 0.3, 0.1, rng);
     population.push(newBrain(i, mutated, false));
   }
   return population;
+}
+
+function loadWarmStartWeights() {
+  const row = db.prepare('SELECT value FROM meta WHERE key = ?').get('warm_start_weights');
+  if (!row) return null;
+  try {
+    const parsed = JSON.parse(row.value);
+    if (!Array.isArray(parsed) || parsed.length !== WEIGHT_COUNT) return null;
+    return new Float64Array(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function persistWarmStartWeights(weights) {
+  db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
+    .run('warm_start_weights', JSON.stringify(Array.from(weights)));
 }
 
 // ── Boot ──────────────────────────────────────────────────────
@@ -393,15 +400,21 @@ function initState() {
   state.runtimeLastPostAt = null;
 
   if (state.population.length === 0) {
-    // Fresh clone / missing warm_start_weights.json → leave
-    // population empty. The client detects `population: 0` in /stats
-    // and shows the start button as a "seed" action that runs the
-    // full reset pipeline (including warm-start training). The JSON
-    // file is intentionally not vendored; it regenerates on demand.
+    // Fresh install → check if we have warm-start weights stored in
+    // the meta table from a prior seed. If yes, rebuild population
+    // from them. If no, leave population empty — the client's start
+    // button detects `population: 0` via /stats and becomes `[ seed ]`,
+    // which spawns a Web Worker that trains fresh weights, POSTs them
+    // to /reset, and triggers population seeding here.
     try {
-      state.population = initPopulationFromWarmStart(state.config);
-      state.generation = 1;
-      savePopulation(state.generation);
+      const seed = loadWarmStartWeights();
+      if (seed) {
+        state.population = buildPopulationFromSeed(seed, state.config);
+        state.generation = 1;
+        savePopulation(state.generation);
+      } else {
+        throw new Error('no warm-start weights in DB yet');
+      }
     } catch (err) {
       process.stderr.write(
         `[football broker] warm-start weights unavailable (${err?.message ?? err}); ` +
@@ -839,12 +852,8 @@ async function handleConfigPost(req, res) {
   json(res, 200, state.config);
 }
 
-function setResetStage(stage) {
-  state.resetStatus = { stage, startedAt: Date.now() };
-}
-
-/** Wipe DB tables transactionally. Stage: `wiping db`. */
-function resetStageWipeDb() {
+/** Wipe DB tables transactionally. */
+function wipeBrainTables() {
   db.exec('BEGIN');
   try {
     db.prepare('DELETE FROM brains').run();
@@ -856,25 +865,11 @@ function resetStageWipeDb() {
   }
 }
 
-/** Regenerate warm_start_weights.json from the current fallback.js
- *  and physics.js. Stage: `training seed`. Runs the imitation
- *  pipeline from build-warm-start.mjs in-process so the broker can
- *  report progress without a subprocess. ~30-60 s of CPU. */
-function resetStageTrainSeed() {
-  const { inputs, actions } = collectImitationDataset(50, 1000, 1);
-  const { weights } = trainWarmStartWeights(inputs, actions, {
-    epochs: 200,
-    batchSize: 256,
-    lr: 0.005,
-    seed: 1,
-  });
-  fs.writeFileSync(WARM_START_PATH, JSON.stringify(Array.from(weights)));
-}
-
-/** Seed population + zero every counter. Stage: `seeding population`. */
-function resetStageSeedPopulation() {
+/** Seed population from given weights + zero every counter. Does NOT
+ *  save or persist — caller decides when to commit. */
+function seedPopulationFromWeights(seedWeights) {
   state.config = loadConfig();
-  state.population = initPopulationFromWarmStart(state.config);
+  state.population = buildPopulationFromSeed(seedWeights, state.config);
   state.generation = 1;
   state.totalMatches = 0;
   state.showcaseCounter = 0;
@@ -885,75 +880,64 @@ function resetStageSeedPopulation() {
   refreshPopulationIndex();
 }
 
-/** Persist the fresh state. Stage: `saving`. */
-function resetStageSave() {
-  persistRuntimeMsTotal(0);
-  savePopulation(state.generation);
-  lastSavedGeneration = state.generation;
-}
-
-/** Run the full hard-reset pipeline asynchronously. Each stage
- *  updates `state.resetStatus` before it runs so /reset/status polling
- *  reports "in progress on X" as early as possible. */
-async function runResetPipeline() {
-  try {
-    setResetStage('wiping db');
-    resetStageWipeDb();
-
-    setResetStage('training seed');
-    // Let the event loop breathe so /reset/status poll requests get
-    // scheduling slices during the long CPU-bound training.
-    await new Promise((ok) => setImmediate(ok));
-    resetStageTrainSeed();
-
-    setResetStage('seeding population');
-    resetStageSeedPopulation();
-
-    setResetStage('saving');
-    resetStageSave();
-
-    setResetStage('restarting broker');
-    // Give the client one more poll cycle to observe the final stage
-    // before the process vanishes.
-    await new Promise((ok) => setTimeout(ok, 500));
-    try { if (db) db.close(); } catch { /* ignore */ }
-    process.exit(0);
-  } catch (err) {
-    state.resetStatus = { stage: 'error', startedAt: Date.now(), error: String(err) };
-    process.stderr.write(`[football broker] reset pipeline failed: ${err?.stack ?? err}\n`);
-  }
-}
-
-function handleReset(req, res) {
+/** Handle POST /reset. The client has already done the heavy lifting
+ *  (Web Worker ran imitation training and produced the weights), so
+ *  this handler stays synchronous and completes in <1 s:
+ *
+ *    1. Validate the weights array in the request body
+ *    2. Wipe brains + generations tables
+ *    3. Store new warm-start weights in meta table
+ *    4. Seed population from those weights (brain 0 frozen + 49 mutated)
+ *    5. Persist
+ *    6. If hard=1, exit so systemd respawns the broker with a clean
+ *       in-memory state (wipes worker-side caches, timers, etc.)
+ *
+ *  Body shape:  { "weights": [<WEIGHT_COUNT floats>] }
+ *  Query:       ?hard=1   — exit after responding (systemd respawns)
+ */
+async function handleReset(req, res) {
   const url = req.url || '';
   const qi = url.indexOf('?');
   const hard = qi >= 0 &&
     new URLSearchParams(url.slice(qi + 1)).get('hard') === '1';
 
-  if (hard) {
-    // Kick off the pipeline async; respond 202 immediately so the
-    // client can start polling /reset/status without blocking on
-    // the ~30-60 s warm-start training inside the reset handler.
-    if (state.resetStatus && state.resetStatus.stage !== 'error') {
-      json(res, 409, { error: 'reset already in progress', status: state.resetStatus });
-      return;
-    }
-    setResetStage(RESET_STAGES[0]);
-    runResetPipeline();  // fire-and-forget
-    json(res, 202, { ok: true, status: state.resetStatus });
-    return;
+  let data;
+  try {
+    data = await readJsonBody(req);
+  } catch {
+    return json(res, 400, { error: 'expected JSON body' });
+  }
+  if (!data || !Array.isArray(data.weights) || data.weights.length !== WEIGHT_COUNT) {
+    return json(res, 400, {
+      error: `body must be {"weights": [${WEIGHT_COUNT} floats]}`,
+    });
   }
 
-  // Soft reset — synchronous, no warm-start regen. Preserved for
-  // test and scripted usage; the UI button uses hard=1.
-  resetStageWipeDb();
-  resetStageSeedPopulation();
-  resetStageSave();
-  json(res, 200, { ok: true, generation: state.generation });
-}
+  const seedWeights = new Float64Array(data.weights);
+  try {
+    wipeBrainTables();
+    persistWarmStartWeights(seedWeights);
+    seedPopulationFromWeights(seedWeights);
+    persistRuntimeMsTotal(0);
+    savePopulation(state.generation);
+    lastSavedGeneration = state.generation;
+  } catch (err) {
+    process.stderr.write(`[football broker] reset failed: ${err?.stack ?? err}\n`);
+    return json(res, 500, { error: 'reset failed', detail: String(err?.message ?? err) });
+  }
 
-function handleResetStatus(req, res) {
-  json(res, 200, { status: state.resetStatus });
+  if (hard) {
+    const payload = JSON.stringify({ ok: true, generation: state.generation, hard: true });
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) });
+    res.end(payload, () => {
+      setTimeout(() => {
+        try { if (db) db.close(); } catch { /* ignore */ }
+        process.exit(0);
+      }, 10);
+    });
+    return;
+  }
+  json(res, 200, { ok: true, generation: state.generation });
 }
 
 // ── Dispatcher ────────────────────────────────────────────────
@@ -974,7 +958,6 @@ async function dispatch(req, res) {
     case `GET ${ROUTE_PREFIX}/config`:       return handleConfigGet(req, res);
     case `POST ${ROUTE_PREFIX}/config`:      return handleConfigPost(req, res);
     case `POST ${ROUTE_PREFIX}/reset`:       return handleReset(req, res);
-    case `GET ${ROUTE_PREFIX}/reset/status`: return handleResetStatus(req, res);
     default:
       return json(res, 404, { error: 'not found' });
   }

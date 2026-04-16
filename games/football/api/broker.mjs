@@ -210,52 +210,35 @@ function persistRuntimeMsTotal(ms) {
   ).run('runtime_ms_total', String(Math.floor(ms)));
 }
 
-/** Total active training ms since last reset — persisted total plus
- *  any currently-open window. Read by /stats every poll so the UI
- *  timer reflects live training without needing a separate endpoint. */
+import {
+  runtimeNowMs as runtimeNowMsPure,
+  recordRuntimeActivity as recordRuntimeActivityPure,
+  flushRuntime as flushRuntimePure,
+} from './runtime-timer.js';
+
+/** Total active training ms since last reset. */
 function runtimeNowMs() {
-  let inProgress = 0;
-  if (state.runtimeActiveStart !== null && state.runtimeLastPostAt !== null) {
-    const now = Date.now();
-    const end = (now - state.runtimeLastPostAt > RUNTIME_HYSTERESIS_MS)
-      ? state.runtimeLastPostAt
-      : now;
-    inProgress = Math.max(0, end - state.runtimeActiveStart);
-  }
-  return state.runtimeMsTotal + inProgress;
+  return runtimeNowMsPure(state);
 }
 
-/** Called on every /results POST. If the gap from the last POST is
- *  short enough, the existing active window extends to `now`; if the
- *  gap exceeds the hysteresis (or no window is open), fold the old
- *  window into the persisted total and start a fresh one at `now`. */
+/** Apply the runtime-timer state transition produced by a pure
+ *  transform — keeps the impure `state` object in sync with the
+ *  returned immutable snapshot. */
+function applyRuntimeState(next) {
+  state.runtimeMsTotal = next.runtimeMsTotal;
+  state.runtimeActiveStart = next.runtimeActiveStart;
+  state.runtimeLastPostAt = next.runtimeLastPostAt;
+}
+
+/** Called on every /results POST. */
 function recordRuntimeActivity() {
-  const now = Date.now();
-  const prevLast = state.runtimeLastPostAt;
-  const hasWindow = state.runtimeActiveStart !== null;
-  const gapTooLong = prevLast !== null && (now - prevLast) > RUNTIME_HYSTERESIS_MS;
-  if (!hasWindow || gapTooLong) {
-    if (hasWindow && prevLast !== null) {
-      state.runtimeMsTotal += Math.max(0, prevLast - state.runtimeActiveStart);
-    }
-    state.runtimeActiveStart = now;
-  }
-  state.runtimeLastPostAt = now;
+  applyRuntimeState(recordRuntimeActivityPure(state, Date.now(), RUNTIME_HYSTERESIS_MS));
 }
 
 /** Snapshot the current active window into runtimeMsTotal and
- *  persist it. Leaves the window open so training keeps accruing
- *  without a double-count on the next tick. */
+ *  persist it. */
 function flushRuntime() {
-  const snapshot = runtimeNowMs();
-  state.runtimeMsTotal = snapshot;
-  if (state.runtimeActiveStart !== null) {
-    // Restart the window at "now" so we don't re-add already-folded
-    // elapsed time on the next runtimeNowMs() read.
-    const now = Date.now();
-    state.runtimeActiveStart = now;
-    state.runtimeLastPostAt = now;
-  }
+  applyRuntimeState(flushRuntimePure(state, Date.now()));
   persistRuntimeMsTotal(state.runtimeMsTotal);
 }
 

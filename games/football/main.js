@@ -43,7 +43,7 @@ import {
   createFreeCamToggle,
   createFollowCamToggle,
   installAutoPause,
-} from './ui.js?v=7';
+} from './ui.js?v=8';
 
 const API_BASE = '/api/football';
 // Showcase match length, in milliseconds. Fixed — no longer surfaced in
@@ -107,6 +107,7 @@ async function main() {
     onStop:  () => { void orchestrator.stop(); statsPanel?.setSimsPerSec(0); },
     renderLabel,
     renderReloading,
+    getWorkerCount: () => configControls.getWorkerCount(),
   });
 
   // Poll /stats once on boot to detect an unseeded broker (empty
@@ -143,7 +144,12 @@ async function main() {
   // The reset button hard-reloads the page after the broker restarts,
   // so no onReset callback is needed — the showcase rebuilds from
   // scratch on the new page load.
-  createResetButton({ apiBase: API_BASE, renderLabel, renderReloading });
+  createResetButton({
+    apiBase: API_BASE,
+    renderLabel,
+    renderReloading,
+    getWorkerCount: () => configControls.getWorkerCount(),
+  });
 
   installAutoPause(() => {
     if (startStopBtn.isRunning()) {

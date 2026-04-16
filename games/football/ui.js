@@ -64,7 +64,7 @@ export function createScoreboard() {
  *   - idle:      seeded, not running → clicking spawns workers
  *   - running:   workers spawned → clicking stops them
  */
-export function createStartStopButton({ apiBase, onStart, onStop, renderLabel, renderReloading }) {
+export function createStartStopButton({ apiBase, onStart, onStop, renderLabel, renderReloading, getWorkerCount }) {
   const btn = document.getElementById('game-start-btn');
   let running = false;
   let seeded = true;  // optimistic until first /stats poll says otherwise
@@ -84,7 +84,11 @@ export function createStartStopButton({ apiBase, onStart, onStop, renderLabel, r
   btn.addEventListener('click', async () => {
     if (!seeded) {
       btn.disabled = true;
-      await runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloading });
+      await runResetPipelineWithProgress(apiBase, btn, {
+        renderLabel,
+        renderReloading,
+        workerCount: getWorkerCount?.() ?? 1,
+      });
       return;  // page reloads on completion
     }
     if (running) {
@@ -501,10 +505,10 @@ import {
   PHASE_TRAINING,
   PHASE_RELOADING,
   PHASE_DONE,
-  classifyWorkerMessage,
   phaseAfterPost,
   phaseAfterStatsPoll,
 } from './api/reset-client.js';
+import { runWarmStart } from './warm-start-orchestrator.js';
 
 /**
  * Drive a button's label through the full reset pipeline. Used by
@@ -512,72 +516,66 @@ import {
  * population=0 on a fresh install).
  *
  * Flow:
- *   1. Spawn `warm-start-worker.js` Web Worker
- *   2. Worker runs imitation training (~1 minute client-side),
- *      streams progress messages back
- *   3. On worker 'done': POST weights to /reset?hard=1
- *   4. Broker wipes, seeds from the POSTed weights, exits → systemd respawn
- *   5. Client polls /stats waiting for the respawned broker
- *   6. Cache-bust reload
- *
- * Stage decisions + cross-runtime edge cases are in api/reset-client.js
- * as pure functions so they're unit-testable without a worker or a
- * broker.
+ *   1. Orchestrator spawns N Web Workers (N = configured count) that
+ *      each run one epoch of SGD on their shard; main thread averages
+ *      their weights per epoch. ~N× faster than single-worker.
+ *   2. On completion: POST averaged weights to /reset?hard=1.
+ *   3. Broker wipes, seeds from the POSTed weights, exits → systemd respawn.
+ *   4. Client polls /stats waiting for the respawned broker.
+ *   5. Cache-bust reload.
  */
-function runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloading }) {
+function runResetPipelineWithProgress(apiBase, btn, {
+  renderLabel,
+  renderReloading,
+  workerCount,
+  epochs = 200,
+  matches = 50,
+  ticksPerMatch = 1000,
+  baseSeed = 1,
+}) {
   const stageStartedAt = new Map();
   const pollIntervalMs = 300;
   const dotIntervalMs = 400;
   const reloadingStart = () => Date.now();
   let phase = PHASE_TRAINING;
-  let currentStage = 'starting';
+  let currentStage = 'training seed';
   let currentProgress = null;
   let reloadingStartedAt = 0;
   let lastPoll = 0;
   stageStartedAt.set(currentStage, Date.now());
 
-  const worker = new Worker(
-    new URL('./warm-start-worker.js', import.meta.url),
-    { type: 'module' },
-  );
-  worker.addEventListener('message', async (ev) => {
-    const classified = classifyWorkerMessage(ev.data);
-    if (classified.kind === 'progress') {
-      if (classified.stage !== currentStage) {
-        currentStage = classified.stage;
-        stageStartedAt.set(currentStage, Date.now());
-      }
-      currentProgress = { current: classified.current, total: classified.total };
-    } else if (classified.kind === 'done') {
-      worker.terminate();
-      // POST weights; broker exits on hard=1.
-      try {
-        const r = await fetch(`${apiBase}/reset?hard=1`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ weights: Array.from(new Float64Array(classified.weights)) }),
-        });
-        phase = phaseAfterPost({ ok: r.ok, status: r.status, networkError: false });
-      } catch {
-        phase = phaseAfterPost({ ok: false, status: 0, networkError: true });
-      }
-      reloadingStartedAt = reloadingStart();
-    } else if (classified.kind === 'error') {
-      // Worker failed; fall through to RELOADING so the page reloads
-      // and the user can retry.
-      worker.terminate();
+  const trainPromise = runWarmStart({
+    workerCount,
+    workerUrl: new URL('./warm-start-worker.js', import.meta.url),
+    epochs,
+    matches,
+    ticksPerMatch,
+    baseSeed,
+    onProgress: ({ current, total }) => {
+      currentProgress = { current, total };
+    },
+  });
+
+  // Handle orchestrator completion separately from the animation loop
+  // so a slow POST doesn't stall the label animation.
+  const afterTrain = (async () => {
+    try {
+      const { weights } = await trainPromise;
+      const r = await fetch(`${apiBase}/reset?hard=1`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ weights: Array.from(weights) }),
+      });
+      phase = phaseAfterPost({ ok: r.ok, status: r.status, networkError: false });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[reset] warm-start failed:', err);
       phase = PHASE_RELOADING;
-      reloadingStartedAt = reloadingStart();
     }
-  });
-  worker.addEventListener('error', (ev) => {
-    // eslint-disable-next-line no-console
-    console.error('[reset] warm-start worker failed:', ev.message || ev);
-    worker.terminate();
-    phase = PHASE_RELOADING;
     reloadingStartedAt = reloadingStart();
-  });
-  worker.postMessage({ type: 'train', seed: 1 });
+  })();
+  // Avoid unhandled rejection noise — the catch above already logs.
+  afterTrain.catch(() => { /* already handled */ });
 
   return new Promise((resolve) => {
     const timer = setInterval(() => {
@@ -610,13 +608,17 @@ function runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloadi
   });
 }
 
-export function createResetButton({ apiBase, renderLabel, renderReloading, onStart }) {
+export function createResetButton({ apiBase, renderLabel, renderReloading, onStart, getWorkerCount }) {
   const btn = document.getElementById('game-reset-btn');
   btn.addEventListener('click', async () => {
     if (!confirm('Nuke the training run? Broker restarts and the page reloads with a cache-bust.')) return;
     btn.disabled = true;
     onStart?.();
-    await runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloading });
+    await runResetPipelineWithProgress(apiBase, btn, {
+      renderLabel,
+      renderReloading,
+      workerCount: getWorkerCount?.() ?? 1,
+    });
   });
 }
 

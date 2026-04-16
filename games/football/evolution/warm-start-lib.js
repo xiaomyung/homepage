@@ -178,76 +178,95 @@ export function heInit(rng) {
   return weights;
 }
 
-export async function trainWarmStartWeights(inputs, actions, { epochs, batchSize, lr, seed, onEpoch }) {
+/**
+ * Trainable state bundled into one object so it can be handed to
+ * `epochStep` repeatedly. Adam state (m, v, t) is kept across epochs;
+ * weights can be externally overwritten between epochs (e.g. by a
+ * federated-averaging orchestrator) without touching the Adam state,
+ * which matches common federated-learning practice.
+ */
+export function createTrainingState(seed) {
   const rng = createSeededRng(seed);
-  const weights = heInit(rng);
-  const m = new Float64Array(WEIGHT_COUNT);
-  const v = new Float64Array(WEIGHT_COUNT);
-  const grad = new Float64Array(WEIGHT_COUNT);
+  return {
+    rng,
+    weights: heInit(rng),
+    m: new Float64Array(WEIGHT_COUNT),
+    v: new Float64Array(WEIGHT_COUNT),
+    t: 0,
+    history: [],
+  };
+}
 
+const BETA1 = 0.9;
+const BETA2 = 0.999;
+const EPS = 1e-8;
+
+/** Run one epoch of Adam SGD over `inputs`/`actions`, mutating
+ *  `state.weights`, `state.m`, `state.v`, `state.t` in place. Returns
+ *  the mean per-batch loss for the epoch. */
+export function epochStep(state, inputs, actions, { batchSize, lr }) {
+  const { rng, weights, m, v } = state;
+  const grad = new Float64Array(WEIGHT_COUNT);
   const activations = makeActivationBuffers();
   const preacts = makePreactivationBuffers();
   const dA = makeActivationBuffers();
   const dZ = makePreactivationBuffers();
 
-  const beta1 = 0.9;
-  const beta2 = 0.999;
-  const eps = 1e-8;
-
   const N = inputs.length;
   const indices = new Int32Array(N);
   for (let i = 0; i < N; i++) indices[i] = i;
+  for (let i = N - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = indices[i];
+    indices[i] = indices[j];
+    indices[j] = tmp;
+  }
 
-  let t = 0;
-  const history = [];
+  let epochLoss = 0;
+  let nBatches = 0;
+  for (let s = 0; s < N; s += batchSize) {
+    const end = Math.min(s + batchSize, N);
+    grad.fill(0);
+    let batchLoss = 0;
+    for (let i = s; i < end; i++) {
+      const idx = indices[i];
+      forwardCached(weights, inputs[idx], activations, preacts);
+      batchLoss += backwardAccumulate(
+        weights, activations, preacts, actions[idx], grad, dA, dZ,
+      );
+    }
+    const bs = end - s;
+    const invBs = 1 / bs;
+    for (let k = 0; k < WEIGHT_COUNT; k++) grad[k] *= invBs;
+    state.t++;
+    const biasCorr1 = 1 - Math.pow(BETA1, state.t);
+    const biasCorr2 = 1 - Math.pow(BETA2, state.t);
+    for (let k = 0; k < WEIGHT_COUNT; k++) {
+      const g = grad[k];
+      m[k] = BETA1 * m[k] + (1 - BETA1) * g;
+      v[k] = BETA2 * v[k] + (1 - BETA2) * g * g;
+      const mHat = m[k] / biasCorr1;
+      const vHat = v[k] / biasCorr2;
+      weights[k] -= lr * mHat / (Math.sqrt(vHat) + EPS);
+    }
+    epochLoss += batchLoss * invBs;
+    nBatches++;
+  }
+  return epochLoss / nBatches;
+}
 
+export async function trainWarmStartWeights(inputs, actions, { epochs, batchSize, lr, seed, onEpoch }) {
+  const state = createTrainingState(seed);
   for (let epoch = 0; epoch < epochs; epoch++) {
-    for (let i = N - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      const tmp = indices[i];
-      indices[i] = indices[j];
-      indices[j] = tmp;
-    }
-
-    let epochLoss = 0;
-    let nBatches = 0;
-    for (let s = 0; s < N; s += batchSize) {
-      const end = Math.min(s + batchSize, N);
-      grad.fill(0);
-      let batchLoss = 0;
-      for (let i = s; i < end; i++) {
-        const idx = indices[i];
-        forwardCached(weights, inputs[idx], activations, preacts);
-        batchLoss += backwardAccumulate(
-          weights, activations, preacts, actions[idx], grad, dA, dZ,
-        );
-      }
-      const bs = end - s;
-      const invBs = 1 / bs;
-      for (let k = 0; k < WEIGHT_COUNT; k++) grad[k] *= invBs;
-      t++;
-      const biasCorr1 = 1 - Math.pow(beta1, t);
-      const biasCorr2 = 1 - Math.pow(beta2, t);
-      for (let k = 0; k < WEIGHT_COUNT; k++) {
-        const g = grad[k];
-        m[k] = beta1 * m[k] + (1 - beta1) * g;
-        v[k] = beta2 * v[k] + (1 - beta2) * g * g;
-        const mHat = m[k] / biasCorr1;
-        const vHat = v[k] / biasCorr2;
-        weights[k] -= lr * mHat / (Math.sqrt(vHat) + eps);
-      }
-      epochLoss += batchLoss * invBs;
-      nBatches++;
-    }
-    const loss = epochLoss / nBatches;
-    history.push(loss);
+    const loss = epochStep(state, inputs, actions, { batchSize, lr });
+    state.history.push(loss);
     if (onEpoch) onEpoch(epoch + 1, epochs, loss);
     // Yield between epochs so the worker can drain its message queue
     // (abort signals, progress polls, etc). setTimeout(0) works both
     // in browser Workers and in Node; setImmediate is Node-only.
     await new Promise((ok) => setTimeout(ok, 0));
   }
-  return { weights, history };
+  return { weights: state.weights, history: state.history };
 }
 
 export { LAYER_COUNT, OUTPUT_SIZE, LAYER_OFFSETS };

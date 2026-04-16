@@ -15,6 +15,11 @@
 
 import * as THREE from 'https://unpkg.com/three@0.164.0/build/three.module.js';
 import {
+  STAMINA_FLOOR,
+  staminaDiscRadius,
+  updateStaminaClipPlane,
+} from './renderer-math.js';
+import {
   createField,
   FIELD_HEIGHT,
   FIELD_WIDTH_REF,
@@ -151,7 +156,7 @@ const BALL_VISUAL_RADIUS = 4.224;
 const STAMINA_OUTLINE_OPACITY = 0.55;
 // Keep a sliver visible at stamina=0 so exhausted players don't
 // vanish completely into the outline.
-const STAMINA_FLOOR = 0.04;
+// STAMINA_FLOOR imported from renderer-math.js
 
 // Splash particles for ball bounces. Pool holds up to PARTICLE_POOL slots,
 // filled via a rolling index so old particles are recycled automatically.
@@ -1981,36 +1986,8 @@ function airkickTiltAt(t) {
  * the cap region math can be validated without instantiating a
  * Renderer.
  */
-export function staminaDiscRadius(yLocalOffset, bodyHalf, capRadius) {
-  const absY = yLocalOffset < 0 ? -yLocalOffset : yLocalOffset;
-  if (absY >= bodyHalf + capRadius) return 0;
-  if (absY <= bodyHalf) return capRadius;
-  const distInCap = absY - bodyHalf;
-  const rSq = capRadius * capRadius - distInCap * distInCap;
-  return rSq > 0 ? Math.sqrt(rSq) : 0;
-}
-
-/**
- * Set `plane` to a world-horizontal clipping plane whose y-level
- * sits at `staminaFrac` of the way from `ay` to `by`. The resulting
- * plane equation is `-y + fillY = 0`, so three.js keeps all points
- * where `y <= fillY` (the bottom portion of the torso) and clips
- * everything above. `ay` and `by` are the two torso endpoint y
- * coordinates — the function auto-sorts them, so it doesn't matter
- * which one is the hip and which is the neck. `staminaFrac` is
- * clamped to [STAMINA_FLOOR, 1] so exhausted players don't vanish.
- * Exposed as a named export purely so the unit tests can exercise
- * the clamp + interpolation math without instantiating a Renderer.
- */
-export function updateStaminaClipPlane(plane, ay, by, staminaFrac) {
-  const hipY  = ay < by ? ay : by;
-  const neckY = ay < by ? by : ay;
-  const clamped = staminaFrac < STAMINA_FLOOR ? STAMINA_FLOOR
-                : staminaFrac > 1 ? 1 : staminaFrac;
-  const fillWorldY = hipY + (neckY - hipY) * clamped;
-  plane.setComponents(0, -1, 0, fillWorldY);
-  return fillWorldY;
-}
+// staminaDiscRadius and updateStaminaClipPlane imported from renderer-math.js
+export { staminaDiscRadius, updateStaminaClipPlane };
 
 function easeInOut(p) {
   return p < 0.5 ? 2 * p * p : 1 - (2 * (1 - p)) * (1 - p);

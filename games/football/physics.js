@@ -242,6 +242,10 @@ export function createState(field, rng = createSeededRng(0)) {
       vx: 0, vy: 0,
       z: RESPAWN_DROP_Z, vz: 0,
       frozen: false,
+      // Set true on scoreGoal so updateBall routes goal-box collisions
+      // through the absorbing inner-net resolver (ball stops, falls)
+      // instead of the bouncing outer resolver. Cleared on reset.
+      inGoal: false,
     },
     p1: createPlayer('left', field),
     p2: createPlayer('right', field),
@@ -293,6 +297,12 @@ export function tick(state, p1Act, p2Act) {
 
   if (state.pauseState !== null) {
     advancePause(state);
+    // Ball physics run during pause too — gravity still pulls the
+    // ball down so a scored shot settles visibly into the net
+    // instead of freezing mid-flight. Score check is suppressed by
+    // the grace-frame gate set in scoreGoal, and the inner-net
+    // absorber handles wall contact without a bounce.
+    if (state.pauseState !== 'matchend') updateBall(state);
     return state;
   }
 
@@ -642,6 +652,67 @@ const _scratchEnt3D = { minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 };
 // returned by reference — no object allocation on the hit path.
 // Caller inspects `.axis` ('x' / 'y' / 'z') and `.delta`.
 const _scratchPush = { axis: 'x', delta: 0 };
+
+/**
+ * Ball vs inner goal surfaces. The ball has already scored (scoreGoal
+ * set ball.inGoal) and is now bouncing around inside the net. Each
+ * inner face absorbs on contact — the net catches the ball and lets
+ * gravity do the rest. Bars (posts + crossbar) are not part of this
+ * path; they're solid colliders on the outer resolver and the ball
+ * never approaches them from inside in a scoring trajectory (posts
+ * live at the mouth plane; by the time the ball is inGoal it's past
+ * the mouth on its way to the back net).
+ */
+function resolveBallInsideGoal(state, box) {
+  const ball = state.ball;
+  if (ball.frozen) return;
+
+  const isLeftGoal = box === state.field.goalBoxLeft;
+  let hitBackOrSide = false;
+
+  // Inner back net.
+  if (isLeftGoal) {
+    const penetration = box.minX - (ball.x - BALL_RADIUS);
+    if (penetration > 0) {
+      ball.x = box.minX + BALL_RADIUS;
+      hitBackOrSide = true;
+      if (state.recordEvents && Math.abs(ball.vx) > BOUNCE_EVENT_MIN) {
+        state.events.push({ type: 'ball_bounce', axis: 'x', force: Math.abs(ball.vx), x: ball.x, y: ball.y, z: ball.z });
+      }
+    }
+  } else {
+    const penetration = (ball.x + BALL_RADIUS) - box.maxX;
+    if (penetration > 0) {
+      ball.x = box.maxX - BALL_RADIUS;
+      hitBackOrSide = true;
+      if (state.recordEvents && Math.abs(ball.vx) > BOUNCE_EVENT_MIN) {
+        state.events.push({ type: 'ball_bounce', axis: 'x', force: Math.abs(ball.vx), x: ball.x, y: ball.y, z: ball.z });
+      }
+    }
+  }
+
+  // Inner side nets.
+  if (ball.y - BALL_RADIUS < box.minY) {
+    ball.y = box.minY + BALL_RADIUS;
+    hitBackOrSide = true;
+  } else if (ball.y + BALL_RADIUS > box.maxY) {
+    ball.y = box.maxY - BALL_RADIUS;
+    hitBackOrSide = true;
+  }
+
+  if (hitBackOrSide) {
+    // Net absorbs — ball loses horizontal momentum and drops.
+    ball.vx = 0;
+    ball.vy = 0;
+  }
+
+  // Inner roof (crossbar underside). If ball rose into it, kill upward
+  // vz only — gravity will pull it back down naturally.
+  if (ball.z + BALL_RADIUS > box.maxZ) {
+    ball.z = box.maxZ - BALL_RADIUS;
+    if (ball.vz > 0) ball.vz = 0;
+  }
+}
 
 /**
  * Player-vs-player AABB separation on the ground plane. When the two
@@ -999,8 +1070,15 @@ function updateBall(state) {
 
     checkBallScoreOrOut(state);
     if (ball.frozen) return;
-    resolveBallGoalBox(state, field.goalBoxLeft);
-    resolveBallGoalBox(state, field.goalBoxRight);
+    if (ball.inGoal) {
+      // Already scored — the ball is inside the net. Inner faces
+      // absorb contact; there is no outer bounce in this regime.
+      resolveBallInsideGoal(state, field.goalBoxLeft);
+      resolveBallInsideGoal(state, field.goalBoxRight);
+    } else {
+      resolveBallGoalBox(state, field.goalBoxLeft);
+      resolveBallGoalBox(state, field.goalBoxRight);
+    }
     if (ball.frozen) return;
   }
 
@@ -1103,6 +1181,7 @@ function resetToKickoff(state) {
   ball.vy = 0;
   ball.vz = 0;
   ball.frozen = false;
+  ball.inGoal = false;
 
   const cy = FIELD_HEIGHT / 2;
   const tx1 = f.midX - STARTING_GAP - f.playerWidth / 2;
@@ -1129,6 +1208,12 @@ function resetToKickoff(state) {
 }
 
 function scoreGoal(state, side) {
+  // Re-entrant guard — if a pause is already active (this shouldn't
+  // normally fire once graceFrames is raised below, but belt-and-
+  // braces for any post-score substep that still happens to match
+  // the scoring gate), skip so we don't stack pause states.
+  if (state.pauseState !== null) return;
+
   // Fresh legs for both sides on every goal. Stamina is otherwise
   // slow-regen only during reposition, which can leave exhausted
   // players visibly drained at kickoff for the next point.
@@ -1157,10 +1242,13 @@ function scoreGoal(state, side) {
     return;
   }
 
-  state.ball.frozen = true;
-  state.ball.vx = 0;
-  state.ball.vy = 0;
-  state.ball.vz = 0;
+  // Ball keeps moving under gravity through the celebrate pause so a
+  // scored shot visibly settles into the net instead of freezing in
+  // mid-air. `inGoal` routes goal-box collisions through the inner
+  // absorbing resolver (dampens completely, falls); graceFrames
+  // suppresses any re-trigger of the scoring gate until the reset.
+  state.ball.inGoal = true;
+  state.graceFrames = RESPAWN_GRACE;
   state.pauseState = 'celebrate';
   state.pauseTimer = CELEBRATE_TICKS;
 
@@ -1172,15 +1260,20 @@ function scoreGoal(state, side) {
 }
 
 function ballOut(state) {
+  // Re-entrant guard — during the pause that follows an out, the ball
+  // keeps moving (per user spec) so the OOB check may still trip on
+  // later ticks. Skip so we don't re-emit the event or restart the
+  // pause clock.
+  if (state.pauseState !== null) return;
+
   if (state.recordEvents) state.events.push({ type: 'out' });
   if (state.headless) {
     resetToKickoff(state);
     return;
   }
-  state.ball.frozen = true;
-  state.ball.vx = 0;
-  state.ball.vy = 0;
-  state.ball.vz = 0;
+  // Ball keeps moving — gravity settles it naturally wherever it is.
+  // Reposition pause drives the players back to kickoff; at the end
+  // of the waiting pause, resetBall snaps the ball to midfield.
   state.pauseState = 'reposition';
   state.pauseTimer = 0;
 }
@@ -1194,6 +1287,7 @@ function resetBall(state) {
   ball.z = RESPAWN_DROP_Z;
   ball.vz = 0;
   ball.frozen = false;
+  ball.inGoal = false;
   state.graceFrames = RESPAWN_GRACE;
   state.lastKickTick = state.tick;
 }

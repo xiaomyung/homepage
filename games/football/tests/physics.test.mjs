@@ -247,7 +247,10 @@ test('ball past the OOB margin triggers out, not goal', () => {
 
   tick(state, NOOP, NOOP);
 
-  assert.ok(state.ball.frozen, 'ball must be frozen after OOB');
+  // Ball is no longer frozen on OOB — it keeps moving (and falls)
+  // while the reposition pause plays out.
+  assert.equal(state.pauseState, 'reposition',
+    'reposition pause should fire on OOB');
   assert.ok(
     state.events.some(e => e.type === 'out'),
     'out event expected'
@@ -346,9 +349,11 @@ test('ball in mouth, below crossbar, fully past goal line scores for the other s
     state.events.some(e => e.type === 'goal' && e.scorer === 'p1'),
     `goal event missing: ${JSON.stringify(state.events)}`
   );
-  // Ball must be frozen post-goal
-  assert.ok(state.ball.frozen, 'ball must freeze after goal');
-  // Pause state must be celebrate
+  // Ball is no longer frozen on goal — it keeps moving through the
+  // celebrate pause so a scored shot visibly settles into the net.
+  // inGoal routes wall contact through the absorbing inner-net
+  // resolver; graceFrames blocks a re-score.
+  assert.ok(state.ball.inGoal, 'inGoal flag should be set on goal');
   assert.equal(state.pauseState, 'celebrate');
 });
 
@@ -1263,4 +1268,80 @@ test('slow shot directly into the mouth still scores cleanly (regression)', () =
   }
 
   assert.equal(state.scoreL, 1, 'slow shot into right mouth should still score');
+});
+
+/* ── Ball continues after score/out, inner net absorbs ──── */
+
+test('ball continues moving after scoring instead of freezing', () => {
+  const state = freshState();
+  const f = state.field;
+  // Shot clearly into the right mouth on the ground.
+  state.ball.x = f.goalLineR + BALL_RADIUS + 2;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = 10; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  tick(state, NOOP, NOOP);
+
+  // Goal fires, ball NOT frozen, inGoal flag is set.
+  assert.equal(state.scoreL, 1);
+  assert.equal(state.pauseState, 'celebrate');
+  assert.equal(state.ball.frozen, false, 'ball should remain unfrozen');
+  assert.ok(state.ball.inGoal, 'inGoal flag should be set');
+});
+
+test('ball hitting the inner back net comes to rest horizontally', () => {
+  const state = freshState();
+  const f = state.field;
+  // Park the ball inside the right goal just before the back wall,
+  // moving into the back, with inGoal already set (simulating a
+  // scored shot mid-flight).
+  state.ball.x = f.goalRRight - BALL_RADIUS - 1;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 3;
+  state.ball.vx = 20; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.inGoal = true;
+  state.graceFrames = 999;  // block scoring path, we're past that
+  state.ball.frozen = false;
+  state.pauseState = 'celebrate';  // just past the score, physics keeps going
+  state.pauseTimer = 100;
+
+  // One tick should drive the ball into the back and dampen it.
+  tick(state, NOOP, NOOP);
+
+  // Ball should be clamped inside the back wall, with no horizontal
+  // velocity. Vertical motion (gravity) is free to carry on.
+  assert.ok(
+    state.ball.x + BALL_RADIUS <= f.goalRRight + 0.01,
+    `ball clipped the back net: x=${state.ball.x}`,
+  );
+  assert.equal(state.ball.vx, 0, 'inner back net absorbs vx');
+  assert.equal(state.ball.vy, 0, 'inner back net absorbs vy');
+});
+
+test('ball goes out of bounds without freezing', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = f.width + 2;  // past field edge
+  state.ball.y = FIELD_HEIGHT / 2;
+  state.ball.z = 0;
+  state.ball.vx = 5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  tick(state, NOOP, NOOP);
+
+  assert.equal(state.pauseState, 'reposition', 'reposition should fire on OOB');
+  assert.equal(state.ball.frozen, false, 'ball should not freeze on OOB');
+});
+
+test('reset after pause clears inGoal so next play uses outer resolver', () => {
+  const state = freshState();
+  state.ball.inGoal = true;
+  state.pauseState = 'waiting';
+  state.pauseTimer = 1;
+  // Run enough ticks for the waiting pause to elapse and resetBall to fire.
+  for (let i = 0; i < 5; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.ball.inGoal, false,
+    'inGoal should be cleared when the ball is reset for kickoff');
 });

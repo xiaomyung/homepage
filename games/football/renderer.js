@@ -28,7 +28,7 @@ import {
   AIRKICK_MS,
   AIRKICK_PEAK_FRAC,
   Z_STRETCH as PHYSICS_Z_STRETCH,
-} from './physics.js?v=48';
+} from './physics.js?v=49';
 
 // Physics field depth (42) is ~21× narrower than its width (900); stretch
 // render-space z so the field fills more of the canvas vertically. Re-

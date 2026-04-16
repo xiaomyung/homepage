@@ -1173,3 +1173,94 @@ test('a push impulse cannot impale the opponent body', () => {
     `pusher pressed through victim: p1.x=${state.p1.x}, p2.x=${state.p2.x}`,
   );
 });
+
+/* ── Goal back-face + swept ball collision ───────────────── */
+
+test('ball arriving from BEHIND the right goal does not tunnel through the back', () => {
+  const state = freshState();
+  state.headless = true;  // skip pause state machine
+  const f = state.field;
+  // Start outside the goal's back wall, moving left (toward midfield).
+  // Without the fix, the "open mouth" exemption fires anywhere inside
+  // the goal AABB and the ball passes straight through.
+  state.ball.x = f.goalRRight + 3;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 5;
+  state.ball.vx = -30; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  const startScore = state.scoreL + state.scoreR;
+
+  tick(state, NOOP, NOOP);
+
+  // Ball from behind must not score for either side.
+  assert.equal(state.scoreL + state.scoreR, startScore,
+    'ball entering from behind must not score');
+  // Ball must still be at or behind the back wall (it bounced off),
+  // not on the field side of the line.
+  assert.ok(
+    state.ball.x >= f.goalRRight - 0.5,
+    `ball crossed back wall: x=${state.ball.x}`,
+  );
+});
+
+test('ball arriving from BEHIND the left goal does not tunnel through the back', () => {
+  const state = freshState();
+  state.headless = true;
+  const f = state.field;
+  state.ball.x = f.goalLLeft - 3;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 5;
+  state.ball.vx = 30; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  const startScore = state.scoreL + state.scoreR;
+
+  tick(state, NOOP, NOOP);
+
+  assert.equal(state.scoreL + state.scoreR, startScore,
+    'ball entering from behind must not score');
+  assert.ok(
+    state.ball.x <= f.goalLLeft + 0.5,
+    `ball crossed back wall: x=${state.ball.x}`,
+  );
+});
+
+test('hard shot at a goal post bounces instead of tunneling through', () => {
+  const state = freshState();
+  state.headless = true;
+  const f = state.field;
+  // Aim a very fast ball at the bottom post (y = mouthYMin). Per-tick
+  // motion = 60 units; post thickness ≈ 2.4 units diameter. Without
+  // the swept integration the ball skips right past the post in a
+  // single step — and since the endpoint is within mouth y/z (ball
+  // has drifted inside), the scoring check fires falsely.
+  state.ball.x = f.goalLineR - 40;
+  state.ball.y = f.goalMouthYMin;  // at the top of the bottom post
+  state.ball.z = 5;
+  state.ball.vx = 60; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  const startScore = state.scoreL + state.scoreR;
+  tick(state, NOOP, NOOP);
+
+  // Ball clipping a post must not produce a score.
+  assert.equal(state.scoreL + state.scoreR, startScore,
+    'ball clipping the post must not score');
+});
+
+test('slow shot directly into the mouth still scores cleanly (regression)', () => {
+  const state = freshState();
+  state.headless = true;  // skip celebrate pause
+  const f = state.field;
+  state.ball.x = f.goalLineR - 5;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 5;
+  state.ball.vx = 12; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  // Ball travels into right goal → scores for LEFT team (p1).
+  for (let i = 0; i < 30 && state.scoreL === 0; i++) {
+    tick(state, NOOP, NOOP);
+  }
+
+  assert.equal(state.scoreL, 1, 'slow shot into right mouth should still score');
+});

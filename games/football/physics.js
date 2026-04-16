@@ -322,16 +322,10 @@ export function tick(state, p1Act, p2Act) {
   chargeStaminaFromDisplacement(state.p1, pre1x, pre1y);
   chargeStaminaFromDisplacement(state.p2, pre2x, pre2y);
 
+  // Ball motion, scoring, and goal-surface collision are now all
+  // resolved inside updateBall — it substeps the integration when the
+  // per-tick motion exceeds BALL_RADIUS so a hard shot can't tunnel.
   updateBall(state);
-  checkBallScoreOrOut(state);
-  // Goal-frame collision runs after the scoring check — a ball that
-  // legitimately crossed the open mouth has already frozen as a goal
-  // and will short-circuit the resolver. Every other overlap (sides,
-  // back, roof, posts, crossbar, from any direction) is pushed out
-  // along the minimum-penetration axis.
-  const field = state.field;
-  resolveBallGoalBox(state, goalBox(field, 'left'));
-  resolveBallGoalBox(state, goalBox(field, 'right'));
 
   const stallLimit = state.headless ? STALL_TICKS_HEADLESS : STALL_TICKS;
   if (state.tick - state.lastKickTick > stallLimit) {
@@ -716,18 +710,24 @@ function resolveBallGoalBox(state, box) {
   const ball = state.ball;
   if (ball.frozen) return;
 
-  // Open-mouth exemption: if the ball sphere is fully inside the
-  // mouth y and z opening (shrunk by GOAL_POST_RADIUS to account
-  // for the physical post/crossbar thickness), the front face is
-  // transparent — let the ball cross unimpeded so the scoring
-  // check on the next tick can see it "fully past the line".
-  // Matches the scoring withinMouthY/belowCrossbar exactly so any
-  // ball cleared by one is cleared by the other.
+  // Open-mouth exemption: a legitimate shot entering through the
+  // front face must NOT bounce — the scoring check on the next tick
+  // promotes it to a goal once the whole sphere clears the line.
+  //
+  // Limit the exemption to the front-face neighborhood only; otherwise
+  // a ball inside the box (including one coming from BEHIND the back
+  // wall) also skips resolution and tunnels through the net. The
+  // front-face plane is box.maxX for the left goal (mouth opens to
+  // +x) and box.minX for the right goal (mouth opens to -x).
+  const isLeftGoal = box === state.field.goalBoxLeft;
+  const frontX = isLeftGoal ? box.maxX : box.minX;
+  const nearFront = Math.abs(ball.x - frontX) < BALL_RADIUS + GOAL_POST_RADIUS;
+
   const inMouthY =
     ball.y - BALL_RADIUS >= box.minY + GOAL_POST_RADIUS
     && ball.y + BALL_RADIUS <= box.maxY - GOAL_POST_RADIUS;
   const inMouthZ = ball.z + BALL_RADIUS <= box.maxZ - GOAL_POST_RADIUS;
-  if (inMouthY && inMouthZ) return;
+  if (inMouthY && inMouthZ && nearFront) return;
 
   const ent = _scratchEnt3D;
   ent.minX = ball.x - BALL_RADIUS; ent.maxX = ball.x + BALL_RADIUS;
@@ -946,13 +946,11 @@ function updateBall(state) {
   if (ball.frozen) return;
   if (ball.vx === 0 && ball.vy === 0 && ball.z === 0 && ball.vz === 0) return;
 
-  ball.x += ball.vx;
-  ball.y += ball.vy;
-
-  const friction = ball.z > 0 ? AIR_FRICTION : GROUND_FRICTION;
-  ball.vx *= friction;
-  ball.vy *= friction;
-
+  // Z physics in one step per tick (gravity + ground/ceiling bounces)
+  // — preserves the existing parabola timing for vertical motion.
+  // Horizontal (X, Y) motion is what tunnels through thin goal
+  // surfaces (post radius ≈ 1.2, ball radius ≈ 1.87), so only those
+  // get substepped below.
   if (ball.z > 0 || ball.vz > 0) {
     ball.vz -= GRAVITY;
     ball.z += ball.vz;
@@ -967,26 +965,48 @@ function updateBall(state) {
       }
     }
   }
-
-  // Ball body stays fully inside the top/bottom walls; bounces off.
-  if (ball.y < BALL_RADIUS) {
-    const preVy = Math.abs(ball.vy);
-    ball.y = BALL_RADIUS;
-    ball.vy = preVy * WALL_BOUNCE_DAMP;
-    recordBounce(state, 'y', preVy);
-  } else if (ball.y > FIELD_HEIGHT - BALL_RADIUS) {
-    const preVy = Math.abs(ball.vy);
-    ball.y = FIELD_HEIGHT - BALL_RADIUS;
-    ball.vy = -preVy * WALL_BOUNCE_DAMP;
-    recordBounce(state, 'y', preVy);
-  }
-
   if (ball.z > CEILING) {
     const preVz = Math.abs(ball.vz);
     ball.z = CEILING;
     ball.vz = -preVz * AIR_BOUNCE;
     recordBounce(state, 'z', preVz);
   }
+
+  // Horizontal motion in substeps so a hard shot can't tunnel past
+  // a thin post / back wall. Friction + velocity cutoffs apply once
+  // after all substeps so per-tick magnitudes match the single-step
+  // case when motion is slow enough for substeps=1.
+  const motionXY = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
+  const substeps = motionXY > BALL_RADIUS ? Math.ceil(motionXY / BALL_RADIUS) : 1;
+  const invN = 1 / substeps;
+  const field = state.field;
+
+  for (let s = 0; s < substeps; s++) {
+    ball.x += ball.vx * invN;
+    ball.y += ball.vy * invN;
+
+    if (ball.y < BALL_RADIUS) {
+      const preVy = Math.abs(ball.vy);
+      ball.y = BALL_RADIUS;
+      ball.vy = preVy * WALL_BOUNCE_DAMP;
+      recordBounce(state, 'y', preVy);
+    } else if (ball.y > FIELD_HEIGHT - BALL_RADIUS) {
+      const preVy = Math.abs(ball.vy);
+      ball.y = FIELD_HEIGHT - BALL_RADIUS;
+      ball.vy = -preVy * WALL_BOUNCE_DAMP;
+      recordBounce(state, 'y', preVy);
+    }
+
+    checkBallScoreOrOut(state);
+    if (ball.frozen) return;
+    resolveBallGoalBox(state, field.goalBoxLeft);
+    resolveBallGoalBox(state, field.goalBoxRight);
+    if (ball.frozen) return;
+  }
+
+  const friction = ball.z > 0 ? AIR_FRICTION : GROUND_FRICTION;
+  ball.vx *= friction;
+  ball.vy *= friction;
 
   if (ball.vx * ball.vx < BALL_VEL_CUTOFF_SQ) ball.vx = 0;
   if (ball.vy * ball.vy < BALL_VEL_CUTOFF_SQ) ball.vy = 0;
@@ -1018,8 +1038,16 @@ function checkBallScoreOrOut(state) {
   // Everything else — bouncing off the posts, crossbar, back wall,
   // roof, or side walls — is handled by resolveBallGoalBox running
   // immediately after this check.
-  const fullyPastL = ball.x + BALL_RADIUS <= f.goalLineL;
-  const fullyPastR = ball.x - BALL_RADIUS >= f.goalLineR;
+  //
+  // The "ball.x ± BALL_RADIUS inside the back wall" clause prevents
+  // a false score for a ball that was never actually kicked into the
+  // mouth — a ball sitting just outside the back of the net still
+  // satisfies `fully past the line`, so without this gate any ball
+  // that reaches the behind-goal zone would score immediately.
+  const fullyPastL = ball.x + BALL_RADIUS <= f.goalLineL
+                  && ball.x - BALL_RADIUS >= f.goalLLeft;
+  const fullyPastR = ball.x - BALL_RADIUS >= f.goalLineR
+                  && ball.x + BALL_RADIUS <= f.goalRRight;
   // Mouth opening is inset by GOAL_POST_RADIUS so the ball must be
   // fully clear of the physical post cylinders to count as in the
   // mouth. Same inset applies below the crossbar.

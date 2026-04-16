@@ -497,81 +497,97 @@ export function createFollowCamToggle({ renderer, onChange }) {
   return { refresh: render };
 }
 
+import {
+  PHASE_POLLING,
+  PHASE_RELOADING,
+  PHASE_DONE,
+  phaseAfterPost,
+  phaseAfterStatusPoll,
+  phaseAfterStatsPoll,
+} from './api/reset-client.js';
+
 /**
  * Drive a button's label through the broker's reset pipeline stages.
  * Called by both the reset button and the start button (when the
- * population is empty on a fresh clone). Responsibilities:
- *
- *   1. POST /reset?hard=1 to kick off the broker's async pipeline.
- *   2. Poll /reset/status every ~300 ms; update the button label to
- *      "<stage> ." / ".." / "..." cycling on a fixed cadence so the
- *      user sees progress regardless of whether the stage is instant
- *      (wiping db) or a slow CPU run (training seed).
- *   3. When polling fails (broker exited for systemd to respawn), flip
- *      the label to "reloading page ..." and wait for /stats to
- *      respond 200 again — that's the respawned broker with a fresh
- *      population loaded.
- *   4. Hard-reload the page with a cache-bust query string so every
- *      JS/worker file is re-fetched from Caddy.
+ * population is empty on a fresh clone). Delegates all phase-
+ * transition decisions to api/reset-client.js so edge cases (wrong
+ * broker version, transient errors, network loss during respawn) have
+ * unit-test coverage.
  */
 async function runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloading }) {
+  // --- POST kickoff ---
+  let phase;
   try {
     const r = await fetch(`${apiBase}/reset?hard=1`, { method: 'POST' });
-    if (!r.ok && r.status !== 202) throw new Error(`reset kickoff: ${r.status}`);
+    phase = phaseAfterPost({ ok: r.ok, status: r.status, networkError: false });
   } catch {
-    /* Broker may have already exited mid-response — continue to polling. */
+    phase = phaseAfterPost({ ok: false, status: 0, networkError: true });
   }
-  // Stage polling loop — update label at a fixed cadence regardless
-  // of whether we just polled this tick, so dot animation stays smooth.
+
   const stageStartedAt = new Map();
   const pollIntervalMs = 300;
   const dotIntervalMs = 400;
   let currentStage = null;
-  let brokerDown = false;
-  let lastPoll = 0;
   const loopStart = Date.now();
-  // Animation + polling run off one setInterval so the two never drift.
+  let lastPoll = 0;
+
   return new Promise((resolve) => {
     const timer = setInterval(() => {
       const now = Date.now();
-      // Poll at pollIntervalMs; animate every tick.
-      if (now - lastPoll >= pollIntervalMs) {
-        lastPoll = now;
-        fetch(`${apiBase}/reset/status`, { cache: 'no-store' })
-          .then((res) => {
-            if (!res.ok) throw new Error(`${res.status}`);
-            return res.json();
-          })
-          .then(({ status }) => {
-            if (!status) return;
-            if (status.stage !== currentStage) {
-              currentStage = status.stage;
-              stageStartedAt.set(currentStage, now);
-            }
-          })
-          .catch(() => {
-            // Broker is down (expected after "restarting broker" stage).
-            brokerDown = true;
-          });
-      }
-      // Animate + render.
-      if (brokerDown) {
-        // Broker exited — show reloading state and test whether it's back.
+      const sinceLastPoll = now - lastPoll;
+
+      if (phase === PHASE_POLLING) {
+        if (currentStage) {
+          const elapsed = now - (stageStartedAt.get(currentStage) ?? now);
+          btn.textContent = renderLabel(currentStage, elapsed, dotIntervalMs);
+        }
+        if (sinceLastPoll >= pollIntervalMs) {
+          lastPoll = now;
+          fetch(`${apiBase}/reset/status`, { cache: 'no-store' })
+            .then(async (res) => {
+              const body = res.ok ? await res.json().catch(() => null) : null;
+              const result = phaseAfterStatusPoll({
+                ok: res.ok, status: res.status, body, networkError: false,
+              });
+              if (typeof result === 'string') {
+                phase = result;
+              } else {
+                phase = result.phase;
+                if (result.stage && result.stage !== currentStage) {
+                  currentStage = result.stage;
+                  stageStartedAt.set(currentStage, Date.now());
+                }
+              }
+            })
+            .catch(() => {
+              phase = phaseAfterStatusPoll({
+                ok: false, status: 0, body: null, networkError: true,
+              });
+            });
+        }
+      } else if (phase === PHASE_RELOADING) {
         const elapsed = now - loopStart;
         btn.textContent = renderReloading(elapsed, dotIntervalMs);
-        fetch(`${apiBase}/stats`, { cache: 'no-store' })
-          .then((res) => {
-            if (!res.ok) return;
-            clearInterval(timer);
-            const url = new URL(window.location.href);
-            url.searchParams.set('_cb', Date.now().toString(36));
-            window.location.replace(url.toString());
-            resolve();
-          })
-          .catch(() => { /* still down, keep waiting */ });
-      } else if (currentStage) {
-        const elapsed = now - (stageStartedAt.get(currentStage) ?? now);
-        btn.textContent = renderLabel(currentStage, elapsed, dotIntervalMs);
+        if (sinceLastPoll >= pollIntervalMs) {
+          lastPoll = now;
+          fetch(`${apiBase}/stats`, { cache: 'no-store' })
+            .then((res) => {
+              phase = phaseAfterStatsPoll({
+                ok: res.ok, networkError: false,
+              });
+            })
+            .catch(() => {
+              phase = phaseAfterStatsPoll({
+                ok: false, networkError: true,
+              });
+            });
+        }
+      } else if (phase === PHASE_DONE) {
+        clearInterval(timer);
+        const url = new URL(window.location.href);
+        url.searchParams.set('_cb', Date.now().toString(36));
+        window.location.replace(url.toString());
+        resolve();
       }
     }, 100);
   });

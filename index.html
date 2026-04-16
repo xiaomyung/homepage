@@ -6,7 +6,7 @@
   <title>home.arpa</title>
   <link rel="preload" href="fonts/iosevka-term-regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/iosevka-term-medium.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="style.css?v=127">
+  <link rel="stylesheet" href="style.css?v=136">
 </head>
 <body>
 
@@ -181,8 +181,61 @@
 
   </div>
 
+  <section class="game" aria-label="football">
+    <div class="game-label">~/football</div>
+
+    <header class="game-scoreboard">
+      <span class="game-sb-tag" id="game-p1-tag">[nn]</span>
+      <span class="game-sb-name" id="game-p1-name">—</span>
+      <span class="game-sb-score" id="game-score">0 — 0</span>
+      <span class="game-sb-name" id="game-p2-name">—</span>
+      <span class="game-sb-tag" id="game-p2-tag">[nn]</span>
+      <div class="game-sb-timer" id="game-timer">00:00</div>
+    </header>
+
+    <canvas class="game-stage" id="game-canvas"></canvas>
+
+    <div class="game-controls">
+      <button type="button" class="game-btn" id="game-start-btn">[ start ]</button>
+      <button type="button" class="game-btn" id="game-options-btn">[ options ]</button>
+    </div>
+
+    <div class="game-options-panel" id="game-options-panel" data-open="false">
+      <dl class="game-stats">
+        <dt>runtime</dt>   <dd id="stat-runtime">0:00</dd>
+        <dt>generation</dt><dd id="stat-gen">—</dd>
+        <dt>matches</dt>   <dd id="stat-matches">—</dd>
+        <dt>cur top</dt>   <dd id="stat-top">—</dd>
+        <dt>cur avg</dt>   <dd id="stat-avg">—</dd>
+        <dt>vs fallback</dt><dd id="stat-fbwr">—</dd>
+        <dt>sims/s</dt>    <dd id="stat-sps">—</dd>
+        <dt>brains</dt>    <dd id="stat-pop">—</dd>
+        <dt>mut rate</dt>  <dd id="stat-mut">—</dd>
+      </dl>
+      <canvas class="game-fitness-graph" id="game-fitness-canvas" width="800" height="100"></canvas>
+      <div class="game-workers">
+        <span class="game-workers-label">workers</span>
+        <button type="button" class="game-workers-step" id="cfg-workers-dec" aria-label="decrease workers">[ − ]</button>
+        <span class="game-workers-val" id="cfg-workers-val">—</span>
+        <button type="button" class="game-workers-step" id="cfg-workers-inc" aria-label="increase workers">[ + ]</button>
+      </div>
+      <div class="game-freecam">
+        <button type="button" class="game-btn" id="game-followcam-btn">[ follow ball: off ]</button>
+        <button type="button" class="game-btn" id="game-freecam-btn">[ freecam: off ]</button>
+        <dl class="game-stats game-freecam-help" id="game-freecam-help" data-open="false">
+          <dt>drag</dt>     <dd>orbit target</dd>
+          <dt>w a s d</dt>  <dd>pan horizontally</dd>
+          <dt>q / e</dt>    <dd>lower / raise</dd>
+          <dt>wheel</dt>    <dd>zoom</dd>
+          <dt>r</dt>        <dd>reset pose</dd>
+        </dl>
+      </div>
+      <button type="button" class="game-btn game-btn-danger" id="game-reset-btn">[ reset ]</button>
+    </div>
+  </section>
+
   <script src="app.js?v=8"></script>
-  <script type="module" src="games/football/football.js"></script>
+  <script type="module" src="games/football/main.js?v=71"></script>
   <script type="module" src="games/blackhole/blackhole.js"></script>
 </body>
 </html>

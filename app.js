@@ -36,7 +36,7 @@ const setText = (id, value) => {
   if (el) el.textContent = value == null ? '—' : value;
 };
 
-function pad(n) { return n < 10 ? '0' + n : '' + n; }
+const pad = (n) => String(n).padStart(2, '0');
 
 function nowString() {
   const d = new Date();
@@ -57,7 +57,7 @@ function updateBanner() {
 
 /* ── Stats shim (live infra panel) ── */
 
-const fmtBytes = (gb) => gb == null ? '—' : (gb >= 1000 ? (gb / 1000).toFixed(1) + 'T' : gb.toFixed(1) + 'G');
+const fmtBytes = (gb) => gb == null ? '—' : (gb >= 1000 ? `${(gb / 1000).toFixed(1)}T` : `${gb.toFixed(1)}G`);
 
 async function loadStats() {
   let s;
@@ -74,19 +74,19 @@ async function loadStats() {
   setText('hdr-load', s.load && s.load[0] != null
     ? s.load.map(x => x.toFixed(2)).join('  ')
     : '—');
-  setText('hdr-cpu-temp', s.cpu_temp_c != null ? s.cpu_temp_c + '°C' : '—');
+  setText('hdr-cpu-temp', s.cpu_temp_c != null ? `${s.cpu_temp_c}°C` : '—');
   setText('hdr-ram', s.ram_used_gb != null && s.ram_total_gb
     ? `${fmtBytes(s.ram_used_gb)} / ${fmtBytes(s.ram_total_gb)}  (${Math.round(s.ram_used_gb / s.ram_total_gb * 100)}%)`
     : '—');
 
-  const disk = (d) => d && d.total_gb != null
+  const disk = (d) => d?.total_gb != null
     ? `${fmtBytes(d.used_gb)} / ${fmtBytes(d.total_gb)}  (${d.pct}%)`
     : '—';
-  setText('hdr-system',  disk(s.disk && s.disk.system));
-  setText('hdr-storage', disk(s.disk && s.disk.storage));
-  setText('hdr-cloud',   disk(s.disk && s.disk.cloud));
+  setText('hdr-system',  disk(s.disk?.system));
+  setText('hdr-storage', disk(s.disk?.storage));
+  setText('hdr-cloud',   disk(s.disk?.cloud));
 
-  setText('hdr-drives', s.drives && s.drives.length
+  setText('hdr-drives', s.drives?.length
     ? s.drives.map(x => x.idle ? `${x.dev} idle` : `${x.dev} ${x.temp_c}°C`).join(' · ')
     : '—');
 

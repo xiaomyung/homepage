@@ -61,7 +61,11 @@ export function phaseAfterStatusPoll({ ok, status, body, networkError }) {
   if (networkError) return PHASE_RELOADING;
   if (status === 404) return PHASE_RELOADING;
   if (ok && body && body.status && body.status.stage) {
-    return { phase: PHASE_POLLING, stage: body.status.stage };
+    return {
+      phase: PHASE_POLLING,
+      stage: body.status.stage,
+      progress: body.status.progress ?? null,
+    };
   }
   return PHASE_POLLING;  // keep polling — no stage update
 }

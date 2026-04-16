@@ -43,7 +43,7 @@ import {
   createFreeCamToggle,
   createFollowCamToggle,
   installAutoPause,
-} from './ui.js?v=4';
+} from './ui.js?v=5';
 
 const API_BASE = '/api/football';
 // Showcase match length, in milliseconds. Fixed — no longer surfaced in
@@ -98,7 +98,7 @@ async function main() {
 
   // Shared label renderers: both reset and start (during seeding)
   // drive the button label through the pipeline's cycling dots.
-  const renderLabel = (stage, elapsed, interval) => `[ ${renderStageLabel(stage, elapsed, interval)} ]`;
+  const renderLabel = (stage, elapsed, interval, progress) => `[ ${renderStageLabel(stage, elapsed, interval, progress)} ]`;
   const renderReloading = (elapsed, interval) => `[ ${renderStageLabel(RELOAD_STAGE, elapsed, interval)} ]`;
 
   startStopBtn = createStartStopButton({

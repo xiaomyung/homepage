@@ -859,14 +859,26 @@ function resetStageWipeDb() {
 /** Regenerate warm_start_weights.json from the current fallback.js
  *  and physics.js. Stage: `training seed`. Runs the imitation
  *  pipeline from build-warm-start.mjs in-process so the broker can
- *  report progress without a subprocess. ~30-60 s of CPU. */
-function resetStageTrainSeed() {
+ *  report progress without a subprocess. Takes 2-3 minutes on this
+ *  hardware — the training function yields to the event loop every
+ *  epoch so /reset/status polls keep returning during the run. */
+async function resetStageTrainSeed() {
   const { inputs, actions } = collectImitationDataset(50, 1000, 1);
-  const { weights } = trainWarmStartWeights(inputs, actions, {
+  const { weights } = await trainWarmStartWeights(inputs, actions, {
     epochs: 200,
     batchSize: 256,
     lr: 0.005,
     seed: 1,
+    onEpoch: (current, total) => {
+      // Surface per-epoch progress so the client shows the user the
+      // training is actually moving, not hung. Clients poll
+      // /reset/status every ~300 ms; the resetStatus object carries
+      // optional { current, total } and the UI appends "(42/200)"
+      // to the stage label.
+      if (state.resetStatus && state.resetStatus.stage === 'training seed') {
+        state.resetStatus.progress = { current, total };
+      }
+    },
   });
   fs.writeFileSync(WARM_START_PATH, JSON.stringify(Array.from(weights)));
 }
@@ -901,10 +913,7 @@ async function runResetPipeline() {
     resetStageWipeDb();
 
     setResetStage('training seed');
-    // Let the event loop breathe so /reset/status poll requests get
-    // scheduling slices during the long CPU-bound training.
-    await new Promise((ok) => setImmediate(ok));
-    resetStageTrainSeed();
+    await resetStageTrainSeed();
 
     setResetStage('seeding population');
     resetStageSeedPopulation();

@@ -50,7 +50,19 @@ test('phaseAfterStatusPoll: 200 with stage → POLLING + stage update', () => {
     ok: true, status: 200, networkError: false,
     body: { status: { stage: 'training seed', startedAt: 1000 } },
   });
-  assert.deepEqual(result, { phase: PHASE_POLLING, stage: 'training seed' });
+  assert.deepEqual(result, { phase: PHASE_POLLING, stage: 'training seed', progress: null });
+});
+
+test('phaseAfterStatusPoll: 200 with stage + progress → passes progress through', () => {
+  const result = phaseAfterStatusPoll({
+    ok: true, status: 200, networkError: false,
+    body: { status: { stage: 'training seed', startedAt: 1000, progress: { current: 42, total: 200 } } },
+  });
+  assert.deepEqual(result, {
+    phase: PHASE_POLLING,
+    stage: 'training seed',
+    progress: { current: 42, total: 200 },
+  });
 });
 
 test('phaseAfterStatusPoll: 200 with null status → POLLING (stay, no update)', () => {

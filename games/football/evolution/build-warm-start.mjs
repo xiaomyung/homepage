@@ -201,7 +201,7 @@ function heInit(rng) {
   return weights;
 }
 
-export function trainWarmStartWeights(inputs, actions, { epochs, batchSize, lr, seed, onEpoch }) {
+export async function trainWarmStartWeights(inputs, actions, { epochs, batchSize, lr, seed, onEpoch }) {
   const rng = createSeededRng(seed);
   const weights = heInit(rng);
   const m = new Float64Array(WEIGHT_COUNT);
@@ -266,6 +266,11 @@ export function trainWarmStartWeights(inputs, actions, { epochs, batchSize, lr, 
     const loss = epochLoss / nBatches;
     history.push(loss);
     if (onEpoch) onEpoch(epoch + 1, epochs, loss);
+    // Yield to the event loop every epoch so other async work (e.g.
+    // the broker serving /reset/status polls during a reset-triggered
+    // run) can make progress. Training would otherwise CPU-block the
+    // single-threaded Node runtime for the full run duration.
+    await new Promise((ok) => setImmediate(ok));
   }
   return { weights, history };
 }
@@ -297,7 +302,7 @@ function selfCheck() {
 
 /* ── Entry point ──────────────────────────────────────────────── */
 
-function main() {
+async function main() {
   selfCheck();
 
   console.log('Collecting imitation dataset...');
@@ -305,7 +310,7 @@ function main() {
   console.log(`  dataset size: ${inputs.length} samples`);
 
   console.log('Training imitation NN...');
-  const { weights, history } = trainWarmStartWeights(inputs, actions, {
+  const { weights, history } = await trainWarmStartWeights(inputs, actions, {
     epochs: 200,
     batchSize: 256,
     lr: 0.005,

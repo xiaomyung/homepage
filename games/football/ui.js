@@ -528,6 +528,7 @@ async function runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderR
   const pollIntervalMs = 300;
   const dotIntervalMs = 400;
   let currentStage = null;
+  let currentProgress = null;
   const loopStart = Date.now();
   let lastPoll = 0;
 
@@ -539,7 +540,7 @@ async function runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderR
       if (phase === PHASE_POLLING) {
         if (currentStage) {
           const elapsed = now - (stageStartedAt.get(currentStage) ?? now);
-          btn.textContent = renderLabel(currentStage, elapsed, dotIntervalMs);
+          btn.textContent = renderLabel(currentStage, elapsed, dotIntervalMs, currentProgress);
         }
         if (sinceLastPoll >= pollIntervalMs) {
           lastPoll = now;
@@ -557,6 +558,7 @@ async function runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderR
                   currentStage = result.stage;
                   stageStartedAt.set(currentStage, Date.now());
                 }
+                currentProgress = result.progress ?? null;
               }
             })
             .catch(() => {

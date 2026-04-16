@@ -92,3 +92,14 @@ test('renderStageLabel respects custom interval', () => {
   assert.equal(renderStageLabel('saving', 999, 1000), 'saving .');
   assert.equal(renderStageLabel('saving', 1000, 1000), 'saving ..');
 });
+
+test('renderStageLabel appends fractional progress when provided', () => {
+  assert.equal(renderStageLabel('training seed', 0, 400, { current: 42, total: 200 }), 'training seed . (42/200)');
+  assert.equal(renderStageLabel('training seed', 800, 400, { current: 200, total: 200 }), 'training seed ... (200/200)');
+});
+
+test('renderStageLabel ignores malformed progress', () => {
+  assert.equal(renderStageLabel('training seed', 0, 400, null), 'training seed .');
+  assert.equal(renderStageLabel('training seed', 0, 400, {}), 'training seed .');
+  assert.equal(renderStageLabel('training seed', 0, 400, { current: 'x', total: 10 }), 'training seed .');
+});

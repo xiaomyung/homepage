@@ -41,8 +41,13 @@ export function cyclingDotCount(elapsedMs, intervalMs = 400) {
   return (Math.floor(elapsedMs / intervalMs) % 3) + 1;
 }
 
-/** Render the button label for `stage` with cycling dots. */
-export function renderStageLabel(stage, elapsedMs, intervalMs = 400) {
+/** Render the button label for `stage` with cycling dots and an
+ *  optional fractional-progress tag (e.g. "training seed .. (42/200)").
+ *  `progress` is `{current, total}` or null. */
+export function renderStageLabel(stage, elapsedMs, intervalMs = 400, progress = null) {
   const dots = '.'.repeat(cyclingDotCount(elapsedMs, intervalMs));
-  return `${stage} ${dots}`;
+  const tag = (progress && Number.isFinite(progress.current) && Number.isFinite(progress.total))
+    ? ` (${progress.current}/${progress.total})`
+    : '';
+  return `${stage} ${dots}${tag}`;
 }

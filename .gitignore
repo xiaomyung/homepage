@@ -34,5 +34,5 @@ node_modules/
 *.log
 Thumbs.db
 
-# Dev scratch output
-games/football/debug/*.png
+# Dev scratch (debug tools, screenshots)
+games/football/debug/

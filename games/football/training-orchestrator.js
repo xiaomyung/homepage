@@ -139,6 +139,17 @@ export function createTrainingOrchestrator({
           reportStart = Date.now();
         }
       }
+      // Eager sync: the moment local counts show every brain is
+      // over the breed thresholds, POST the accumulated results
+      // immediately rather than waiting for the next 5 s timer.
+      // Without this, ~95% of each sync batch lands AFTER the local
+      // counts already met the breed gate, so the broker sees one
+      // giant POST per 5 s and breeds at most once per 5 s. With
+      // eager sync the breed cadence becomes compute-limited
+      // instead of network-interval-limited.
+      if (running && pending.length > 0 && readyToBreedLocally()) {
+        void syncPending();
+      }
       if (running) feedWorker(entry);
     } else if (msg.type === 'error') {
       // eslint-disable-next-line no-console
@@ -146,6 +157,24 @@ export function createTrainingOrchestrator({
       entry.busy = false;
       if (running) feedWorker(entry);
     }
+  }
+
+  /** Cheap O(pop) check that every brain in `localCounts` has
+   *  already met BOTH training thresholds — no brain left to
+   *  improve before the next breed. Used to trigger an immediate
+   *  /results sync so the broker breeds as fast as compute allows
+   *  instead of at the sync timer's cadence. */
+  function readyToBreedLocally() {
+    if (cachedPopulation.length === 0) return false;
+    const minPop = config.min_pop_matches;
+    const minFb = config.min_fallback_matches;
+    for (const b of cachedPopulation) {
+      const c = localCounts.get(b.id);
+      if (!c) return false;
+      if (c.popMatches < minPop) return false;
+      if (c.fallbackMatches < minFb) return false;
+    }
+    return true;
   }
 
   function feedWorker(entry) {

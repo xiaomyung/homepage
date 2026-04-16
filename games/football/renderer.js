@@ -13,7 +13,7 @@
  *   physics.y → three.js.z  (field depth)
  */
 
-import * as THREE from './vendor/three.module.js';
+import * as THREE from 'https://unpkg.com/three@0.164.0/build/three.module.js';
 import {
   createField,
   FIELD_HEIGHT,

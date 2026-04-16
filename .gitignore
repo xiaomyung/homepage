@@ -36,3 +36,6 @@ Thumbs.db
 
 # Dev scratch (debug tools, screenshots)
 games/football/debug/
+
+# Warm-start weights — regenerated on reset, not vendored
+games/football/warm_start_weights.json

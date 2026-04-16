@@ -32,6 +32,11 @@ import {
   gaussianMutate,
   createGaRng,
 } from '../evolution/ga.mjs';
+import {
+  collectImitationDataset,
+  trainWarmStartWeights,
+} from '../evolution/build-warm-start.mjs';
+import { RESET_STAGES } from './reset-pipeline.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EVOLUTION = path.join(HERE, '..', 'evolution');
@@ -155,6 +160,10 @@ const state = {
   runtimeMsTotal: 0,
   runtimeActiveStart: null,
   runtimeLastPostAt: null,
+  // Current reset pipeline stage — null when idle, otherwise
+  // { stage, startedAt } where stage ∈ RESET_STAGES. Clients poll
+  // /reset/status to animate the reset button through stages.
+  resetStatus: null,
 };
 
 // Gap between consecutive /results POSTs beyond which the broker
@@ -384,9 +393,23 @@ function initState() {
   state.runtimeLastPostAt = null;
 
   if (state.population.length === 0) {
-    state.population = initPopulationFromWarmStart(state.config);
-    state.generation = 1;
-    savePopulation(state.generation);
+    // Fresh clone / missing warm_start_weights.json → leave
+    // population empty. The client detects `population: 0` in /stats
+    // and shows the start button as a "seed" action that runs the
+    // full reset pipeline (including warm-start training). The JSON
+    // file is intentionally not vendored; it regenerates on demand.
+    try {
+      state.population = initPopulationFromWarmStart(state.config);
+      state.generation = 1;
+      savePopulation(state.generation);
+    } catch (err) {
+      process.stderr.write(
+        `[football broker] warm-start weights unavailable (${err?.message ?? err}); ` +
+        `population empty — client must trigger seeding via /reset?hard=1\n`,
+      );
+      state.population = [];
+      state.generation = 0;
+    }
   }
   lastSavedGeneration = state.generation;
   refreshPopulationIndex();
@@ -816,12 +839,12 @@ async function handleConfigPost(req, res) {
   json(res, 200, state.config);
 }
 
-function handleReset(req, res) {
-  const url = req.url || '';
-  const qi = url.indexOf('?');
-  const hard = qi >= 0 &&
-    new URLSearchParams(url.slice(qi + 1)).get('hard') === '1';
+function setResetStage(stage) {
+  state.resetStatus = { stage, startedAt: Date.now() };
+}
 
+/** Wipe DB tables transactionally. Stage: `wiping db`. */
+function resetStageWipeDb() {
   db.exec('BEGIN');
   try {
     db.prepare('DELETE FROM brains').run();
@@ -831,8 +854,25 @@ function handleReset(req, res) {
     try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
     throw err;
   }
-  // Re-init from warm-start. Config rows are preserved. Runtime
-  // counter zeros out so the timer starts fresh with the new run.
+}
+
+/** Regenerate warm_start_weights.json from the current fallback.js
+ *  and physics.js. Stage: `training seed`. Runs the imitation
+ *  pipeline from build-warm-start.mjs in-process so the broker can
+ *  report progress without a subprocess. ~30-60 s of CPU. */
+function resetStageTrainSeed() {
+  const { inputs, actions } = collectImitationDataset(50, 1000, 1);
+  const { weights } = trainWarmStartWeights(inputs, actions, {
+    epochs: 200,
+    batchSize: 256,
+    lr: 0.005,
+    seed: 1,
+  });
+  fs.writeFileSync(WARM_START_PATH, JSON.stringify(Array.from(weights)));
+}
+
+/** Seed population + zero every counter. Stage: `seeding population`. */
+function resetStageSeedPopulation() {
   state.config = loadConfig();
   state.population = initPopulationFromWarmStart(state.config);
   state.generation = 1;
@@ -842,30 +882,78 @@ function handleReset(req, res) {
   state.runtimeMsTotal = 0;
   state.runtimeActiveStart = null;
   state.runtimeLastPostAt = null;
-  persistRuntimeMsTotal(0);
   refreshPopulationIndex();
-  // Reset is rare; flush synchronously so a crash right after reset
-  // still leaves the warm-start seed on disk.
+}
+
+/** Persist the fresh state. Stage: `saving`. */
+function resetStageSave() {
+  persistRuntimeMsTotal(0);
   savePopulation(state.generation);
   lastSavedGeneration = state.generation;
+}
+
+/** Run the full hard-reset pipeline asynchronously. Each stage
+ *  updates `state.resetStatus` before it runs so /reset/status polling
+ *  reports "in progress on X" as early as possible. */
+async function runResetPipeline() {
+  try {
+    setResetStage('wiping db');
+    resetStageWipeDb();
+
+    setResetStage('training seed');
+    // Let the event loop breathe so /reset/status poll requests get
+    // scheduling slices during the long CPU-bound training.
+    await new Promise((ok) => setImmediate(ok));
+    resetStageTrainSeed();
+
+    setResetStage('seeding population');
+    resetStageSeedPopulation();
+
+    setResetStage('saving');
+    resetStageSave();
+
+    setResetStage('restarting broker');
+    // Give the client one more poll cycle to observe the final stage
+    // before the process vanishes.
+    await new Promise((ok) => setTimeout(ok, 500));
+    try { if (db) db.close(); } catch { /* ignore */ }
+    process.exit(0);
+  } catch (err) {
+    state.resetStatus = { stage: 'error', startedAt: Date.now(), error: String(err) };
+    process.stderr.write(`[football broker] reset pipeline failed: ${err?.stack ?? err}\n`);
+  }
+}
+
+function handleReset(req, res) {
+  const url = req.url || '';
+  const qi = url.indexOf('?');
+  const hard = qi >= 0 &&
+    new URLSearchParams(url.slice(qi + 1)).get('hard') === '1';
 
   if (hard) {
-    // Nuclear reset: respond to the client, then exit the process
-    // so systemd's Restart=always starts a fresh broker. Clients can
-    // piggyback on this to guarantee every in-memory caching layer
-    // (population snapshots, fitness dirty flags, worker-side cached
-    // weights) is wiped — not just the DB.
-    const payload = JSON.stringify({ ok: true, generation: state.generation, hard: true });
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) });
-    res.end(payload, () => {
-      setTimeout(() => {
-        try { if (db) db.close(); } catch { /* ignore */ }
-        process.exit(0);
-      }, 10);
-    });
+    // Kick off the pipeline async; respond 202 immediately so the
+    // client can start polling /reset/status without blocking on
+    // the ~30-60 s warm-start training inside the reset handler.
+    if (state.resetStatus && state.resetStatus.stage !== 'error') {
+      json(res, 409, { error: 'reset already in progress', status: state.resetStatus });
+      return;
+    }
+    setResetStage(RESET_STAGES[0]);
+    runResetPipeline();  // fire-and-forget
+    json(res, 202, { ok: true, status: state.resetStatus });
     return;
   }
+
+  // Soft reset — synchronous, no warm-start regen. Preserved for
+  // test and scripted usage; the UI button uses hard=1.
+  resetStageWipeDb();
+  resetStageSeedPopulation();
+  resetStageSave();
   json(res, 200, { ok: true, generation: state.generation });
+}
+
+function handleResetStatus(req, res) {
+  json(res, 200, { status: state.resetStatus });
 }
 
 // ── Dispatcher ────────────────────────────────────────────────
@@ -886,6 +974,7 @@ async function dispatch(req, res) {
     case `GET ${ROUTE_PREFIX}/config`:       return handleConfigGet(req, res);
     case `POST ${ROUTE_PREFIX}/config`:      return handleConfigPost(req, res);
     case `POST ${ROUTE_PREFIX}/reset`:       return handleReset(req, res);
+    case `GET ${ROUTE_PREFIX}/reset/status`: return handleResetStatus(req, res);
     default:
       return json(res, 404, { error: 'not found' });
   }

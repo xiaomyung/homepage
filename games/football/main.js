@@ -31,6 +31,7 @@ import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import { createTrainingOrchestrator } from './training-orchestrator.js?v=2';
 import { computeTicks } from './frame-loop.js';
+import { renderStageLabel, RELOAD_STAGE } from './api/reset-pipeline.js';
 import {
   createScoreboard,
   createStartStopButton,
@@ -42,7 +43,7 @@ import {
   createFreeCamToggle,
   createFollowCamToggle,
   installAutoPause,
-} from './ui.js?v=2';
+} from './ui.js?v=3';
 
 const API_BASE = '/api/football';
 // Showcase match length, in milliseconds. Fixed — no longer surfaced in
@@ -95,10 +96,26 @@ async function main() {
   createFitnessGraph({ apiBase: API_BASE });
   configControls = createConfigControls();
 
+  // Shared label renderers: both reset and start (during seeding)
+  // drive the button label through the pipeline's cycling dots.
+  const renderLabel = (stage, elapsed, interval) => `[ ${renderStageLabel(stage, elapsed, interval)} ]`;
+  const renderReloading = (elapsed, interval) => `[ ${renderStageLabel(RELOAD_STAGE, elapsed, interval)} ]`;
+
   startStopBtn = createStartStopButton({
+    apiBase: API_BASE,
     onStart: () => { void orchestrator.start(configControls.getWorkerCount()); },
     onStop:  () => { void orchestrator.stop(); statsPanel?.setSimsPerSec(0); },
+    renderLabel,
+    renderReloading,
   });
+
+  // Poll /stats once on boot to detect an unseeded broker (empty
+  // population → fresh clone or deleted warm_start_weights.json).
+  // When unseeded, the start button shows "[ seed ]" and clicking it
+  // runs the full reset pipeline.
+  void fetch(`${API_BASE}/stats`).then((r) => r.ok ? r.json() : null).then((s) => {
+    if (s && s.population === 0) startStopBtn.setSeeded(false);
+  }).catch(() => { /* broker down — leave optimistic default */ });
 
   configControls.onWorkerCountChange((n) => {
     if (startStopBtn.isRunning()) {
@@ -126,7 +143,7 @@ async function main() {
   // The reset button hard-reloads the page after the broker restarts,
   // so no onReset callback is needed — the showcase rebuilds from
   // scratch on the new page load.
-  createResetButton({ apiBase: API_BASE });
+  createResetButton({ apiBase: API_BASE, renderLabel, renderReloading });
 
   installAutoPause(() => {
     if (startStopBtn.isRunning()) {

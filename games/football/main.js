@@ -30,6 +30,7 @@ import {
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import { createTrainingOrchestrator } from './training-orchestrator.js?v=2';
+import { computeTicks } from './frame-loop.js';
 import {
   createScoreboard,
   createStartStopButton,
@@ -62,6 +63,15 @@ let statsPanel = null;
 let configControls = null;
 let orchestrator = null;
 let currentMatch = null;
+// Fixed-timestep accumulator — decouples physics from rAF so the
+// showcase runs at 60 Hz regardless of the display refresh rate
+// (otherwise 120 Hz monitors see 2× speed, 144 Hz see 2.4×, etc.).
+let lastFrameTime = 0;
+let tickAccumulator = 0;
+// Hard ceiling on ticks-per-frame to avoid a "spiral of death" if the
+// tab was backgrounded or the browser stalled — we skip ahead instead
+// of catching up in slow motion.
+const MAX_TICKS_PER_FRAME = 5;
 // Reused NN input buffers — avoid per-tick allocation in buildInputs().
 const p1InputBuf = new Array(NN_INPUT_SIZE);
 const p2InputBuf = new Array(NN_INPUT_SIZE);
@@ -186,38 +196,51 @@ async function nextShowcase() {
   currentMatch = { state, p1Brain, p2Brain, p1Action: null, p2Action: null };
 }
 
-function frame() {
+function frame(now) {
   requestAnimationFrame(frame);
-  if (!currentMatch) return;
+  if (!currentMatch) { lastFrameTime = now; return; }
   const { state, p1Brain, p2Brain } = currentMatch;
 
   const matchDurationTicks = Math.ceil(SHOWCASE_MATCH_MS / TICK_MS);
 
   if (state.matchOver || state.tick >= matchDurationTicks || state.tick > MAX_SHOWCASE_TICKS) {
     nextShowcase();
+    lastFrameTime = now;
+    tickAccumulator = 0;
     return;
   }
 
-  if (state.pauseState !== null) {
-    physicsTick(state, null, null);
-    renderer.renderState(state);
-    return;
-  }
+  // Advance the physics by as many fixed ticks as real time has
+  // elapsed since the last frame. On a 60 Hz display that's ~1 tick
+  // per frame; on 120 Hz it's ~0.5 (so we tick every other frame)
+  // and on 30 Hz it's ~2. Guarantees the showcase plays at the same
+  // wall-clock speed everywhere.
+  if (lastFrameTime === 0) lastFrameTime = now;
+  const result = computeTicks(now - lastFrameTime, tickAccumulator, TICK_MS, MAX_TICKS_PER_FRAME);
+  lastFrameTime = now;
+  tickAccumulator = result.accumulator;
+  let ticksThisFrame = result.ticks;
 
-  // Only recompute actions every NN_ACTION_STRIDE ticks — the
-  // in-between ticks reuse the previous decision. Same rule applied
-  // headless in worker.js so the trained policy runs at the exact
-  // cadence it was selected against.
-  if (state.tick % NN_ACTION_STRIDE === 0) {
-    currentMatch.p1Action = p1Brain
-      ? p1Brain.forward(buildInputs(state, 'p1', p1InputBuf))
-      : fallbackAction(state, 'p1');
-    currentMatch.p2Action = p2Brain
-      ? p2Brain.forward(buildInputs(state, 'p2', p2InputBuf))
-      : fallbackAction(state, 'p2');
+  while (ticksThisFrame-- > 0) {
+    if (state.matchOver) break;
+    if (state.pauseState !== null) {
+      physicsTick(state, null, null);
+      continue;
+    }
+    // Only recompute actions every NN_ACTION_STRIDE ticks — the
+    // in-between ticks reuse the previous decision. Same rule
+    // applied headless in worker.js so the trained policy runs at
+    // the exact cadence it was selected against.
+    if (state.tick % NN_ACTION_STRIDE === 0) {
+      currentMatch.p1Action = p1Brain
+        ? p1Brain.forward(buildInputs(state, 'p1', p1InputBuf))
+        : fallbackAction(state, 'p1');
+      currentMatch.p2Action = p2Brain
+        ? p2Brain.forward(buildInputs(state, 'p2', p2InputBuf))
+        : fallbackAction(state, 'p2');
+    }
+    physicsTick(state, currentMatch.p1Action, currentMatch.p2Action);
   }
-
-  physicsTick(state, currentMatch.p1Action, currentMatch.p2Action);
 
   scoreboard.setScore(state.scoreL, state.scoreR);
   scoreboard.setTimer(

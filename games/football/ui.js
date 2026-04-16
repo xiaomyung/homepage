@@ -55,16 +55,38 @@ export function createScoreboard() {
 
 /* ── Start/Stop button ──────────────────────────────────── */
 
-export function createStartStopButton({ onStart, onStop }) {
+/**
+ * The start button has three states:
+ *   - unseeded:  broker has no population (fresh clone / deleted
+ *                warm_start_weights.json) → clicking kicks off the
+ *                full reset pipeline with cycling-dots progress, then
+ *                hard-reloads the page
+ *   - idle:      seeded, not running → clicking spawns workers
+ *   - running:   workers spawned → clicking stops them
+ */
+export function createStartStopButton({ apiBase, onStart, onStop, renderLabel, renderReloading }) {
   const btn = document.getElementById('game-start-btn');
   let running = false;
+  let seeded = true;  // optimistic until first /stats poll says otherwise
 
   const render = () => {
+    if (!seeded) {
+      btn.textContent = '[ seed ]';
+      btn.dataset.running = 'false';
+      btn.title = 'Population is empty. Click to train warm-start seed and initialize.';
+      return;
+    }
     btn.textContent = running ? '[ stop ]' : '[ start ]';
     btn.dataset.running = running ? 'true' : 'false';
+    btn.title = '';
   };
 
-  btn.addEventListener('click', () => {
+  btn.addEventListener('click', async () => {
+    if (!seeded) {
+      btn.disabled = true;
+      await runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloading });
+      return;  // page reloads on completion
+    }
     if (running) {
       running = false;
       render();
@@ -84,8 +106,16 @@ export function createStartStopButton({ onStart, onStop }) {
       running = next;
       render();
     },
+    setSeeded(next) {
+      if (next === seeded) return;
+      seeded = next;
+      render();
+    },
     isRunning() {
       return running;
+    },
+    isSeeded() {
+      return seeded;
     },
   };
 }
@@ -468,44 +498,102 @@ export function createFollowCamToggle({ renderer, onChange }) {
 }
 
 /**
- * Wires the reset button to hard-nuke the training run: POST
- * /reset?hard=1, which tells the broker to wipe the DB, flush the
- * warm-start seed, and then self-exit so systemd restarts it. After
- * the broker has restarted the client hard-reloads the tab with a
- * cache-bust query string so every JS/WASM/worker file is re-fetched
- * from Caddy. End result: one click wipes population, broker state,
- * caches, and every open tab's in-RAM training state.
+ * Drive a button's label through the broker's reset pipeline stages.
+ * Called by both the reset button and the start button (when the
+ * population is empty on a fresh clone). Responsibilities:
+ *
+ *   1. POST /reset?hard=1 to kick off the broker's async pipeline.
+ *   2. Poll /reset/status every ~300 ms; update the button label to
+ *      "<stage> ." / ".." / "..." cycling on a fixed cadence so the
+ *      user sees progress regardless of whether the stage is instant
+ *      (wiping db) or a slow CPU run (training seed).
+ *   3. When polling fails (broker exited for systemd to respawn), flip
+ *      the label to "reloading page ..." and wait for /stats to
+ *      respond 200 again — that's the respawned broker with a fresh
+ *      population loaded.
+ *   4. Hard-reload the page with a cache-bust query string so every
+ *      JS/worker file is re-fetched from Caddy.
  */
-export function createResetButton({ apiBase }) {
-  const btn = document.getElementById('game-reset-btn');
-  btn.addEventListener('click', async () => {
-    if (!confirm('Nuke the training run? Broker restarts and the page reloads with a cache-bust.')) return;
-    try {
-      await fetch(`${apiBase}/reset?hard=1`, { method: 'POST' });
-    } catch {
-      /* ignore — broker is expected to exit mid-response */
-    }
-    // Wait a tick for systemd to respawn the service, then reload.
-    // Poll /stats briefly so the new page comes back to a live broker
-    // instead of a 502.
-    await waitForBroker(apiBase, 4000);
-    const url = new URL(window.location.href);
-    url.searchParams.set('_cb', Date.now().toString(36));
-    window.location.replace(url.toString());
+async function runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloading }) {
+  try {
+    const r = await fetch(`${apiBase}/reset?hard=1`, { method: 'POST' });
+    if (!r.ok && r.status !== 202) throw new Error(`reset kickoff: ${r.status}`);
+  } catch {
+    /* Broker may have already exited mid-response — continue to polling. */
+  }
+  // Stage polling loop — update label at a fixed cadence regardless
+  // of whether we just polled this tick, so dot animation stays smooth.
+  const stageStartedAt = new Map();
+  const pollIntervalMs = 300;
+  const dotIntervalMs = 400;
+  let currentStage = null;
+  let brokerDown = false;
+  let lastPoll = 0;
+  const loopStart = Date.now();
+  // Animation + polling run off one setInterval so the two never drift.
+  return new Promise((resolve) => {
+    const timer = setInterval(() => {
+      const now = Date.now();
+      // Poll at pollIntervalMs; animate every tick.
+      if (now - lastPoll >= pollIntervalMs) {
+        lastPoll = now;
+        fetch(`${apiBase}/reset/status`, { cache: 'no-store' })
+          .then((res) => {
+            if (!res.ok) throw new Error(`${res.status}`);
+            return res.json();
+          })
+          .then(({ status }) => {
+            if (!status) return;
+            if (status.stage !== currentStage) {
+              currentStage = status.stage;
+              stageStartedAt.set(currentStage, now);
+            }
+          })
+          .catch(() => {
+            // Broker is down (expected after "restarting broker" stage).
+            brokerDown = true;
+          });
+      }
+      // Animate + render.
+      if (brokerDown) {
+        // Broker exited — show reloading state and test whether it's back.
+        const elapsed = now - loopStart;
+        btn.textContent = renderReloading(elapsed, dotIntervalMs);
+        fetch(`${apiBase}/stats`, { cache: 'no-store' })
+          .then((res) => {
+            if (!res.ok) return;
+            clearInterval(timer);
+            const url = new URL(window.location.href);
+            url.searchParams.set('_cb', Date.now().toString(36));
+            window.location.replace(url.toString());
+            resolve();
+          })
+          .catch(() => { /* still down, keep waiting */ });
+      } else if (currentStage) {
+        const elapsed = now - (stageStartedAt.get(currentStage) ?? now);
+        btn.textContent = renderLabel(currentStage, elapsed, dotIntervalMs);
+      }
+    }, 100);
   });
 }
 
-async function waitForBroker(apiBase, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const r = await fetch(`${apiBase}/stats`, { cache: 'no-store' });
-      if (r.ok) return true;
-    } catch { /* still down */ }
-    await new Promise((res) => setTimeout(res, 200));
-  }
-  return false;
+export function createResetButton({ apiBase, renderLabel, renderReloading, onStart }) {
+  const btn = document.getElementById('game-reset-btn');
+  btn.addEventListener('click', async () => {
+    if (!confirm('Nuke the training run? Broker restarts and the page reloads with a cache-bust.')) return;
+    btn.disabled = true;
+    onStart?.();
+    await runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloading });
+  });
 }
+
+/**
+ * Expose the shared pipeline runner so the start button can invoke it
+ * when the broker has an empty population (fresh clone / deleted
+ * weights file). The UI layer handles which button to drive; this
+ * module owns the polling + label cadence.
+ */
+export { runResetPipelineWithProgress };
 
 /* ── Auto-pause gate ────────────────────────────────────── */
 

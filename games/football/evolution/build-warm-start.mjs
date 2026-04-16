@@ -47,7 +47,7 @@ const LAYER_OFFSETS = (() => {
 
 /* ── Dataset collection ───────────────────────────────────────── */
 
-function collectImitationDataset(numMatches, ticksPerMatch, seed) {
+export function collectImitationDataset(numMatches, ticksPerMatch, seed) {
   const inputs = [];
   const actions = [];
   const p1In = new Array(NN_INPUT_SIZE);
@@ -201,7 +201,7 @@ function heInit(rng) {
   return weights;
 }
 
-function trainWarmStartWeights(inputs, actions, { epochs, batchSize, lr, seed }) {
+export function trainWarmStartWeights(inputs, actions, { epochs, batchSize, lr, seed, onEpoch }) {
   const rng = createSeededRng(seed);
   const weights = heInit(rng);
   const m = new Float64Array(WEIGHT_COUNT);
@@ -263,7 +263,9 @@ function trainWarmStartWeights(inputs, actions, { epochs, batchSize, lr, seed })
       epochLoss += batchLoss * invBs;
       nBatches++;
     }
-    history.push(epochLoss / nBatches);
+    const loss = epochLoss / nBatches;
+    history.push(loss);
+    if (onEpoch) onEpoch(epoch + 1, epochs, loss);
   }
   return { weights, history };
 }

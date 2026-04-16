@@ -1,126 +1,97 @@
 /**
  * Unit tests for the client-side reset-pipeline state machine.
  *
- * Ground covered: every transition between POLLING / RELOADING / DONE
- * under every combination of (HTTP status × network error × response
- * body shape) that the UI actually hits in the wild.
- *
- * This is the regression shield for the bug where the pre-PR#33
- * broker's 404 on /reset/status caused the client to reload instantly
- * without showing any progress.
+ * The pipeline runs training in the browser: a Web Worker trains
+ * warm-start weights, posts messages with progress, and returns the
+ * trained weights. The client then POSTs the weights to the broker
+ * and polls /stats while the broker respawns. These tests pin the
+ * pure decision logic (worker message classification + HTTP response
+ * → next phase) without spinning up a worker or a broker.
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  PHASE_POLLING,
+  PHASE_TRAINING,
   PHASE_RELOADING,
   PHASE_DONE,
+  classifyWorkerMessage,
   phaseAfterPost,
-  phaseAfterStatusPoll,
   phaseAfterStatsPoll,
 } from '../api/reset-client.js';
 
-/* ── POST /reset?hard=1 response classification ───────────── */
+/* ── Worker message classification ────────────────────────── */
 
-test('phaseAfterPost: 202 → POLLING (new broker kicked off async)', () => {
-  assert.equal(phaseAfterPost({ ok: true, status: 202, networkError: false }), PHASE_POLLING);
+test('classifyWorkerMessage: train progress → "training seed" stage', () => {
+  const r = classifyWorkerMessage({ type: 'progress', phase: 'train', current: 42, total: 200 });
+  assert.deepEqual(r, { kind: 'progress', stage: 'training seed', current: 42, total: 200 });
 });
 
-test('phaseAfterPost: 200 → RELOADING (old broker did sync work and will exit)', () => {
-  // Regression: pre-PR#33 broker responded 200 after the sync reset
-  // and then called process.exit. Falling through to RELOADING and
-  // polling /stats is the correct fallback.
+test('classifyWorkerMessage: collect progress → "collecting data" stage', () => {
+  const r = classifyWorkerMessage({ type: 'progress', phase: 'collect', current: 1, total: 1 });
+  assert.deepEqual(r, { kind: 'progress', stage: 'collecting data', current: 1, total: 1 });
+});
+
+test('classifyWorkerMessage: done message carries weights through', () => {
+  const weights = new ArrayBuffer(100);
+  const r = classifyWorkerMessage({ type: 'done', weights, finalLoss: 0.05 });
+  assert.equal(r.kind, 'done');
+  assert.equal(r.weights, weights);
+});
+
+test('classifyWorkerMessage: error message carries description', () => {
+  const r = classifyWorkerMessage({ type: 'error', message: 'oh no' });
+  assert.deepEqual(r, { kind: 'error', message: 'oh no' });
+});
+
+test('classifyWorkerMessage: error without message gets a default', () => {
+  const r = classifyWorkerMessage({ type: 'error' });
+  assert.equal(r.kind, 'error');
+  assert.ok(r.message && r.message.length > 0);
+});
+
+test('classifyWorkerMessage: unknown type → ignore', () => {
+  assert.equal(classifyWorkerMessage({ type: 'bogus' }).kind, 'ignore');
+  assert.equal(classifyWorkerMessage({}).kind, 'ignore');
+  assert.equal(classifyWorkerMessage(null).kind, 'ignore');
+  assert.equal(classifyWorkerMessage('string').kind, 'ignore');
+});
+
+test('classifyWorkerMessage: progress with non-numeric counts → defaults', () => {
+  const r = classifyWorkerMessage({ type: 'progress', phase: 'train', current: 'x', total: 'y' });
+  assert.equal(r.current, 0);
+  assert.equal(r.total, 1);
+});
+
+/* ── POST /reset response classification ───────────────────── */
+
+test('phaseAfterPost: any outcome → RELOADING (always reload to clear client state)', () => {
+  // 200 success: broker will have exited for systemd respawn
   assert.equal(phaseAfterPost({ ok: true, status: 200, networkError: false }), PHASE_RELOADING);
-});
-
-test('phaseAfterPost: 4xx/5xx → RELOADING (give up on progress, still wait for broker)', () => {
-  assert.equal(phaseAfterPost({ ok: false, status: 409, networkError: false }), PHASE_RELOADING);
+  // 4xx/5xx: still reload to recover a clean client state
   assert.equal(phaseAfterPost({ ok: false, status: 500, networkError: false }), PHASE_RELOADING);
-});
-
-test('phaseAfterPost: network error → RELOADING (broker exited mid-response)', () => {
+  assert.equal(phaseAfterPost({ ok: false, status: 400, networkError: false }), PHASE_RELOADING);
+  // Network error (broker exited mid-response — expected for hard=1)
   assert.equal(phaseAfterPost({ ok: false, status: 0, networkError: true }), PHASE_RELOADING);
 });
 
-/* ── /reset/status response classification ────────────────── */
+/* ── /stats poll while reloading ──────────────────────────── */
 
-test('phaseAfterStatusPoll: 200 with stage → POLLING + stage update', () => {
-  const result = phaseAfterStatusPoll({
-    ok: true, status: 200, networkError: false,
-    body: { status: { stage: 'training seed', startedAt: 1000 } },
-  });
-  assert.deepEqual(result, { phase: PHASE_POLLING, stage: 'training seed', progress: null });
-});
-
-test('phaseAfterStatusPoll: 200 with stage + progress → passes progress through', () => {
-  const result = phaseAfterStatusPoll({
-    ok: true, status: 200, networkError: false,
-    body: { status: { stage: 'training seed', startedAt: 1000, progress: { current: 42, total: 200 } } },
-  });
-  assert.deepEqual(result, {
-    phase: PHASE_POLLING,
-    stage: 'training seed',
-    progress: { current: 42, total: 200 },
-  });
-});
-
-test('phaseAfterStatusPoll: 200 with null status → POLLING (stay, no update)', () => {
-  // Happens momentarily before the async pipeline sets the first stage,
-  // or between pipeline completion and broker exit.
-  const result = phaseAfterStatusPoll({
-    ok: true, status: 200, networkError: false, body: { status: null },
-  });
-  assert.equal(result, PHASE_POLLING);
-});
-
-test('phaseAfterStatusPoll: 404 → RELOADING (BUG REGRESSION — old broker fallback)', () => {
-  // Pre-PR#33 brokers don't have /reset/status. Previously the client
-  // flipped brokerDown on 404, then polled /stats which was still up,
-  // then reloaded instantly with no progress shown. Now 404 drops
-  // directly to RELOADING which is honest about what's happening.
-  const result = phaseAfterStatusPoll({
-    ok: false, status: 404, networkError: false, body: null,
-  });
-  assert.equal(result, PHASE_RELOADING);
-});
-
-test('phaseAfterStatusPoll: network error → RELOADING (broker exited for respawn)', () => {
-  const result = phaseAfterStatusPoll({
-    ok: false, status: 0, networkError: true, body: null,
-  });
-  assert.equal(result, PHASE_RELOADING);
-});
-
-test('phaseAfterStatusPoll: transient 5xx → POLLING (don\'t give up on one flaky response)', () => {
-  const result = phaseAfterStatusPoll({
-    ok: false, status: 503, networkError: false, body: null,
-  });
-  assert.equal(result, PHASE_POLLING);
-});
-
-test('phaseAfterStatusPoll: malformed body → POLLING (stay, wait for next poll)', () => {
-  // Hand-crafted weird responses should not crash the animation.
-  for (const body of [null, {}, { status: {} }, { status: 'not-an-object' }]) {
-    const result = phaseAfterStatusPoll({
-      ok: true, status: 200, networkError: false, body,
-    });
-    assert.equal(result, PHASE_POLLING, `body=${JSON.stringify(body)}`);
-  }
-});
-
-/* ── /stats response classification (while RELOADING) ─────── */
-
-test('phaseAfterStatsPoll: 200 → DONE (respawned broker is ready)', () => {
+test('phaseAfterStatsPoll: 200 → DONE (respawned broker ready)', () => {
   assert.equal(phaseAfterStatsPoll({ ok: true, networkError: false }), PHASE_DONE);
 });
 
-test('phaseAfterStatsPoll: network error → stay RELOADING (still mid-respawn)', () => {
+test('phaseAfterStatsPoll: network error → stay RELOADING (still respawning)', () => {
   assert.equal(phaseAfterStatsPoll({ ok: false, networkError: true }), PHASE_RELOADING);
 });
 
-test('phaseAfterStatsPoll: HTTP error → stay RELOADING (not ready yet)', () => {
-  // E.g. during a brief window where Caddy can connect but the broker
-  // hasn't finished binding the socket.
+test('phaseAfterStatsPoll: HTTP error → stay RELOADING (broker not ready yet)', () => {
   assert.equal(phaseAfterStatsPoll({ ok: false, networkError: false }), PHASE_RELOADING);
+});
+
+/* ── Phase constants are distinct ─────────────────────────── */
+
+test('phase constants are mutually distinct', () => {
+  const set = new Set([PHASE_TRAINING, PHASE_RELOADING, PHASE_DONE]);
+  assert.equal(set.size, 3);
 });

@@ -1,40 +1,21 @@
 /**
- * Reset pipeline state machine — pure definitions + helpers.
+ * Reset pipeline rendering helpers — pure, shared between the reset
+ * and start buttons.
  *
- * The broker runs the actual work (DB wipe, warm-start training,
- * population re-seed, save, exit) and publishes the current stage via
- * `/reset/status`. The client polls that endpoint and animates the
- * reset button text. Both sides share the stage list from here.
+ * Since training moved to a Web Worker, the broker no longer publishes
+ * pipeline stages; the client drives stage labels from worker progress
+ * messages directly. This module keeps the label-rendering primitives
+ * that both the training phase and the reload phase use.
  */
 
-/**
- * Ordered list of stages a hard reset passes through. Client-visible
- * labels — keep short and lowercase so they fit the bracket-text
- * aesthetic ("[ wiping db . ]").
- *
- * `restarting broker` is the final broker-reported stage; the client
- * transitions to `reloading page` locally once polling detects the
- * broker has respawned and responded to /stats again.
- */
-export const RESET_STAGES = [
-  'wiping db',
-  'training seed',
-  'seeding population',
-  'saving',
-  'restarting broker',
-];
-
+/** Label used while the client is waiting for the broker to respawn
+ *  after a hard reset. */
 export const RELOAD_STAGE = 'reloading page';
 
-/** True if `stage` is a valid server-reported stage name. */
-export function isValidStage(stage) {
-  return RESET_STAGES.includes(stage);
-}
-
 /**
- * Number of dots to show at `elapsedMs` since the stage started,
- * cycling 1 → 2 → 3 → 1 on `intervalMs` ticks. Used by the button
- * text animation so progress looks alive even for instant stages.
+ * Number of dots to show at `elapsedMs` since a stage started, cycling
+ * 1 → 2 → 3 → 1 on `intervalMs` ticks. Keeps the button looking alive
+ * when the stage has no numeric sub-progress (reloading, collecting).
  */
 export function cyclingDotCount(elapsedMs, intervalMs = 400) {
   if (!(elapsedMs >= 0)) return 1;

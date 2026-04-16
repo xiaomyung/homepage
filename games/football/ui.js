@@ -498,90 +498,103 @@ export function createFollowCamToggle({ renderer, onChange }) {
 }
 
 import {
-  PHASE_POLLING,
+  PHASE_TRAINING,
   PHASE_RELOADING,
   PHASE_DONE,
+  classifyWorkerMessage,
   phaseAfterPost,
-  phaseAfterStatusPoll,
   phaseAfterStatsPoll,
 } from './api/reset-client.js';
 
 /**
- * Drive a button's label through the broker's reset pipeline stages.
- * Called by both the reset button and the start button (when the
- * population is empty on a fresh clone). Delegates all phase-
- * transition decisions to api/reset-client.js so edge cases (wrong
- * broker version, transient errors, network loss during respawn) have
- * unit-test coverage.
+ * Drive a button's label through the full reset pipeline. Used by
+ * both the reset button and the start button (when the broker has
+ * population=0 on a fresh install).
+ *
+ * Flow:
+ *   1. Spawn `warm-start-worker.js` Web Worker
+ *   2. Worker runs imitation training (~1 minute client-side),
+ *      streams progress messages back
+ *   3. On worker 'done': POST weights to /reset?hard=1
+ *   4. Broker wipes, seeds from the POSTed weights, exits → systemd respawn
+ *   5. Client polls /stats waiting for the respawned broker
+ *   6. Cache-bust reload
+ *
+ * Stage decisions + cross-runtime edge cases are in api/reset-client.js
+ * as pure functions so they're unit-testable without a worker or a
+ * broker.
  */
-async function runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloading }) {
-  // --- POST kickoff ---
-  let phase;
-  try {
-    const r = await fetch(`${apiBase}/reset?hard=1`, { method: 'POST' });
-    phase = phaseAfterPost({ ok: r.ok, status: r.status, networkError: false });
-  } catch {
-    phase = phaseAfterPost({ ok: false, status: 0, networkError: true });
-  }
-
+function runResetPipelineWithProgress(apiBase, btn, { renderLabel, renderReloading }) {
   const stageStartedAt = new Map();
   const pollIntervalMs = 300;
   const dotIntervalMs = 400;
-  let currentStage = null;
+  const reloadingStart = () => Date.now();
+  let phase = PHASE_TRAINING;
+  let currentStage = 'starting';
   let currentProgress = null;
-  const loopStart = Date.now();
+  let reloadingStartedAt = 0;
   let lastPoll = 0;
+  stageStartedAt.set(currentStage, Date.now());
+
+  const worker = new Worker(
+    new URL('../warm-start-worker.js', import.meta.url),
+    { type: 'module' },
+  );
+  worker.addEventListener('message', async (ev) => {
+    const classified = classifyWorkerMessage(ev.data);
+    if (classified.kind === 'progress') {
+      if (classified.stage !== currentStage) {
+        currentStage = classified.stage;
+        stageStartedAt.set(currentStage, Date.now());
+      }
+      currentProgress = { current: classified.current, total: classified.total };
+    } else if (classified.kind === 'done') {
+      worker.terminate();
+      // POST weights; broker exits on hard=1.
+      try {
+        const r = await fetch(`${apiBase}/reset?hard=1`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ weights: Array.from(new Float64Array(classified.weights)) }),
+        });
+        phase = phaseAfterPost({ ok: r.ok, status: r.status, networkError: false });
+      } catch {
+        phase = phaseAfterPost({ ok: false, status: 0, networkError: true });
+      }
+      reloadingStartedAt = reloadingStart();
+    } else if (classified.kind === 'error') {
+      // Worker failed; fall through to RELOADING so the page reloads
+      // and the user can retry.
+      worker.terminate();
+      phase = PHASE_RELOADING;
+      reloadingStartedAt = reloadingStart();
+    }
+  });
+  worker.addEventListener('error', () => {
+    worker.terminate();
+    phase = PHASE_RELOADING;
+    reloadingStartedAt = reloadingStart();
+  });
+  worker.postMessage({ type: 'train', seed: 1 });
 
   return new Promise((resolve) => {
     const timer = setInterval(() => {
       const now = Date.now();
-      const sinceLastPoll = now - lastPoll;
 
-      if (phase === PHASE_POLLING) {
-        if (currentStage) {
-          const elapsed = now - (stageStartedAt.get(currentStage) ?? now);
-          btn.textContent = renderLabel(currentStage, elapsed, dotIntervalMs, currentProgress);
-        }
-        if (sinceLastPoll >= pollIntervalMs) {
-          lastPoll = now;
-          fetch(`${apiBase}/reset/status`, { cache: 'no-store' })
-            .then(async (res) => {
-              const body = res.ok ? await res.json().catch(() => null) : null;
-              const result = phaseAfterStatusPoll({
-                ok: res.ok, status: res.status, body, networkError: false,
-              });
-              if (typeof result === 'string') {
-                phase = result;
-              } else {
-                phase = result.phase;
-                if (result.stage && result.stage !== currentStage) {
-                  currentStage = result.stage;
-                  stageStartedAt.set(currentStage, Date.now());
-                }
-                currentProgress = result.progress ?? null;
-              }
-            })
-            .catch(() => {
-              phase = phaseAfterStatusPoll({
-                ok: false, status: 0, body: null, networkError: true,
-              });
-            });
-        }
+      if (phase === PHASE_TRAINING) {
+        const elapsed = now - (stageStartedAt.get(currentStage) ?? now);
+        btn.textContent = renderLabel(currentStage, elapsed, dotIntervalMs, currentProgress);
       } else if (phase === PHASE_RELOADING) {
-        const elapsed = now - loopStart;
+        const elapsed = now - reloadingStartedAt;
         btn.textContent = renderReloading(elapsed, dotIntervalMs);
-        if (sinceLastPoll >= pollIntervalMs) {
+        if (now - lastPoll >= pollIntervalMs) {
           lastPoll = now;
           fetch(`${apiBase}/stats`, { cache: 'no-store' })
             .then((res) => {
-              phase = phaseAfterStatsPoll({
-                ok: res.ok, networkError: false,
-              });
+              phase = phaseAfterStatsPoll({ ok: res.ok, networkError: false });
             })
             .catch(() => {
-              phase = phaseAfterStatsPoll({
-                ok: false, networkError: true,
-              });
+              phase = phaseAfterStatsPoll({ ok: false, networkError: true });
             });
         }
       } else if (phase === PHASE_DONE) {

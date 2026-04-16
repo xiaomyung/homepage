@@ -30,7 +30,7 @@ import {
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import { createTrainingOrchestrator } from './training-orchestrator.js?v=2';
-import { computeTicks } from './frame-loop.js';
+import { computeTicks } from './frame-loop.js?v=2';
 import { renderStageLabel } from './api/reset-pipeline.js';
 import {
   createScoreboard,

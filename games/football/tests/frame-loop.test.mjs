@@ -70,16 +70,39 @@ test('30 Hz display (half-rate) still yields 60 Hz of ticks', () => {
   assert.equal(total, 62);
 });
 
-test('long pause is capped at maxTicks (no spiral of death)', () => {
-  // Tab backgrounded for 10 seconds — would require 625 ticks to
-  // catch up. The cap prevents the browser from locking up.
+test('long pause is capped at maxTicks AND accumulator is reset', () => {
+  // Tab backgrounded for 10 s — would require 625 ticks to catch up.
+  // The cap prevents the browser from locking up; the reset prevents
+  // a sustained catch-up speedup in the frames after resume.
   const r = computeTicks(10_000, 0, TICK_MS, MAX);
   assert.equal(r.ticks, MAX);
-  // Leftover accumulator is NOT 10000 - 80 — we've intentionally
-  // dropped the overage rather than carry it forward.
-  // (Actually the math carries it forward; that's a judgement call.
-  // Verify the current behaviour so a future change is intentional.)
-  assert.equal(r.accumulator, 10_000 - MAX * TICK_MS);
+  assert.equal(r.accumulator, 0);
+});
+
+test('tab-switch regression: no speedup after resuming from a long pause', () => {
+  // Simulate: 60 s hidden → one big resume frame → 60 normal frames.
+  // Before the accumulator-reset fix, the 60 s elapsed carried forward
+  // as a ~59920 ms backlog and forced maxTicks every frame for ~750
+  // frames (a visible ~3× speedup for ~12 s at 60 Hz). With the reset,
+  // normal cadence resumes immediately.
+  const frameMs = 1000 / 60;
+  let acc = 0;
+  let total = 0;
+
+  const resume = computeTicks(60_000, acc, TICK_MS, MAX);
+  total += resume.ticks;
+  acc = resume.accumulator;
+  assert.equal(resume.ticks, MAX);
+  assert.equal(acc, 0);
+
+  for (let i = 0; i < 60; i++) {
+    const r = computeTicks(frameMs, acc, TICK_MS, MAX);
+    total += r.ticks;
+    acc = r.accumulator;
+  }
+  // Resume (MAX) + 60 normal 60-Hz frames (62) = 67. NOT 5 × 61 = 305
+  // (the pre-fix runaway).
+  assert.equal(total, MAX + 62);
 });
 
 test('accumulator carries fractional time across frames', () => {

@@ -130,8 +130,9 @@ export function createOptionsToggle() {
  * Returns a handle with a `setSimsPerSec(value)` method so the training
  * worker can feed sim throughput without going through the API.
  */
-export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
+export function createStatsPanel({ apiBase, pollIntervalMs = 2000, getRuntimeMs = null }) {
   const el = {
+    runtime: document.getElementById('stat-runtime'),
     gen: document.getElementById('stat-gen'),
     avg: document.getElementById('stat-avg'),
     top: document.getElementById('stat-top'),
@@ -144,6 +145,27 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
 
   let simsPerSec = 0;
   let spsDecay = 0; // ticks since the last worker report; decays display to 0
+
+  /** Format a millisecond duration as a compact H:MM:SS (or M:SS below
+   *  one hour) so the runtime cell stays narrow. */
+  function formatRuntime(ms) {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const s = total % 60;
+    const m = Math.floor(total / 60) % 60;
+    const h = Math.floor(total / 3600);
+    const ss = s.toString().padStart(2, '0');
+    if (h > 0) {
+      const mm = m.toString().padStart(2, '0');
+      return `${h}:${mm}:${ss}`;
+    }
+    return `${m}:${ss}`;
+  }
+
+  function updateRuntimeDisplay() {
+    if (!el.runtime) return;
+    const ms = getRuntimeMs ? getRuntimeMs() : 0;
+    el.runtime.textContent = formatRuntime(ms);
+  }
 
   async function pollStats() {
     try {
@@ -181,9 +203,13 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
 
   pollStats();
   pollConfig();
+  updateRuntimeDisplay();
   setInterval(pollStats, pollIntervalMs);
   setInterval(pollConfig, pollIntervalMs * 4); // config changes less often
   setInterval(updateSpsDisplay, pollIntervalMs);
+  // Runtime updates every second so the user sees it tick live while
+  // training is running — cheap because it reads a closure-local ms.
+  setInterval(updateRuntimeDisplay, 1000);
 
   return {
     setSimsPerSec(value) {

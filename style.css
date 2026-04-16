@@ -421,7 +421,7 @@ body {
 
 .game-stats {
   display: grid;
-  grid-template-columns: auto 1fr auto 1fr;
+  grid-template-columns: auto 1fr auto 1fr auto 1fr;
   column-gap: 0.9rem;
   row-gap: 0.05rem;
   font-size: 0.7rem;

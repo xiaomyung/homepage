@@ -74,15 +74,20 @@ async function main() {
   window.__footballRenderer = renderer;
 
   scoreboard = createScoreboard();
-  statsPanel = createStatsPanel({ apiBase: API_BASE });
-  createFitnessGraph({ apiBase: API_BASE });
-  configControls = createConfigControls();
-
   orchestrator = createTrainingOrchestrator({
     apiBase: API_BASE,
     workerUrl: new URL('./worker.js?v=10', import.meta.url),
     onStats: ({ simsPerSec }) => statsPanel?.setSimsPerSec(simsPerSec),
   });
+  // Stats panel reads runtime directly from the orchestrator so the
+  // "runtime" cell reflects actual training seconds, not page-open
+  // seconds or idle time.
+  statsPanel = createStatsPanel({
+    apiBase: API_BASE,
+    getRuntimeMs: () => orchestrator.getRuntimeMs(),
+  });
+  createFitnessGraph({ apiBase: API_BASE });
+  configControls = createConfigControls();
 
   startStopBtn = createStartStopButton({
     onStart: () => { void orchestrator.start(configControls.getWorkerCount()); },

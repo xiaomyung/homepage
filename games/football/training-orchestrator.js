@@ -68,14 +68,6 @@ export function createTrainingOrchestrator({
   let simsSinceReport = 0;
   let reportStart = 0;
 
-  // Cumulative *actively running* time in milliseconds. Counts only
-  // while start() is in effect — not page-open time, not tab-hidden
-  // time, not idle-between-runs time. `runStartedAt` is the Date.now()
-  // at which the current run began, or null when stopped. Stop() folds
-  // the elapsed window into `accumulatedMs` and clears the start.
-  let accumulatedMs = 0;
-  let runStartedAt = null;
-
   async function start(workerCount) {
     if (running) await stop();
     running = true;
@@ -99,17 +91,12 @@ export function createTrainingOrchestrator({
 
     reportStart = Date.now();
     simsSinceReport = 0;
-    runStartedAt = Date.now();
 
     syncTimer = setInterval(() => { void syncPending(); }, syncIntervalMs);
   }
 
   async function stop() {
     running = false;
-    if (runStartedAt !== null) {
-      accumulatedMs += Date.now() - runStartedAt;
-      runStartedAt = null;
-    }
     if (syncTimer !== null) {
       clearInterval(syncTimer);
       syncTimer = null;
@@ -123,15 +110,6 @@ export function createTrainingOrchestrator({
     try { await syncPending({ final: true }); } catch { /* ignore */ }
     pending.length = 0;
     inFlight = null;
-  }
-
-  /** Total milliseconds the orchestrator has been actively running
-   *  since creation. Excludes idle-between-runs and tab-hidden time
-   *  (installAutoPause stops the orchestrator, so that pause path
-   *  folds elapsed into `accumulatedMs` and stops accruing). */
-  function getRuntimeMs() {
-    if (runStartedAt === null) return accumulatedMs;
-    return accumulatedMs + (Date.now() - runStartedAt);
   }
 
   function onWorkerMessage(entry, ev) {
@@ -312,8 +290,6 @@ export function createTrainingOrchestrator({
     /** Current in-memory counts snapshot — tests + UI can inspect. */
     getLocalCounts: () => new Map(localCounts),
     getGeneration: () => cachedGeneration,
-    /** Total ms the orchestrator has been actively running. */
-    getRuntimeMs,
     /** True iff start() is currently in effect (not stopped/paused). */
     isRunning: () => running,
   };

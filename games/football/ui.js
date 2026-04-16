@@ -130,7 +130,7 @@ export function createOptionsToggle() {
  * Returns a handle with a `setSimsPerSec(value)` method so the training
  * worker can feed sim throughput without going through the API.
  */
-export function createStatsPanel({ apiBase, pollIntervalMs = 2000, getRuntimeMs = null }) {
+export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
   const el = {
     runtime: document.getElementById('stat-runtime'),
     gen: document.getElementById('stat-gen'),
@@ -161,12 +161,6 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000, getRuntimeMs 
     return `${m}:${ss}`;
   }
 
-  function updateRuntimeDisplay() {
-    if (!el.runtime) return;
-    const ms = getRuntimeMs ? getRuntimeMs() : 0;
-    el.runtime.textContent = formatRuntime(ms);
-  }
-
   async function pollStats() {
     try {
       const res = await fetch(`${apiBase}/stats`);
@@ -178,6 +172,12 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000, getRuntimeMs 
       el.matches.textContent = stats.total_matches;
       el.pop.textContent = stats.population;
       el.fbwr.textContent = (stats.fallback_win_rate * 100).toFixed(1) + '%';
+      // `runtime_ms` is the broker-authoritative cumulative active
+      // training time since the last reset — shared across tabs and
+      // devices, persisted across broker restarts and page reloads.
+      if (typeof stats.runtime_ms === 'number' && el.runtime) {
+        el.runtime.textContent = formatRuntime(stats.runtime_ms);
+      }
     } catch {
       /* ignore network blips */
     }
@@ -203,13 +203,9 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000, getRuntimeMs 
 
   pollStats();
   pollConfig();
-  updateRuntimeDisplay();
   setInterval(pollStats, pollIntervalMs);
   setInterval(pollConfig, pollIntervalMs * 4); // config changes less often
   setInterval(updateSpsDisplay, pollIntervalMs);
-  // Runtime updates every second so the user sees it tick live while
-  // training is running — cheap because it reads a closure-local ms.
-  setInterval(updateRuntimeDisplay, 1000);
 
   return {
     setSimsPerSec(value) {

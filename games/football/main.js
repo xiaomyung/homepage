@@ -29,7 +29,7 @@ import {
 } from './physics.js?v=46';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
-import { createTrainingOrchestrator } from './training-orchestrator.js';
+import { createTrainingOrchestrator } from './training-orchestrator.js?v=2';
 import {
   createScoreboard,
   createStartStopButton,
@@ -41,7 +41,7 @@ import {
   createFreeCamToggle,
   createFollowCamToggle,
   installAutoPause,
-} from './ui.js';
+} from './ui.js?v=2';
 
 const API_BASE = '/api/football';
 // Showcase match length, in milliseconds. Fixed — no longer surfaced in
@@ -79,13 +79,9 @@ async function main() {
     workerUrl: new URL('./worker.js?v=10', import.meta.url),
     onStats: ({ simsPerSec }) => statsPanel?.setSimsPerSec(simsPerSec),
   });
-  // Stats panel reads runtime directly from the orchestrator so the
-  // "runtime" cell reflects actual training seconds, not page-open
-  // seconds or idle time.
-  statsPanel = createStatsPanel({
-    apiBase: API_BASE,
-    getRuntimeMs: () => orchestrator.getRuntimeMs(),
-  });
+  // Runtime is broker-authoritative and comes back in the /stats
+  // response, so the panel doesn't need a client-side callback.
+  statsPanel = createStatsPanel({ apiBase: API_BASE });
   createFitnessGraph({ apiBase: API_BASE });
   configControls = createConfigControls();
 

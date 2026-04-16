@@ -91,6 +91,13 @@ CREATE TABLE IF NOT EXISTS config (
     value           TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS meta (
+    key             TEXT PRIMARY KEY,
+    value           TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO meta (key, value) VALUES ('runtime_ms_total', '0');
+
 INSERT OR IGNORE INTO config (key, value) VALUES
     ('population_size',         '50'),
     ('min_pop_matches',         '10'),
@@ -143,7 +150,24 @@ const state = {
   // the per-poll /stats cost drops from O(pop) fitness walks to a
   // single no-op check.
   fitnessDirty: true,
+  // Cumulative active training time since the last /reset, in ms.
+  // Persisted in the `meta` table so it survives broker restart and
+  // client reload. `runtimeActiveStart` and `runtimeLastPostAt` track
+  // the current in-memory active window — any /results POST within
+  // RUNTIME_HYSTERESIS_MS of the previous one extends the window;
+  // longer gaps close it and fold its duration into the persisted
+  // total. All clients (across tabs and devices) contribute to the
+  // same global counter.
+  runtimeMsTotal: 0,
+  runtimeActiveStart: null,
+  runtimeLastPostAt: null,
 };
+
+// Gap between consecutive /results POSTs beyond which the broker
+// treats the training window as closed. Under normal load POSTs
+// arrive every ~1 s (eager sync); 15 s is generous enough that a
+// brief breed-time hiccup doesn't accidentally fragment the window.
+const RUNTIME_HYSTERESIS_MS = 15_000;
 
 /** Keep `state.populationById` in step with `state.population`. Call
  *  after any assignment that rebuilds the population (boot, reset,
@@ -173,6 +197,72 @@ function loadConfig() {
     cfg[key] = (key in raw) ? spec.parse(raw[key]) : spec.default;
   }
   return cfg;
+}
+
+function loadRuntimeMsTotal() {
+  try {
+    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get('runtime_ms_total');
+    if (!row) return 0;
+    const n = Number(row.value);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function persistRuntimeMsTotal(ms) {
+  db.prepare(
+    'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
+  ).run('runtime_ms_total', String(Math.floor(ms)));
+}
+
+/** Total active training ms since last reset — persisted total plus
+ *  any currently-open window. Read by /stats every poll so the UI
+ *  timer reflects live training without needing a separate endpoint. */
+function runtimeNowMs() {
+  let inProgress = 0;
+  if (state.runtimeActiveStart !== null && state.runtimeLastPostAt !== null) {
+    const now = Date.now();
+    const end = (now - state.runtimeLastPostAt > RUNTIME_HYSTERESIS_MS)
+      ? state.runtimeLastPostAt
+      : now;
+    inProgress = Math.max(0, end - state.runtimeActiveStart);
+  }
+  return state.runtimeMsTotal + inProgress;
+}
+
+/** Called on every /results POST. If the gap from the last POST is
+ *  short enough, the existing active window extends to `now`; if the
+ *  gap exceeds the hysteresis (or no window is open), fold the old
+ *  window into the persisted total and start a fresh one at `now`. */
+function recordRuntimeActivity() {
+  const now = Date.now();
+  const prevLast = state.runtimeLastPostAt;
+  const hasWindow = state.runtimeActiveStart !== null;
+  const gapTooLong = prevLast !== null && (now - prevLast) > RUNTIME_HYSTERESIS_MS;
+  if (!hasWindow || gapTooLong) {
+    if (hasWindow && prevLast !== null) {
+      state.runtimeMsTotal += Math.max(0, prevLast - state.runtimeActiveStart);
+    }
+    state.runtimeActiveStart = now;
+  }
+  state.runtimeLastPostAt = now;
+}
+
+/** Snapshot the current active window into runtimeMsTotal and
+ *  persist it. Leaves the window open so training keeps accruing
+ *  without a double-count on the next tick. */
+function flushRuntime() {
+  const snapshot = runtimeNowMs();
+  state.runtimeMsTotal = snapshot;
+  if (state.runtimeActiveStart !== null) {
+    // Restart the window at "now" so we don't re-add already-folded
+    // elapsed time on the next runtimeNowMs() read.
+    const now = Date.now();
+    state.runtimeActiveStart = now;
+    state.runtimeLastPostAt = now;
+  }
+  persistRuntimeMsTotal(state.runtimeMsTotal);
 }
 
 function currentGeneration() {
@@ -314,6 +404,9 @@ function initState() {
   state.totalMatches = countTotalMatches();
   state.showcaseCounter = 0;
   state.fitnessDirty = true;
+  state.runtimeMsTotal = loadRuntimeMsTotal();
+  state.runtimeActiveStart = null;
+  state.runtimeLastPostAt = null;
 
   if (state.population.length === 0) {
     state.population = initPopulationFromWarmStart(state.config);
@@ -427,7 +520,28 @@ function schedulePersist() {
       savePopulation(state.generation);
       lastSavedGeneration = state.generation;
     }
+    // Fold the active runtime window into the persisted total on
+    // every coalesced save, so a crash mid-generation loses at most
+    // ~SAVE_COALESCE_MS of accumulated runtime — not the whole
+    // active window.
+    flushRuntime();
   }, SAVE_COALESCE_MS);
+}
+
+// Runtime can accumulate for long stretches between breeds (e.g. if
+// the population is stuck, or after all brains are already past
+// breeding thresholds and tryBreed gates on nothing). schedulePersist
+// only fires when a breed is actually pending, so we also run an
+// unconditional runtime flush every RUNTIME_PERSIST_MS to bound the
+// loss window on a crash during long flat periods.
+const RUNTIME_PERSIST_MS = 30_000;
+let runtimePersistTimer = null;
+function startRuntimePersistLoop() {
+  if (runtimePersistTimer !== null) return;
+  runtimePersistTimer = setInterval(() => {
+    try { flushRuntime(); } catch { /* best-effort */ }
+  }, RUNTIME_PERSIST_MS);
+  runtimePersistTimer.unref?.();
 }
 
 // ── Matchup selection ─────────────────────────────────────────
@@ -595,6 +709,9 @@ async function handleResults(req, res) {
   // The generation hint is informational only — we still try to
   // record anything that matches the current population.
   for (const r of results) recordResult(r);
+  // Every /results POST is proof that a client is actively training.
+  // Used to advance the cumulative runtime counter returned by /stats.
+  recordRuntimeActivity();
   const bred = tryBreed();
 
   // Echo the authoritative counts so the orchestrator can reconcile
@@ -646,6 +763,7 @@ function handleStats(req, res) {
     top_fitness: top,
     total_matches: state.totalMatches,
     fallback_win_rate: fbMatches > 0 ? fbWins / fbMatches : 0,
+    runtime_ms: runtimeNowMs(),
   });
 }
 
@@ -735,13 +853,18 @@ function handleReset(req, res) {
   db.prepare('DELETE FROM brains').run();
   db.prepare('DELETE FROM generations').run();
   // Re-init from warm-start. Config rows are preserved (matches the
-  // schema's INSERT OR IGNORE default-seeding behavior).
+  // schema's INSERT OR IGNORE default-seeding behavior). Runtime
+  // counter zeros out so the timer starts fresh with the new run.
   state.config = loadConfig();
   state.population = initPopulationFromWarmStart(state.config);
   state.generation = 1;
   state.totalMatches = 0;
   state.showcaseCounter = 0;
   state.fitnessDirty = true;
+  state.runtimeMsTotal = 0;
+  state.runtimeActiveStart = null;
+  state.runtimeLastPostAt = null;
+  persistRuntimeMsTotal(0);
   refreshPopulationIndex();
   // Reset is rare; flush synchronously so a crash right after reset
   // still leaves the warm-start seed on disk.
@@ -813,6 +936,7 @@ function flushAndExit(signal) {
       savePopulation(state.generation);
       lastSavedGeneration = state.generation;
     }
+    flushRuntime();
   } catch (err) {
     process.stderr.write(`[football broker] flush failed on ${signal}: ${err}\n`);
   }
@@ -827,6 +951,7 @@ process.on('SIGINT',  () => flushAndExit('SIGINT'));
 const IS_MAIN = import.meta.url === `file://${process.argv[1]}`;
 if (IS_MAIN) {
   initState();
+  startRuntimePersistLoop();
   server.listen(PORT, HOST, () => {
     process.stdout.write(
       `[football broker] listening on ${HOST}:${PORT}, generation=${state.generation}, population=${state.population.length}\n`,

@@ -30,6 +30,7 @@ import {
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import { createTrainingOrchestrator } from './training-orchestrator.js?v=2';
+import { computeTicks } from './frame-loop.js';
 import {
   createScoreboard,
   createStartStopButton,
@@ -215,10 +216,10 @@ function frame(now) {
   // and on 30 Hz it's ~2. Guarantees the showcase plays at the same
   // wall-clock speed everywhere.
   if (lastFrameTime === 0) lastFrameTime = now;
-  tickAccumulator += now - lastFrameTime;
+  const result = computeTicks(now - lastFrameTime, tickAccumulator, TICK_MS, MAX_TICKS_PER_FRAME);
   lastFrameTime = now;
-  let ticksThisFrame = Math.min(Math.floor(tickAccumulator / TICK_MS), MAX_TICKS_PER_FRAME);
-  tickAccumulator -= ticksThisFrame * TICK_MS;
+  tickAccumulator = result.accumulator;
+  let ticksThisFrame = result.ticks;
 
   while (ticksThisFrame-- > 0) {
     if (state.matchOver) break;

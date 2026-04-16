@@ -14,6 +14,7 @@ import {
   buildInputs,
   FIELD_HEIGHT,
   PLAYER_HEIGHT,
+  PLAYER_WIDTH,
   BALL_RADIUS,
   MAX_PLAYER_SPEED,
   Z_STRETCH,
@@ -777,6 +778,10 @@ test('player reaches full speed after the full ramp and keeps it there', () => {
 test('releasing input decelerates over multiple ticks, not instantly', () => {
   const state = freshState();
   state.p1.x = 300;
+  // Keep p2 clear of p1's run so the test isolates deceleration —
+  // without this the pair-collision zeros vx exactly as the NOOP
+  // tick under test would otherwise decay it.
+  state.p2.x = state.field.width - 100;
   for (let i = 0; i < 25; i++) tick(state, moveAction(1), NOOP);
   const topVx = state.p1.vx;
   tick(state, NOOP, NOOP);
@@ -1101,4 +1106,70 @@ test('visual mode still runs the celebrate pause unchanged', () => {
   }
   assert.equal(state.pauseState, 'celebrate', 'visual mode still celebrates');
   assert.ok(state.goalScorer !== null, 'visual mode still flags the scorer');
+});
+
+/* ── Player-vs-player collision ──────────────────────────── */
+
+test('two players walking toward each other on x stop at contact', () => {
+  const state = freshState();
+  state.p1.x = 300; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
+  state.p2.x = 350; state.p2.y = state.p1.y;
+  // Drive p1 right, p2 left, for long enough that they'd pass through
+  // each other (32 unit gap, combined speed ~20/tick, ~2 ticks from
+  // contact) if collision weren't enforced.
+  for (let i = 0; i < 30; i++) tick(state, moveAction(1), moveAction(-1));
+  // p1 right edge must not exceed p2 left edge. Small float slack for
+  // the half-half separation math.
+  assert.ok(
+    state.p1.x + PLAYER_WIDTH <= state.p2.x + 0.01,
+    `p1 right (${state.p1.x + PLAYER_WIDTH}) overlapped p2 left (${state.p2.x})`,
+  );
+});
+
+test('two players walking toward each other on y stop at contact', () => {
+  const state = freshState();
+  // Stack them x-aligned but y-separated (within PLAYER_HEIGHT so the
+  // y-axis is the tighter overlap axis when they meet).
+  state.p1.x = 400; state.p1.y = 10;
+  state.p2.x = 400; state.p2.y = 25;
+  for (let i = 0; i < 50; i++) tick(state, moveAction(0, 1), moveAction(0, -1));
+  assert.ok(
+    state.p1.y + PLAYER_HEIGHT <= state.p2.y + 0.01,
+    `p1 bottom (${state.p1.y + PLAYER_HEIGHT}) overlapped p2 top (${state.p2.y})`,
+  );
+});
+
+test('overlapping starting positions get separated on the first tick', () => {
+  const state = freshState();
+  // Place them so x is the minimum-penetration axis (1-unit x overlap,
+  // 6-unit y overlap → MPT picks x). PLAYER_WIDTH=18, PLAYER_HEIGHT=6.
+  state.p1.x = 400; state.p1.y = 20;
+  state.p2.x = 417; state.p2.y = 20;
+  tick(state, NOOP, NOOP);
+  // No AABB overlap after resolution — either axis clearing is enough.
+  const overlapX = Math.min(state.p1.x + PLAYER_WIDTH, state.p2.x + PLAYER_WIDTH)
+                 - Math.max(state.p1.x, state.p2.x);
+  const overlapY = Math.min(state.p1.y + PLAYER_HEIGHT, state.p2.y + PLAYER_HEIGHT)
+                 - Math.max(state.p1.y, state.p2.y);
+  assert.ok(
+    overlapX <= 0.01 || overlapY <= 0.01,
+    `still overlapping: overlapX=${overlapX}, overlapY=${overlapY}`,
+  );
+});
+
+test('a push impulse cannot impale the opponent body', () => {
+  const state = freshState();
+  // Position the pusher right next to the victim and facing them.
+  state.p1.x = 400; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
+  state.p2.x = 415; state.p2.y = state.p1.y;
+  state.p1.heading = 0;  // facing +x, toward p2
+  // p1 pushes with max power.
+  tick(state, pushAction(1), NOOP);
+  // Step enough ticks for the push impulse to play out fully.
+  for (let i = 0; i < 30; i++) tick(state, NOOP, NOOP);
+  // p1 must not have ended up past p2's left edge.
+  assert.ok(
+    state.p1.x + PLAYER_WIDTH <= state.p2.x + 0.01,
+    `pusher pressed through victim: p1.x=${state.p1.x}, p2.x=${state.p2.x}`,
+  );
 });

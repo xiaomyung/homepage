@@ -34,7 +34,7 @@ import {
   ACTION_PUSH_GATE,
   ACTION_PUSH_POWER,
   facingToward,
-} from './physics.js?v=46';
+} from './physics.js?v=47';
 
 const AI_PREDICT_FRAMES = 20;
 // Teacher-only ball-height ceiling. physics.js's ground-kick check is

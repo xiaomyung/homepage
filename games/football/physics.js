@@ -312,6 +312,12 @@ export function tick(state, p1Act, p2Act) {
 
   clampAndCollide(state, state.p1);
   clampAndCollide(state, state.p2);
+  resolvePlayerPairCollision(state.p1, state.p2, state.field.playerWidth);
+  // A wall-pinned pair collision can push one player outside the
+  // field box. Re-clamp to recover; any residual overlap converges
+  // over a few ticks as both sides pay half the gap each time.
+  clampPlayerToField(state.p1, state.field);
+  clampPlayerToField(state.p2, state.field);
 
   chargeStaminaFromDisplacement(state.p1, pre1x, pre1y);
   chargeStaminaFromDisplacement(state.p2, pre2x, pre2y);
@@ -642,6 +648,42 @@ const _scratchEnt3D = { minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 };
 // returned by reference — no object allocation on the hit path.
 // Caller inspects `.axis` ('x' / 'y' / 'z') and `.delta`.
 const _scratchPush = { axis: 'x', delta: 0 };
+
+/**
+ * Player-vs-player AABB separation on the ground plane. When the two
+ * bodies overlap, split the minimum overlap across both along the
+ * axis with the smaller penetration and zero the relevant velocity
+ * components on both sides. Prevents players from walking through
+ * each other and prevents a push impulse from impaling a stationary
+ * opponent. Equal-mass split (each side moves half) — realistic for
+ * two stickmen of the same size.
+ */
+function resolvePlayerPairCollision(p1, p2, pw) {
+  const ph = PLAYER_HEIGHT;
+  if (p1.x + pw <= p2.x || p2.x + pw <= p1.x) return;
+  if (p1.y + ph <= p2.y || p2.y + ph <= p1.y) return;
+
+  const overlapX = Math.min(p1.x + pw - p2.x, p2.x + pw - p1.x);
+  const overlapY = Math.min(p1.y + ph - p2.y, p2.y + ph - p1.y);
+
+  if (overlapX < overlapY) {
+    const half = overlapX / 2;
+    const p1Left = (p1.x + pw / 2) < (p2.x + pw / 2);
+    const dir = p1Left ? -1 : 1;
+    p1.x += dir * half;
+    p2.x -= dir * half;
+    p1.vx = 0; p2.vx = 0;
+    p1.pushVx = 0; p2.pushVx = 0;
+  } else {
+    const half = overlapY / 2;
+    const p1Above = (p1.y + ph / 2) < (p2.y + ph / 2);
+    const dir = p1Above ? -1 : 1;
+    p1.y += dir * half;
+    p2.y -= dir * half;
+    p1.vy = 0; p2.vy = 0;
+    p1.pushVy = 0; p2.pushVy = 0;
+  }
+}
 
 function resolvePlayerGoalBox(p, pw, box) {
   const ent = _scratchEnt2D;

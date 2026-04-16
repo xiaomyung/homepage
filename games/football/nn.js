@@ -169,10 +169,6 @@ function computeLayerOffsets(arch) {
   return offsets;
 }
 
-function leakyRelu(x) {
-  return x >= 0 ? x : x * LEAKY_SLOPE;
-}
-
 function heInit(arch) {
   const weights = new Float64Array(WEIGHT_COUNT);
   let idx = 0;

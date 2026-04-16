@@ -43,6 +43,17 @@ import { join } from 'node:path';
 
 /* ── Fixtures ─────────────────────────────────────────────── */
 
+function withTmpDb(fn) {
+  const tmpPath = join(tmpdir(), `football-test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  _reopenDbForTest(tmpPath);
+  try {
+    fn(tmpPath);
+  } finally {
+    _cancelPendingSaveForTest();
+    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
+  }
+}
+
 function fakePopulation(n) {
   const pop = [];
   for (let i = 0; i < n; i++) {
@@ -228,34 +239,23 @@ test('recordResult aggregates contributions from multiple simulated clients corr
 });
 
 test('tryBreed fires once the shared threshold is crossed across clients', () => {
-  // Fake a small config so we can hit the breed threshold with a
-  // few hand-picked matches. This proves the multi-client flow
-  // eventually triggers GA breeding even though no single client
-  // individually hit the threshold. tryBreed persists state + the
-  // generation row via savePopulation, so we open a scratch DB for
-  // the duration of the test.
-  const tmpPath = join(tmpdir(), `football-trybreed-${process.pid}-${Date.now()}.db`);
-  try {
-    _reopenDbForTest(tmpPath);
+  withTmpDb(() => {
     const pop = fakePopulation(5);
     installPopulation(pop, { min_pop_matches: 2, min_fallback_matches: 1, population_size: 5 });
     _state.generation = 1;
     const startGen = _state.generation;
 
-    // Each brain needs ≥2 pop matches AND ≥1 fallback match.
-    // Dispatch matches across "clients" so no single one crosses
-    // the threshold alone — but the aggregate does.
     const matches = [
-      { p1_id: 0, p2_id: 1, goals_p1: 1, goals_p2: 0 }, // clientA
-      { p1_id: 2, p2_id: 3, goals_p1: 1, goals_p2: 0 }, // clientB
-      { p1_id: 4, p2_id: 0, goals_p1: 0, goals_p2: 1 }, // clientA
-      { p1_id: 1, p2_id: 2, goals_p1: 0, goals_p2: 1 }, // clientB
-      { p1_id: 3, p2_id: 4, goals_p1: 1, goals_p2: 0 }, // clientA
-      { p1_id: 0, p2_id: null, goals_p1: 1, goals_p2: 0 }, // clientA
-      { p1_id: 1, p2_id: null, goals_p1: 0, goals_p2: 1 }, // clientB
-      { p1_id: 2, p2_id: null, goals_p1: 1, goals_p2: 1 }, // clientA
-      { p1_id: 3, p2_id: null, goals_p1: 2, goals_p2: 0 }, // clientB
-      { p1_id: 4, p2_id: null, goals_p1: 0, goals_p2: 0 }, // clientA
+      { p1_id: 0, p2_id: 1, goals_p1: 1, goals_p2: 0 },
+      { p1_id: 2, p2_id: 3, goals_p1: 1, goals_p2: 0 },
+      { p1_id: 4, p2_id: 0, goals_p1: 0, goals_p2: 1 },
+      { p1_id: 1, p2_id: 2, goals_p1: 0, goals_p2: 1 },
+      { p1_id: 3, p2_id: 4, goals_p1: 1, goals_p2: 0 },
+      { p1_id: 0, p2_id: null, goals_p1: 1, goals_p2: 0 },
+      { p1_id: 1, p2_id: null, goals_p1: 0, goals_p2: 1 },
+      { p1_id: 2, p2_id: null, goals_p1: 1, goals_p2: 1 },
+      { p1_id: 3, p2_id: null, goals_p1: 2, goals_p2: 0 },
+      { p1_id: 4, p2_id: null, goals_p1: 0, goals_p2: 0 },
     ];
     for (const m of matches) _recordResult(m);
 
@@ -263,22 +263,16 @@ test('tryBreed fires once the shared threshold is crossed across clients', () =>
     assert.equal(bred, true, 'tryBreed should succeed when aggregated counts cross thresholds');
     assert.equal(_state.generation, startGen + 1, 'generation must advance on successful breed');
     assert.equal(_state.population.length, 5, 'population size preserved across breed');
-  } finally {
-    _cancelPendingSaveForTest();
-    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
-  }
+  });
 });
 
 test('tryBreed refuses to breed while any brain is under-served', () => {
-  const tmpPath = join(tmpdir(), `football-trybreed-no-${process.pid}-${Date.now()}.db`);
-  try {
-    _reopenDbForTest(tmpPath);
+  withTmpDb(() => {
     const pop = fakePopulation(5);
     installPopulation(pop, { min_pop_matches: 2, min_fallback_matches: 1, population_size: 5 });
     _state.generation = 1;
     const startGen = _state.generation;
 
-    // Brain 0 has no fallback match yet — the gate must hold.
     _recordResult({ p1_id: 0, p2_id: 1, goals_p1: 1, goals_p2: 0 });
     _recordResult({ p1_id: 0, p2_id: 2, goals_p1: 1, goals_p2: 0 });
     for (let i = 1; i < 5; i++) {
@@ -287,28 +281,13 @@ test('tryBreed refuses to breed while any brain is under-served', () => {
     }
     assert.equal(_tryBreed(), false, 'tryBreed must refuse while brain 0 lacks a fallback match');
     assert.equal(_state.generation, startGen, 'generation must not advance on refusal');
-  } finally {
-    _cancelPendingSaveForTest();
-    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
-  }
+  });
 });
 
 /* ── Persistence regression ───────────────────────────────── */
 
 test('savePopulation handles repeated saves without UNIQUE constraint errors', () => {
-  // Regression for a real bug: savePopulation used to DELETE only
-  // rows for the generation being saved, but `id` is a global
-  // PRIMARY KEY AUTOINCREMENT. The SECOND breed's save would try
-  // to INSERT id=0 while gen1's id=0 still existed → UNIQUE
-  // constraint failure → broker process exited → systemd restart
-  // loop. This test exercises the real savePopulation against an
-  // ephemeral on-disk DB and runs it TWICE in a row — the first
-  // save with a gen-1 population, the second with a simulated
-  // gen-2 population that reuses the same brain IDs.
-  const tmpPath = join(tmpdir(), `football-save-test-${process.pid}-${Date.now()}.db`);
-  try {
-    _reopenDbForTest(tmpPath);
-
+  withTmpDb(() => {
     const pop1 = fakePopulation(10);
     installPopulation(pop1);
     _state.generation = 1;
@@ -328,15 +307,11 @@ test('savePopulation handles repeated saves without UNIQUE constraint errors', (
     for (const b of loaded) {
       assert.equal(b.popMatches, 5, 'loaded brain should reflect gen-2 state, not gen-1');
     }
-  } finally {
-    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
-  }
+  });
 });
 
 test('savePopulation materialises lazy weights JSON on first save', () => {
-  const tmpPath = join(tmpdir(), `football-save-lazy-${process.pid}-${Date.now()}.db`);
-  try {
-    _reopenDbForTest(tmpPath);
+  withTmpDb(() => {
     const pop = fakePopulation(5);
     for (const b of pop) assert.equal(b._weightsJson, null);
     installPopulation(pop);
@@ -352,7 +327,5 @@ test('savePopulation materialises lazy weights JSON on first save', () => {
       assert.equal(loaded[i].weights.length, WEIGHT_COUNT);
       assert.equal(loaded[i].weights[0], i + 1);
     }
-  } finally {
-    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
-  }
+  });
 });

@@ -42,8 +42,8 @@ export function makeFitnessWeights({ wPop, wFallback, maxGoalDiff }) {
 }
 
 /**
- * Normalized hybrid fitness in [0, 1]. See ga.py:compute_fitness for the
- * semantic rationale. A brain with zero data on both axes scores 0.0; one
+ * Normalized hybrid fitness in [0, 1]. A brain with zero data on both
+ * axes scores 0.0; one
  * axis of data yields neutral 0.5 on the missing axis so partial data is
  * still meaningful.
  */
@@ -108,15 +108,13 @@ export function tournamentSelect(population, k, rng) {
 
 /**
  * Two-point crossover over flat weight arrays. When the two cut points
- * collapse (p1 === p2) the child is a pure copy of parentA, matching
- * ga.py semantics.
+ * collapse (p1 === p2) the child is a pure copy of parentA.
  */
 export function twoPointCrossover(parentAWeights, parentBWeights, rng) {
   const n = parentAWeights.length;
   if (parentBWeights.length !== n) {
     throw new Error('parent weight counts must match');
   }
-  // Python's rng.randint(0, n-1) is inclusive on both ends.
   let p1 = Math.floor(rng() * n);
   let p2 = Math.floor(rng() * n);
   if (p1 > p2) { const tmp = p1; p1 = p2; p2 = tmp; }
@@ -167,7 +165,7 @@ export function heInitWeights(rng) {
 /* ── Breeding ──────────────────────────────────────────────────── */
 
 /**
- * Produce the next generation. Steps match ga.py:breed_next_generation:
+ * Produce the next generation.
  *   1. Sort current pop by fitness desc, copy top `elitism` unchanged.
  *   2. Inject round(size * randomInjectionRate) fresh random brains.
  *   3. Fill the remainder by tournament-select → crossover → mutate.
@@ -209,10 +207,7 @@ export function breedNextGeneration(population, opts) {
   return newPop.slice(0, size);
 }
 
-/**
- * Brain record with cleared fitness/match stats. Matches ga.py:_fresh_brain
- * field-for-field (camelCased).
- */
+/** Brain record with cleared fitness/match stats. */
 export function freshBrain(weights) {
   return {
     weights,

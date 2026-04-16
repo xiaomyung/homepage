@@ -1,20 +1,17 @@
 /**
  * Football v2 — Node broker.
  *
- * Port of api/app.py to Node 22 using node:http + node:sqlite (no deps).
- * Same endpoints, same JSON shapes, same semantics as the Flask original.
- *
- * The broker is a state machine, not a trainer. It holds the population in
- * SQLite, hands out matchups to browser web workers, receives match results,
- * and triggers breeding when every brain has enough matches. ALL simulation
- * happens on clients.
+ * Stateless state-store for the neuroevolution pipeline. Holds the
+ * population in SQLite, receives aggregated match results from browser
+ * workers, triggers breeding when every brain has enough matches, and
+ * serves stats/showcase endpoints. ALL simulation happens on clients.
  *
  * Endpoints (all under /api/football):
- *   GET  /matchup    — next matchup: {type, p1, p2}
- *   POST /results    — one result or array; records + maybe breeds
+ *   GET  /population — full population snapshot (weights + metadata)
+ *   POST /results    — aggregated match results; records + maybe breeds
  *   GET  /showcase   — visual-match brains: {mode, p1, p2}
- *   GET  /stats      — population stats
- *   GET  /history    — fitness history (last 100 generations desc)
+ *   GET  /stats      — population stats + runtime
+ *   GET  /history    — fitness history (downsampled)
  *   GET  /config     — current tunables
  *   POST /config     — partial merge of tunables
  *   POST /reset      — wipe population, re-init from warm-start seed
@@ -47,9 +44,7 @@ const ROUTE_PREFIX = '/api/football';
 const PORT = Number(process.env.FOOTBALL_PORT || 5050);
 const HOST = '127.0.0.1';
 
-// Showcase: 1 in 5 is best-vs-fallback.
 const SHOWCASE_FALLBACK_EVERY_N = 5;
-const SHOWCASE_RECENT_WINDOW = 20;
 
 const SURNAMES = [
   'Messi', 'Ronaldo', 'Neymar', 'Mbappe', 'Salah', 'Bruyne', 'Haaland',
@@ -134,9 +129,8 @@ const CONFIG_KEYS = {
 
 // ── Application state ─────────────────────────────────────────
 //
-// Node is single-threaded; route handlers run to completion without being
-// preempted. The Python version used an RLock for its threaded Flask
-// server — we don't need any locking here.
+// Node is single-threaded; route handlers run to completion without
+// being preempted, so no locking is needed.
 
 const state = {
   population: [],       // array of brain objects (camelCase internals)
@@ -289,9 +283,8 @@ function loadPopulation() {
      ORDER BY id`,
   ).all(maxGen);
   return rows.map((r) => {
-    // Cache the JSON-encoded weight array once per brain so hot-path
-    // /matchup responses can splice it into the response body as a
-    // raw string fragment without re-serializing 1233 floats each time.
+    // Cache the JSON-encoded weight array so /population responses
+    // can splice it as a raw string fragment without re-serializing.
     const weightsJson = r.weights;
     const weights = new Float64Array(JSON.parse(r.weights));
     return {
@@ -311,12 +304,6 @@ function loadPopulation() {
 }
 
 function savePopulation(generation) {
-  // Wipe ALL prior snapshots — the brains table mirrors the current
-  // population, not a history. Historical fitness still lives in the
-  // `generations` table. This also avoids UNIQUE-constraint crashes:
-  // `id` is a global PRIMARY KEY, so leaving old rows around and
-  // inserting id=0..49 for the new generation collides.
-  db.prepare('DELETE FROM brains').run();
   const ins = db.prepare(
     `INSERT INTO brains (
         id, generation, name, weights,
@@ -325,13 +312,21 @@ function savePopulation(generation) {
         fitness, is_frozen_seed
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
-  for (const b of state.population) {
-    ins.run(
-      b.id, generation, b.name, getWeightsJson(b),
-      b.popMatches, b.popGoalDiff,
-      b.fallbackMatches, b.fallbackWins, b.fallbackDraws,
-      b.fitness, b.isFrozenSeed ? 1 : 0,
-    );
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM brains').run();
+    for (const b of state.population) {
+      ins.run(
+        b.id, generation, b.name, getWeightsJson(b),
+        b.popMatches, b.popGoalDiff,
+        b.fallbackMatches, b.fallbackWins, b.fallbackDraws,
+        b.fitness, b.isFrozenSeed ? 1 : 0,
+      );
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+    throw err;
   }
 }
 
@@ -350,12 +345,9 @@ function newBrain(id, weights, isFrozenSeed = false) {
     id,
     name: randomSurname(),
     weights: w,
-    // Lazy-materialized weights JSON. /matchup is ID-only so the hot
-    // path never needs this; the only consumers are /population (one
-    // request per worker per generation) and savePopulation (one per
-    // breed — which is also throttled). Computing eagerly in newBrain
-    // cost ~30 ms of JSON.stringify per breed × 2 breeds/sec = 6% of
-    // a core doing work nothing was reading.
+    // Lazy-materialized weights JSON — only consumers are /population
+    // and savePopulation; computed on demand to avoid ~30 ms of
+    // JSON.stringify per breed on the hot path.
     _weightsJson: null,
     popMatches: base.popMatches ?? 0,
     popGoalDiff: base.popGoalDiff ?? 0,
@@ -546,10 +538,6 @@ function startRuntimePersistLoop() {
 
 // ── Matchup selection ─────────────────────────────────────────
 
-function needsMoreFallback(brain, cfg) {
-  return brain.fallbackMatches < cfg.min_fallback_matches;
-}
-
 function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
@@ -568,9 +556,10 @@ function brainView(brain) {
 
 function pickShowcase() {
   const pop = state.population;
+  if (pop.length === 0) return { mode: 'vs_fallback', p1: null, p2: null };
   state.showcaseCounter += 1;
 
-  if (state.showcaseCounter % SHOWCASE_FALLBACK_EVERY_N === 0) {
+  if (pop.length < 2 || state.showcaseCounter % SHOWCASE_FALLBACK_EVERY_N === 0) {
     let best = pop[0];
     for (const b of pop) if (b.fitness > best.fitness) best = b;
     return {
@@ -850,10 +839,16 @@ function handleReset(req, res) {
   const hard = qi >= 0 &&
     new URLSearchParams(url.slice(qi + 1)).get('hard') === '1';
 
-  db.prepare('DELETE FROM brains').run();
-  db.prepare('DELETE FROM generations').run();
-  // Re-init from warm-start. Config rows are preserved (matches the
-  // schema's INSERT OR IGNORE default-seeding behavior). Runtime
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM brains').run();
+    db.prepare('DELETE FROM generations').run();
+    db.exec('COMMIT');
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+    throw err;
+  }
+  // Re-init from warm-start. Config rows are preserved. Runtime
   // counter zeros out so the timer starts fresh with the new run.
   state.config = loadConfig();
   state.population = initPopulationFromWarmStart(state.config);
@@ -877,12 +872,14 @@ function handleReset(req, res) {
     // piggyback on this to guarantee every in-memory caching layer
     // (population snapshots, fitness dirty flags, worker-side cached
     // weights) is wiped — not just the DB.
-    json(res, 200, { ok: true, generation: state.generation, hard: true });
-    // Give the response a tick to flush, then exit.
-    setTimeout(() => {
-      try { if (db) db.close(); } catch { /* ignore */ }
-      process.exit(0);
-    }, 50);
+    const payload = JSON.stringify({ ok: true, generation: state.generation, hard: true });
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) });
+    res.end(payload, () => {
+      setTimeout(() => {
+        try { if (db) db.close(); } catch { /* ignore */ }
+        process.exit(0);
+      }, 10);
+    });
     return;
   }
   json(res, 200, { ok: true, generation: state.generation });
@@ -915,7 +912,7 @@ const server = http.createServer((req, res) => {
   Promise.resolve()
     .then(() => dispatch(req, res))
     .catch((err) => {
-      process.stderr.write(`[football broker] route error: ${err && err.stack || err}\n`);
+      process.stderr.write(`[football broker] route error: ${err?.stack ?? err}\n`);
       if (!res.headersSent) json(res, 500, { error: 'internal error' });
       else {
         try { res.end(); } catch { /* ignore */ }
@@ -924,13 +921,15 @@ const server = http.createServer((req, res) => {
 });
 
 process.on('uncaughtException', (err) => {
-  process.stderr.write(`[football broker] uncaught: ${err && err.stack || err}\n`);
+  process.stderr.write(`[football broker] uncaught: ${err?.stack ?? err}\n`);
   process.exit(1);
 });
 
 /** Flush any coalesced save and exit cleanly on systemctl stop / SIGTERM
  *  / SIGINT so we don't lose the last <SAVE_COALESCE_MS ms of training. */
 function flushAndExit(signal) {
+  if (saveTimer !== null) { clearTimeout(saveTimer); saveTimer = null; }
+  if (runtimePersistTimer !== null) { clearInterval(runtimePersistTimer); runtimePersistTimer = null; }
   try {
     if (state.generation !== lastSavedGeneration) {
       savePopulation(state.generation);

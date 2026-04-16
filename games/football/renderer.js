@@ -565,6 +565,7 @@ export class Renderer {
     if (w === this._lastW && h === this._lastH) return;
     this._lastW = w;
     this._lastH = h;
+    this.renderer.setPixelRatio(window.devicePixelRatio || 1);
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
@@ -573,8 +574,11 @@ export class Renderer {
 
   dispose() {
     if (this._resizeObserver) this._resizeObserver.disconnect();
+    if (this._debugKeydown) window.removeEventListener('keydown', this._debugKeydown);
+    if (this._debugKeyup) window.removeEventListener('keyup', this._debugKeyup);
     for (const geom of this._staticGeometries) geom.dispose();
     for (const mat of this._staticMaterials) mat.dispose();
+    while (this.scene.children.length > 0) this.scene.remove(this.scene.children[0]);
     this.renderer.dispose();
   }
 
@@ -787,15 +791,17 @@ export class Renderer {
       e.preventDefault();
       dc.distance = Math.max(40, Math.min(4000, dc.distance * (1 + e.deltaY * 0.001)));
     }, { passive: false });
-    window.addEventListener('keydown', (e) => {
+    this._debugKeydown = (e) => {
       const dc = this._debugCam;
       if (!dc.active || isTypingTarget()) return;
       const k = e.key.toLowerCase();
       if ('wasdqer'.includes(k)) dc.keys.add(k);
-    });
-    window.addEventListener('keyup', (e) => {
+    };
+    this._debugKeyup = (e) => {
       this._debugCam.keys.delete(e.key.toLowerCase());
-    });
+    };
+    window.addEventListener('keydown', this._debugKeydown);
+    window.addEventListener('keyup', this._debugKeyup);
   }
 
   setDebugCam(on) {

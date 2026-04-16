@@ -19,7 +19,6 @@ import {
   Z_STRETCH,
   KICK_WINDUP_MS,
   KICK_DURATION_MS,
-  AIRKICK_MS,
 } from '../physics.js';
 
 const NOOP = [0, 0, -1, 0, 0, 0, 0, -1, 0];

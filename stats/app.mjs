@@ -3,8 +3,7 @@
  *
  * Bound to 127.0.0.1:5055; exposed to the browser via Caddy at /api/stats.
  * The page is Tailscale/LAN-only so internal stats are safe to expose.
- *
- * Port of stats/app.py to Node — zero external dependencies.
+ * Zero external dependencies — uses only Node built-ins.
  */
 
 import http from 'node:http';

@@ -26,7 +26,6 @@ function freshState(seed = 42) {
 
 test('fallback moves toward ball when ball is to the right', () => {
   const state = freshState();
-  const f = state.field;
   state.p1.x = 200;
   state.p1.y = FIELD_HEIGHT / 2;
   state.ball.x = 400;

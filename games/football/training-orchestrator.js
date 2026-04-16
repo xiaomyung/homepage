@@ -275,7 +275,7 @@ export function createTrainingOrchestrator({
       // fall back to local stats until the next successful sync.
       if (!final) {
         // eslint-disable-next-line no-console
-        console.warn('[training-orchestrator] results sync failed:', err.message || err);
+        console.error('[training-orchestrator] results sync failed:', err.message || err);
       }
     } finally {
       inFlight = null;

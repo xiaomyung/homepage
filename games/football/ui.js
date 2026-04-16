@@ -171,7 +171,7 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
       el.top.textContent = stats.top_fitness.toFixed(3);
       el.matches.textContent = stats.total_matches;
       el.pop.textContent = stats.population;
-      el.fbwr.textContent = (stats.fallback_win_rate * 100).toFixed(1) + '%';
+      el.fbwr.textContent = `${(stats.fallback_win_rate * 100).toFixed(1)}%`;
       // `runtime_ms` is the broker-authoritative cumulative active
       // training time since the last reset — shared across tabs and
       // devices, persisted across broker restarts and page reloads.

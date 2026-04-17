@@ -23,6 +23,8 @@ import {
   STICKMAN_TORSO_RADIUS,
   STICKMAN_HEAD_RADIUS,
   solve2BoneIK,
+  KICK_STRIKE_WINDOW_MS,
+  FOOT_RADIUS,
 } from '../physics.js';
 
 const NOOP = [0, 0, -1, 0, 0, 0, 0, -1, 0];
@@ -717,14 +719,16 @@ test('push lands when players overlap in depth (touching)', () => {
   assert.ok(state.events.some(e => e.type === 'push'), 'push event expected on touch');
 });
 
-test('kick activates when ball is within new lateral reach', () => {
+test('kick activates when ball is within hip reach', () => {
   const state = freshState();
-  // Place p1 and park the ball just in front of him (forward in x)
-  // at the same mid-Y. Ball should be kickable.
+  // Ball parked directly in front of p1 on his depth-line. The hip
+  // anchor sits at HIP_BASE_Z (20) above the pitch; the ball at
+  // ground level is ~16 world-y below, leaving ~12 world-xz of
+  // horizontal reach — 5 units forward is well inside that.
   state.p1.x = 300;
   state.p1.y = 20;
   state.ball.x = state.p1.x + state.field.playerWidth / 2 + 5;
-  state.ball.y = state.p1.y + PLAYER_HEIGHT / 2;
+  state.ball.y = state.p1.y;
   state.ball.z = 0;
   state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
   state.ball.frozen = false;
@@ -897,7 +901,7 @@ test('kick state machine fires impact at windup end and clears at duration end',
   state.p1.x = 300;
   state.p1.y = 20;
   state.ball.x = state.p1.x + state.field.playerWidth / 2 + 5;
-  state.ball.y = state.p1.y + PLAYER_HEIGHT / 2;
+  state.ball.y = state.p1.y;
   state.ball.z = 0;
   state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
   state.ball.frozen = false;
@@ -1606,7 +1610,8 @@ test('active kick skips body trap (foot will handle contact in Phase C)', () => 
   state.ball.frozen = false;
   // Force an active kick on the player — body collider should be inert.
   p.kick.active = true;
-  p.kick.phase = 'windup';
+  p.kick.kind = 'ground';
+  p.kick.stage = 'windup';
   p.kick.timer = 0;
 
   // Run just long enough for the ball to reach the torso region.
@@ -1747,4 +1752,128 @@ test('solve2BoneIK scratch-out parameter is mutated and returned', () => {
   const returned = solve2BoneIK(6, -12, U, L, out);
   assert.equal(returned, out, 'returns same object');
   assert.ok(out.upperAngle !== -99, 'out was mutated');
+});
+
+/* ── Adaptive kick state machine — Phase C behavior ──────────── */
+
+/** Place p1 with the ball at his feet, stationary, ball within hip
+ *  reach along the body-axis. Returns the state. Used as a clean
+ *  kick-bench fixture. */
+function kickBenchState() {
+  const state = freshState();
+  state.p1.x = 300;
+  state.p1.y = 20;
+  state.p1.heading = 0;
+  state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 5;
+  state.ball.y = state.p1.y;
+  state.ball.z = 0;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  return state;
+}
+
+test('kick rejects when ball is beyond hip reach', () => {
+  const state = kickBenchState();
+  // Shove the ball 30 units forward — well beyond STICKMAN_UPPER_LEG +
+  // STICKMAN_LOWER_LEG = 20, even accounting for the drop to ball height.
+  state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 30;
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+  assert.equal(state.p1.kick.active, false, 'kick must not activate beyond reach');
+  assert.ok(
+    state.events.some((e) => e.type === 'kick_missed' && e.reason === 'out_of_reach'),
+    'should emit kick_missed with reason=out_of_reach',
+  );
+});
+
+test('kick footTarget tracks ball during windup and freezes at strike', () => {
+  const state = kickBenchState();
+  // Give the ball a small forward drift so its prediction moves each
+  // windup tick. Slow enough to stay in reach for the whole windup.
+  state.ball.vx = 0.4;
+
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+  assert.ok(state.p1.kick.active, 'kick committed');
+  assert.equal(state.p1.kick.stage, 'windup');
+  const targetAtStart = state.p1.kick.footTargetX;
+
+  // Mid-windup: prediction has shrunk (fewer remaining ticks), so
+  // with a ball still moving +x, the target SHOULD have moved.
+  const windupTicks = Math.ceil(KICK_WINDUP_MS / 16);
+  for (let i = 0; i < Math.floor(windupTicks / 2); i++) tick(state, NOOP, NOOP);
+  const targetMidWindup = state.p1.kick.footTargetX;
+  assert.notEqual(targetMidWindup, targetAtStart, 'target should update during windup');
+
+  // Drive to strike-start and capture the first frozen target.
+  while (state.p1.kick.stage === 'windup') tick(state, NOOP, NOOP);
+  assert.equal(state.p1.kick.stage, 'strike');
+  const targetAtStrike = state.p1.kick.footTargetX;
+
+  // One more strike tick: target must not change.
+  tick(state, NOOP, NOOP);
+  assert.equal(state.p1.kick.footTargetX, targetAtStrike, 'target frozen during strike');
+});
+
+test('kick fires on foot-ball contact during strike window', () => {
+  const state = kickBenchState();
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+  assert.ok(state.p1.kick.active);
+  // Drive through windup + first strike tick — contact should fire.
+  const strikeOnsetTicks = Math.ceil(KICK_WINDUP_MS / 16) + 1;
+  for (let i = 0; i < strikeOnsetTicks; i++) tick(state, NOOP, NOOP);
+  assert.ok(state.p1.kick.fired, `kick should have fired by tick ${strikeOnsetTicks}`);
+  assert.ok(state.ball.vx > 0, `ball should have gained +x velocity, got ${state.ball.vx}`);
+});
+
+test('kick misses when ball moves out of foot reach during windup', () => {
+  const state = kickBenchState();
+  // Launch the kick while the ball is stationary.
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+  assert.ok(state.p1.kick.active);
+  // Now YANK the ball way out of reach during windup so by the time
+  // strike opens, the frozen target is far from the actual ball.
+  state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 200;
+  // Drive past the full strike window, collecting events across
+  // ticks — state.events is cleared at the start of each tick so
+  // we can't inspect it once at the end.
+  let sawMiss = false;
+  const totalTicks = Math.ceil((KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS) / 16) + 2;
+  for (let i = 0; i < totalTicks; i++) {
+    tick(state, NOOP, NOOP);
+    if (state.events.some((e) => e.type === 'kick_missed' && e.reason === 'no_contact')) {
+      sawMiss = true;
+    }
+  }
+  assert.ok(sawMiss, 'should emit kick_missed with reason=no_contact across ticks');
+  assert.equal(state.p1.kick.fired, false, 'kick should not have fired');
+});
+
+test('kick facing cone rejects a ball behind the player', () => {
+  const state = kickBenchState();
+  state.p1.heading = Math.PI;  // facing -x, ball is in +x
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+  assert.equal(state.p1.kick.active, false, 'kick must not activate when facing away');
+  assert.ok(
+    state.events.some((e) => e.type === 'kick_missed' && e.reason === 'facing_away'),
+    'should emit kick_missed with reason=facing_away',
+  );
+});
+
+test('FOOT_RADIUS sphere contact is the actual kick gate', () => {
+  // Ball just barely outside (FOOT_RADIUS + BALL_RADIUS) from where
+  // the foot would land should NOT register contact — the old
+  // proximity-rectangle would have fired.
+  const state = kickBenchState();
+  state.ball.vx = 0;
+  // Prediction at strike = current ball position (vx=0). Place the
+  // ball such that foot reaches a point that is FOOT_RADIUS +
+  // BALL_RADIUS + 0.5 world units away from the actual ball center
+  // when the frozen target is reached. Simplest: start ball within
+  // reach for the reachability gate, then nudge it aside mid-windup.
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+  assert.ok(state.p1.kick.active);
+  // Shift the ball sideways by enough that it misses the foot
+  // sphere but stays within the old proximity rectangle.
+  state.ball.y = state.p1.y + (FOOT_RADIUS + BALL_RADIUS + 2) / Z_STRETCH;
+  for (let i = 0; i < 30; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.p1.kick.fired, false, 'foot-sphere should miss a ball at > foot+ball radius');
 });

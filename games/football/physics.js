@@ -83,28 +83,33 @@ const MIN_KICK_POWER = 0.15;
 const MIN_KICK_STAMINA = 0.2;
 const KICK_NOISE_SCALE = 0.3;
 const KICK_NOISE_VERT = 0.5;
-// Ground-kick reach: foot/leg swings in the (facing, up) plane only,
-// so lateral reach is essentially zero. The allowed ball offset on
-// the depth axis is one body-half + ball radius + a small slack for
-// animation smoothing. Expressed as center-to-center in the canKick
-// check below (see the mid-Y formula, not the legacy top-Y version).
-const KICK_REACH_SLACK_Y = 1.5;
-const KICK_REACH_X_MULT = 1.0;
-export const KICK_REACH_Y = PLAYER_HEIGHT / 2 + BALL_RADIUS + KICK_REACH_SLACK_Y;
-// Airkick has a slightly more generous depth tolerance — the leap
-// lets the player tilt into the ball a touch past the standing footprint.
-const AIRKICK_REACH_SLACK_Y = 3;
-const AIRKICK_REACH_X_MULT = 1.5;
-const AIRKICK_REACH_Y = PLAYER_HEIGHT / 2 + BALL_RADIUS + AIRKICK_REACH_SLACK_Y;
 const AIRKICK_MAX_Z = 20;
 export const AIRKICK_MS = 350;
 export const AIRKICK_PEAK_FRAC = 0.4;
 const AIRKICK_DZ_THRESHOLD = 0.5;
-// Ground-kick timing: fire impact at KICK_WINDUP_MS, deactivate at
-// KICK_DURATION_MS. Both are *total* elapsed times, not spans — so
-// the recovery window lasts (KICK_DURATION_MS - KICK_WINDUP_MS).
+// Ground-kick timing: windup → strike window → recovery → idle.
+// `KICK_WINDUP_MS` and `AIRKICK_PEAK_FRAC * AIRKICK_MS` mark the
+// *start* of the strike phase (not the instant of impact); impact
+// fires at the first tick inside the strike window on which the
+// foot-contact sphere overlaps the ball.
 export const KICK_WINDUP_MS = 96;
 export const KICK_DURATION_MS = 288;
+// Contact window: IK locks the foot target and runs a sphere-vs-
+// ball overlap every tick. ~48 ms = 3 ticks — enough for the ball
+// to move into or out of the frozen target but not so long that
+// the strike feels slow. Air and ground kicks share the window.
+export const KICK_STRIKE_WINDOW_MS = 48;
+// Effective contact radius on the foot. Smaller than a real cleat
+// but large enough that a ball within ~1.5 world units of the
+// frozen foot target still registers a hit on the first tick.
+export const FOOT_RADIUS = 1.5;
+// Reachability gate: distance from the hip-anchor to the predicted
+// ball at strike time must not exceed the full stretched leg. See
+// `KICK_REACH_MAX` below — computed from the rig constants once
+// they're declared.
+// Kept exported for fallback.js compatibility until Phase D replaces
+// the heuristic's `inKickRange` check with a hip-reach test.
+export const KICK_REACH_Y = PLAYER_HEIGHT / 2 + BALL_RADIUS + 1.5;
 const KICK_DIR_MIN_LEN = 0.01;
 const WASTED_KICK_SPEED = MIN_KICK_POWER * 0.1;
 
@@ -185,6 +190,11 @@ const HIP_BASE_Z      = STICKMAN_LIMB_FULL_H;                          // 20
 const SHOULDER_Z      = HIP_BASE_Z + STICKMAN_SHOULDER_OFY;            // 40.24
 const HEAD_CENTER_Z   = SHOULDER_Z + STICKMAN_HEAD_GAP_Y + STICKMAN_HEAD_RADIUS; // 47.11
 
+// Maximum kick reach — full stretched leg length. See the Kick
+// constants block above for context; defined here because it needs
+// the rig constants.
+const KICK_REACH_MAX = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG;        // 20
+
 /* ── Field & state factories ──────────────────────────────────── */
 
 export function createField(width = FIELD_WIDTH_REF) {
@@ -242,14 +252,21 @@ function createPlayer(side, field) {
     exhausted: false,
     // Pre-allocated kick slot — gated by `.active` so we never allocate
     // a fresh object per kick attempt on the hot path.
+    //
+    // `kind` picks ground vs air; `stage` walks windup → strike →
+    // recovery. `footTargetX/Y/Z` is the world-space point the foot
+    // aims to reach at strike; it tracks the predicted ball during
+    // windup and freezes when stage flips to 'strike'.
     kick: {
       active: false,
-      phase: 'windup', // 'windup' (ground) | 'airkick'
+      kind: 'ground',         // 'ground' | 'air'
+      stage: 'windup',        // 'windup' | 'strike' | 'recovery'
       timer: 0,
       airZ: 0,
       fired: false,
       dx: 0, dy: 0, dz: 0,
       power: 0,
+      footTargetX: 0, footTargetY: 0, footTargetZ: 0,
     },
     pushTimer: 0,
     // Heading: 0 = facing toward +x (right side of field). Players
@@ -445,9 +462,9 @@ function applyAction(state, p, out) {
     tryPush(state, p, opp, out[ACTION_PUSH_POWER]);
   }
 
-  if (out[ACTION_KICK_GATE] > 0 && canKick(state, p)) {
-    startKick(
-      p,
+  if (out[ACTION_KICK_GATE] > 0) {
+    tryStartKick(
+      state, p,
       out[ACTION_KICK_DX],
       out[ACTION_KICK_DY],
       out[ACTION_KICK_DZ],
@@ -1243,95 +1260,222 @@ function resolveBallGoalBox(state, box) {
 
 /* ── Kick state machine ──────────────────────────────────────── */
 
-function canKick(state, p) {
-  if (p.kick.active) return false;
-  const f = state.field;
-  const centerX = p.x + f.playerWidth / 2;
-  const centerY = p.y + PLAYER_HEIGHT / 2;
-  if (Math.abs(state.ball.x - centerX) >= f.playerWidth * KICK_REACH_X_MULT) return false;
-  if (Math.abs(state.ball.y - centerY) >= KICK_REACH_Y) return false;
-  return facingToward(p, state.ball.x, state.ball.y * Z_STRETCH, KICK_FACE_TOL);
+/**
+ * Hip anchor in WORLD coords — the pivot the leg swings from.
+ * Matches the renderer's draw origin: `(p.x + PLAYER_WIDTH/2, p.y *
+ * Z_STRETCH)` on the floor, HIP_BASE_Z above the ground, offset
+ * upward during an airkick by `p.airZ`.
+ */
+const _scratchHip = { x: 0, y: 0, z: 0 };
+function hipAnchor(p, out) {
+  out.x = p.x + PLAYER_WIDTH / 2;
+  out.y = HIP_BASE_Z + (p.airZ || 0);
+  out.z = p.y * Z_STRETCH;
+  return out;
 }
 
-function startKick(p, dx, dy, dz, power) {
-  const kickDx = clamp(dx, -1, 1);
-  const kickDy = clamp(dy, -1, 1);
+/**
+ * Project a world-space point into the player's hip-local frame:
+ * `fwd` along the heading, `up` vertical, `perp` perpendicular to
+ * heading in the floor plane. The IK solver only uses (fwd, up);
+ * `perp` feeds the sphere-sphere contact test so a ball that's off
+ * to the side still misses even if (fwd, up) lines up.
+ */
+const _scratchLocal = { fwd: 0, up: 0, perp: 0 };
+function projectHipLocal(hip, heading, wx, wy, wz, out) {
+  const dx = wx - hip.x;
+  const dy = wy - hip.y;
+  const dz = wz - hip.z;
+  const fwdX = Math.cos(heading);
+  const fwdZ = Math.sin(heading);
+  out.fwd  = dx * fwdX + dz * fwdZ;
+  out.up   = dy;
+  out.perp = -dx * fwdZ + dz * fwdX;
+  return out;
+}
+
+/** Strike-tick lead for the reachability check and initial foot
+ *  target prediction. Ground kicks strike at `KICK_WINDUP_MS`; air
+ *  kicks strike at the peak of the jump arc. */
+function strikeLeadTicks(kind) {
+  return kind === 'air'
+    ? Math.round((AIRKICK_PEAK_FRAC * AIRKICK_MS) / TICK_MS)
+    : Math.round(KICK_WINDUP_MS / TICK_MS);
+}
+
+/**
+ * Predict the ball's world-space CENTER position `ticks` from now.
+ * Includes gravity on the vertical axis and clamps at the ground so
+ * a shot-rolling-along-the-floor prediction doesn't dip below 0.
+ * Ignores drag and bounces — accurate enough for a ~6-tick lead.
+ */
+const _scratchPredicted = { x: 0, y: 0, z: 0 };
+function predictBallAtStrike(ball, ticks, out) {
+  const nx = ball.x + ball.vx * ticks;
+  const ny_phys = ball.y + ball.vy * ticks;
+  const nz_phys = Math.max(0, ball.z + ball.vz * ticks - 0.5 * GRAVITY * ticks * ticks);
+  out.x = nx;
+  out.y = nz_phys + BALL_RADIUS;   // world vertical — ball CENTER, not bottom
+  out.z = ny_phys * Z_STRETCH;
+  return out;
+}
+
+/** Compute foot world position by IK'ing toward `kick.footTarget`.
+ *  Writes (x, y=vertical, z=depth) into `out`. */
+const _scratchIKRes = { upperAngle: 0, lowerAngle: 0, footFwd: 0, footUp: 0 };
+function ikFootWorld(p, out) {
+  const k = p.kick;
+  const hip = hipAnchor(p, _scratchHip);
+  const local = projectHipLocal(hip, p.heading, k.footTargetX, k.footTargetY, k.footTargetZ, _scratchLocal);
+  solve2BoneIK(local.fwd, local.up, STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG, _scratchIKRes);
+  const fwdX = Math.cos(p.heading);
+  const fwdZ = Math.sin(p.heading);
+  out.x = hip.x + _scratchIKRes.footFwd * fwdX;
+  out.y = hip.y + _scratchIKRes.footUp;
+  out.z = hip.z + _scratchIKRes.footFwd * fwdZ;
+  return out;
+}
+
+/**
+ * Reachability + facing gate. Called from applyAction when the NN
+ * or fallback asks to kick. Returns true if the commit succeeded
+ * and the kick is now active. Failure reasons are surfaced as
+ * `kick_missed` events so the teacher and trained brains both see
+ * the same rejection signal.
+ */
+const _scratchFoot = { x: 0, y: 0, z: 0 };
+function tryStartKick(state, p, dx, dy, dz, power) {
+  if (p.kick.active) return false;
   const kickDz = clamp(dz, -1, 1);
-  const kickPower = (clamp(power, -1, 1) + 1) / 2;
+  const kind = kickDz > AIRKICK_DZ_THRESHOLD ? 'air' : 'ground';
+  const leadTicks = strikeLeadTicks(kind);
+
+  const predicted = predictBallAtStrike(state.ball, leadTicks, _scratchPredicted);
+  const hip = hipAnchor(p, _scratchHip);
+  const local = projectHipLocal(hip, p.heading, predicted.x, predicted.y, predicted.z, _scratchLocal);
+  const dist = Math.hypot(local.fwd, local.up, local.perp);
+  const which = p === state.p1 ? 'p1' : 'p2';
+  if (dist > KICK_REACH_MAX) {
+    if (state.recordEvents) {
+      state.events.push({ type: 'kick_missed', player: which, reason: 'out_of_reach' });
+    }
+    return false;
+  }
+  // Body-axis facing cone. `facingToward` is bubble-centric (off by
+  // PLAYER_HEIGHT/2 on the depth axis) — fine for push geometry, but
+  // here the reach and the cone both have to originate from the same
+  // body-axis point or a ball aligned with the body reads as "off to
+  // the side" of the bubble center.
+  const facePivotZ = p.y * Z_STRETCH;
+  const facePivotX = p.x + PLAYER_WIDTH / 2;
+  const wantAngle = Math.atan2(predicted.z - facePivotZ, predicted.x - facePivotX);
+  if (Math.abs(wrapAngle(wantAngle - p.heading)) >= KICK_FACE_TOL) {
+    if (state.recordEvents) {
+      state.events.push({ type: 'kick_missed', player: which, reason: 'facing_away' });
+    }
+    return false;
+  }
+
   const k = p.kick;
   k.active = true;
+  k.kind = kind;
+  k.stage = 'windup';
   k.timer = 0;
   k.fired = false;
-  k.dx = kickDx; k.dy = kickDy; k.dz = kickDz;
-  k.power = kickPower;
-
-  if (dz > AIRKICK_DZ_THRESHOLD) {
-    const jumpFrac = (dz - AIRKICK_DZ_THRESHOLD) * 2;
-    k.phase = 'airkick';
+  k.dx = clamp(dx, -1, 1);
+  k.dy = clamp(dy, -1, 1);
+  k.dz = kickDz;
+  k.power = (clamp(power, -1, 1) + 1) / 2;
+  if (kind === 'air') {
+    const jumpFrac = (kickDz - AIRKICK_DZ_THRESHOLD) * 2;
     k.airZ = jumpFrac * AIRKICK_MAX_Z;
     p.stamina = Math.max(0, p.stamina - STAMINA_AIRKICK_DRAIN);
   } else {
-    k.phase = 'windup';
     k.airZ = 0;
   }
+  k.footTargetX = predicted.x;
+  k.footTargetY = predicted.y;
+  k.footTargetZ = predicted.z;
+  return true;
 }
 
-/** Returns true if the player is mid-kick and should not accept new outputs. */
+/**
+ * Sphere-vs-sphere foot-ball contact test. The foot is IK'd to the
+ * (frozen) footTarget each strike tick; contact fires on first
+ * overlap against `(FOOT_RADIUS + BALL_RADIUS)`. Compared in world
+ * coords so the depth-axis Z_STRETCH compression doesn't leak into
+ * the test radius.
+ */
+function testFootContact(state, p) {
+  const ball = state.ball;
+  if (ball.frozen) return false;
+  const foot = ikFootWorld(p, _scratchFoot);
+  const ballWX = ball.x;
+  const ballWY = ball.z + BALL_RADIUS;
+  const ballWZ = ball.y * Z_STRETCH;
+  const dx = ballWX - foot.x;
+  const dy = ballWY - foot.y;
+  const dz = ballWZ - foot.z;
+  const r = FOOT_RADIUS + BALL_RADIUS;
+  return dx * dx + dy * dy + dz * dz <= r * r;
+}
+
+/** Advance the kick state machine. Returns true if the player is
+ *  mid-kick and should NOT accept new outputs this tick. */
 function advanceKick(state, p) {
   const k = p.kick;
   if (!k.active) return false;
   k.timer += TICK_MS;
+  const isAir = k.kind === 'air';
+  const windupMs = isAir ? AIRKICK_PEAK_FRAC * AIRKICK_MS : KICK_WINDUP_MS;
+  const strikeEndMs = windupMs + KICK_STRIKE_WINDOW_MS;
+  const durationMs = isAir ? AIRKICK_MS : KICK_DURATION_MS;
 
-  if (k.phase === 'airkick') {
+  if (isAir) {
     const animFrac = Math.min(k.timer / AIRKICK_MS, 1);
     p.airZ = Math.sin(animFrac * Math.PI) * k.airZ;
-    if (!k.fired && animFrac >= AIRKICK_PEAK_FRAC) {
+  }
+
+  // Windup: foot target tracks predicted ball. Froze automatically
+  // when we transition to 'strike' — we just stop updating it.
+  if (k.stage === 'windup') {
+    const remainingTicks = Math.max(0, Math.round((windupMs - k.timer) / TICK_MS));
+    const predicted = predictBallAtStrike(state.ball, remainingTicks, _scratchPredicted);
+    k.footTargetX = predicted.x;
+    k.footTargetY = predicted.y;
+    k.footTargetZ = predicted.z;
+    if (k.timer >= windupMs) k.stage = 'strike';
+  }
+
+  if (k.stage === 'strike') {
+    if (!k.fired && testFootContact(state, p)) {
       k.fired = true;
       executeKick(state, p);
     }
-    if (animFrac >= 1) {
-      p.airZ = 0;
-      k.active = false;
+    if (k.timer >= strikeEndMs) {
+      if (!k.fired && state.recordEvents) {
+        state.events.push({
+          type: 'kick_missed',
+          player: p === state.p1 ? 'p1' : 'p2',
+          reason: 'no_contact',
+        });
+      }
+      k.stage = 'recovery';
     }
-    return true;
   }
 
-  // Ground kick: windup → fire → recovery → idle
-  if (!k.fired && k.timer >= KICK_WINDUP_MS) {
-    k.fired = true;
-    executeKick(state, p);
-  }
-  if (k.timer >= KICK_DURATION_MS) {
+  if (k.timer >= durationMs) {
+    if (isAir) p.airZ = 0;
     k.active = false;
+    k.stage = 'windup';
   }
   return true;
 }
 
 function executeKick(state, p) {
-  const f = state.field;
   const ball = state.ball;
   const k = p.kick;
   const which = p === state.p1 ? 'p1' : 'p2';
-  const isAirkick = k.phase === 'airkick';
-
-  if (isAirkick && ball.z <= 1) {
-    if (state.recordEvents) state.events.push({ type: 'kick_missed', player: which, reason: 'airkick_ground_ball' });
-    return;
-  }
-  if (!isAirkick && ball.z > PLAYER_HEIGHT) {
-    if (state.recordEvents) state.events.push({ type: 'kick_missed', player: which, reason: 'ground_kick_high_ball' });
-    return;
-  }
-
-  if (isAirkick) {
-    const centerX = p.x + f.playerWidth / 2;
-    const centerY = p.y + PLAYER_HEIGHT / 2;
-    const reachX = f.playerWidth * AIRKICK_REACH_X_MULT;
-    if (Math.abs(ball.x - centerX) > reachX || Math.abs(ball.y - centerY) > AIRKICK_REACH_Y) {
-      if (state.recordEvents) state.events.push({ type: 'kick_missed', player: which, reason: 'airkick_out_of_range' });
-      return;
-    }
-  }
 
   const rawPower = Math.max(MIN_KICK_POWER, k.power);
   const force = rawPower * MAX_KICK_POWER * Math.max(MIN_KICK_STAMINA, p.stamina);

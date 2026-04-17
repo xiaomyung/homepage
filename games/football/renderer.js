@@ -1378,7 +1378,7 @@ export class Renderer {
     // already computed by the physics tick for the airkick phase.
     const kick = player.kick;
     const isKicking = !!(kick && kick.active);
-    const isAirkick = isKicking && kick.phase === 'airkick';
+    const isAirkick = isKicking && kick.kind === 'air';
     const airLift   = player.airZ || 0;
 
     anim.tilt      += (targetTilt      - anim.tilt)      * STICKMAN_SMOOTH;

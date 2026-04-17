@@ -107,9 +107,6 @@ export const FOOT_RADIUS = 1.5;
 // ball at strike time must not exceed the full stretched leg. See
 // `KICK_REACH_MAX` below — computed from the rig constants once
 // they're declared.
-// Kept exported for fallback.js compatibility until Phase D replaces
-// the heuristic's `inKickRange` check with a hip-reach test.
-export const KICK_REACH_Y = PLAYER_HEIGHT / 2 + BALL_RADIUS + 1.5;
 const KICK_DIR_MIN_LEN = 0.01;
 const WASTED_KICK_SPEED = MIN_KICK_POWER * 0.1;
 
@@ -1356,6 +1353,30 @@ function ikFootWorld(p, out) {
   out.y = hip.y + _scratchIKRes.footUp;
   out.z = hip.z + _scratchIKRes.footFwd * fwdZ;
   return out;
+}
+
+/**
+ * Would a ground kick by `p` pass the reachability + facing gate
+ * right now? Mirrors `tryStartKick`'s ground-kick path exactly, so
+ * the fallback teacher never emits a kick action the engine then
+ * silently rejects.
+ *
+ * `safetyMargin` tightens the reach threshold — fallback calls this
+ * with a small margin so the teacher only commits on clearly-in-
+ * reach balls, avoiding flapping at the edge. Pure, allocation-
+ * free (reuses the module scratch buffers).
+ */
+export function canKickReach(state, p, safetyMargin = 0) {
+  const leadTicks = Math.round(KICK_WINDUP_MS / TICK_MS);
+  const predicted = predictBallAtStrike(state.ball, leadTicks, _scratchPredicted);
+  const hip = hipAnchor(p, 'center', _scratchHip);
+  const local = projectHipLocal(hip, p.heading, predicted.x, predicted.y, predicted.z, _scratchLocal);
+  const dist = Math.hypot(local.fwd, local.up, local.perp);
+  if (dist > KICK_REACH_MAX - safetyMargin) return false;
+  const facePivotX = p.x + PLAYER_WIDTH / 2;
+  const facePivotZ = p.y * Z_STRETCH;
+  const wantAngle = Math.atan2(predicted.z - facePivotZ, predicted.x - facePivotX);
+  return Math.abs(wrapAngle(wantAngle - p.heading)) < KICK_FACE_TOL;
 }
 
 /**

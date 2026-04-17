@@ -29,6 +29,7 @@ import {
   FOOT_RADIUS,
   kickLegExtension,
   kickLegPose,
+  canKickReach,
   AIRKICK_MS,
   AIRKICK_PEAK_FRAC,
 } from '../physics.js';
@@ -1796,6 +1797,70 @@ test('kick prediction matches physics integration over 6 + 9 ticks', () => {
       `lead ${leadTicks}: predicted z ${predictedZ}, actual ${actualZ}`,
     );
   }
+});
+
+/* ── canKickReach ↔ tryStartKick parity ──────────────────────── */
+
+test('canKickReach matches tryStartKick commit exactly (no ghost outputs)', () => {
+  // Scan a grid of ball positions around a stationary player. For
+  // each position, canKickReach(margin=0) must match whether
+  // applyAction/tryStartKick actually commits a kick. If the two
+  // ever disagree the teacher emits kick actions the physics
+  // silently rejects (or vice versa) — kills imitation signal.
+  const disagreements = [];
+  for (let dx = -25; dx <= 25; dx += 5) {
+    for (let dy = -6; dy <= 6; dy += 2) {
+      for (let bz = 0; bz <= 12; bz += 4) {
+        const state = freshState();
+        state.p1.x = 400;
+        state.p1.y = 25;
+        state.p1.heading = 0;
+        state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + dx;
+        state.ball.y = state.p1.y + dy;
+        state.ball.z = bz;
+        state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+        state.ball.frozen = false;
+        const predicted = canKickReach(state, state.p1);
+        tick(state, kickAction(1, 0, 0, 1), NOOP);
+        const actual = state.p1.kick.active;
+        if (predicted !== actual) {
+          disagreements.push({ dx, dy, bz, predicted, actual });
+        }
+      }
+    }
+  }
+  assert.equal(disagreements.length, 0,
+    `canKickReach must match tryStartKick, disagreements: ${JSON.stringify(disagreements)}`);
+});
+
+test('canKickReach safetyMargin shrinks the reach sphere', () => {
+  // Hip world vertical is HIP_BASE_Z=20; ball at ground has
+  // up = −15.776 world units. Max forward reach at ground level is
+  // sqrt(20² − 15.776²) ≈ 12.3 for margin=0. With margin=2 (reach
+  // capped at 18) the forward budget shrinks to sqrt(18² − 15.776²)
+  // ≈ 8.7. A ball 10 forward sits between the two thresholds.
+  const state = freshState();
+  state.p1.x = 400;
+  state.p1.y = 25;
+  state.p1.heading = 0;
+  state.ball.y = state.p1.y;
+  state.ball.z = 0;
+  state.ball.frozen = false;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+
+  // fwd = 10 — inside margin=0, outside margin=2
+  state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 10;
+  assert.equal(canKickReach(state, state.p1, 0), true, 'margin=0 accepts at fwd=10');
+  assert.equal(canKickReach(state, state.p1, 2), false, 'margin=2 rejects at fwd=10');
+
+  // fwd = 6 — well inside both margins.
+  state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 6;
+  assert.equal(canKickReach(state, state.p1, 0), true, 'margin=0 accepts at fwd=6');
+  assert.equal(canKickReach(state, state.p1, 2), true, 'margin=2 accepts at fwd=6');
+
+  // fwd = 14 — beyond both margins.
+  state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 14;
+  assert.equal(canKickReach(state, state.p1, 0), false, 'margin=0 rejects at fwd=14');
 });
 
 /* ── Adaptive kick state machine — Phase C behavior ──────────── */

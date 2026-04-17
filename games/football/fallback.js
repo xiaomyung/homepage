@@ -20,8 +20,6 @@ import {
   Z_STRETCH,
   PUSH_RANGE_X,
   PUSH_RANGE_Y,
-  KICK_REACH_Y,
-  KICK_FACE_TOL,
   PUSH_FACE_TOL,
   NN_OUTPUT_SIZE,
   ACTION_MOVE_X,
@@ -34,13 +32,16 @@ import {
   ACTION_PUSH_GATE,
   ACTION_PUSH_POWER,
   facingToward,
-} from './physics.js?v=54';
+  canKickReach,
+} from './physics.js?v=55';
 
 const AI_PREDICT_FRAMES = 20;
-// Teacher-only ball-height ceiling. physics.js's ground-kick check is
-// stricter (PLAYER_HEIGHT = 6); this slightly wider window lets the
-// teacher start aiming while the ball is still descending.
-const KICK_BALL_Z_MAX = 10;
+// Conservative margin on the hip-reach gate. Physics accepts kicks
+// right up to `U+L = 20` world units; the teacher holds back by
+// this much so it only emits `kick=1` when the target is clearly
+// reachable. Prevents flapping on the edge and keeps the imitation
+// signal crisp.
+const FALLBACK_SAFETY_MARGIN = 2;
 
 const KICK_POWER_NORM = 0.8;
 const KICK_DZ = 0.2;
@@ -65,16 +66,12 @@ export function fallbackAction(state, which) {
   const moveX = dx / dist;
   const moveY = dy / dist;
 
-  // Kick gate uses the *current* ball position (not the lead target)
-  // plus the same face cone as physics.canKick so the teacher never
-  // emits actions that the physics silently rejects.
-  const pMidY = p.y + PLAYER_HEIGHT / 2;
-  const inKickRange =
-    Math.abs(ball.x - center) < pw &&
-    Math.abs(ball.y - pMidY) < KICK_REACH_Y &&
-    ball.z < KICK_BALL_Z_MAX;
-  const canKickNow = inKickRange
-    && facingToward(p, ball.x, ball.y * Z_STRETCH, KICK_FACE_TOL);
+  // Kick gate mirrors `tryStartKick`'s ground-kick check: hip-to-
+  // predicted-ball distance ≤ `U+L - FALLBACK_SAFETY_MARGIN`, plus
+  // the body-axis facing cone. Any kick the teacher emits will be
+  // committed by the physics on the same tick — no ghost outputs
+  // polluting the imitation signal.
+  const canKickNow = canKickReach(state, p, FALLBACK_SAFETY_MARGIN);
 
   // Aim at the opponent's goal: +1 for the left side, -1 for the right.
   const kickDirX = p.side === 'left' ? 1 : -1;

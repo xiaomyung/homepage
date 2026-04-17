@@ -26,7 +26,7 @@ import {
   TICK_MS,
   NN_INPUT_SIZE,
   NN_ACTION_STRIDE,
-} from './physics.js?v=54';
+} from './physics.js?v=55';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import { createTrainingOrchestrator } from './training-orchestrator.js?v=2';

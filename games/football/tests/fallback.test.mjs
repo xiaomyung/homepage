@@ -64,11 +64,15 @@ test('fallback move vector is unit-length (or near it)', () => {
 test('fallback kicks when ball is within reach on the ground', () => {
   const state = freshState();
   const f = state.field;
-  // Put ball right on top of the player, on the ground
+  // Put ball right in front of the player, aligned with the body
+  // axis so the new hip-sphere reach gate accepts it. Under the
+  // old bubble-centric check the ball could be `+PLAYER_HEIGHT/2`
+  // off-depth; with the IK reach sphere the perp offset eats too
+  // much of the `U+L = 20` budget and the kick rejects.
   state.p1.x = 400;
   state.p1.y = 20;
   state.ball.x = state.p1.x + f.playerWidth / 2; // centered on player
-  state.ball.y = state.p1.y + 3;
+  state.ball.y = state.p1.y;
   state.ball.z = 0;
   state.ball.vx = 0;
 

@@ -38,10 +38,13 @@ import {
   STICKMAN_LIMB_FULL_H,
   STICKMAN_UPPER_LEG,
   STICKMAN_LOWER_LEG,
+  STICKMAN_UPPER_ARM,
+  STICKMAN_LOWER_ARM,
   STICKMAN_TORSO_RADIUS,
   STICKMAN_HEAD_RADIUS,
   STICKMAN_LEG_RADIUS,
-  STICKMAN_ARM_RADIUS,
+  STICKMAN_UPPER_ARM_RADIUS,
+  STICKMAN_LOWER_ARM_RADIUS,
   kickLegPose,
 } from './physics.js';
 
@@ -64,11 +67,11 @@ const STICKMAN_TILT_MAX = 0.45;
 // outer silhouette is unchanged). Delta is in world units.
 const STICKMAN_TORSO_SHELL_THICKNESS = 1.0;
 const STICKMAN_TORSO_FILL_RADIUS = STICKMAN_TORSO_RADIUS - STICKMAN_TORSO_SHELL_THICKNESS;
-const STICKMAN_FIST_RADIUS  = 3.0;
-// Kneecap — a small bump at the hinge. Slightly under the leg shaft
-// radius so it reads as a joint detail, not a growth.
+// Joint spheres — a small bump at each hinge. Slightly under the
+// shaft radius so they read as joint detail, not a growth.
 const STICKMAN_KNEE_RADIUS  = STICKMAN_LEG_RADIUS * 0.92;
-// Sphere pool: 1 head + up to 2 fists per stickman × 2 stickmen = 6
+const STICKMAN_ELBOW_RADIUS = STICKMAN_LOWER_ARM_RADIUS * 0.92;
+// Sphere pool: 1 head + 2 elbows + 2 knees per stickman × 2 stickmen = 10
 // for upper-body, plus 2 knees per stickman × 2 stickmen = 4 for
 // knees, plus a spare. (Torso and limb pools are sized inline
 // alongside their geometries.)
@@ -89,6 +92,20 @@ const STICKMAN_KNEE_FLEX_SLOPE = 0.4;
 function shinAngleFor(thighAngle) {
   const flex = Math.min(STICKMAN_KNEE_FLEX_MAX, STICKMAN_KNEE_FLEX_SLOPE * Math.abs(thighAngle));
   return thighAngle * (1 - flex);
+}
+
+// Elbow flex for the forearm during cosmetic (non-IK) arm swings.
+// Peaks at `|angle| = π/2` (arms horizontal — mid-swing or punching
+// forward) and smoothly tapers to zero at both `0` (neutral, arms
+// at rest) and `±π` (celebrate — arms straight overhead). The walk
+// anim uses small angles in the linear zone; celebrate reaches the
+// other zero so arms read as fully extended, not crumpled.
+// The punch pose uses explicit IK in `pushArmPose`, not this curve.
+const STICKMAN_ELBOW_FLEX_MAX = 0.45;
+function forearmAngleFor(upperArmAngle) {
+  const mag = Math.min(Math.abs(upperArmAngle), Math.PI);
+  const flex = STICKMAN_ELBOW_FLEX_MAX * Math.sin(mag);
+  return upperArmAngle * (1 - flex);
 }
 
 // Celebration pose — jumping-jack with arms straight up.
@@ -114,7 +131,6 @@ const PUSH_LOWER_T        = 0.85;
 const PUSH_WINDUP_DIST    = 0.70 * STICKMAN_GLYPH_SIZE;  // pivot pull-back
 const PUSH_CROUCH_DEPTH   = 0.30 * STICKMAN_GLYPH_SIZE;  // upper body dip during windup
 const PUSH_HOP_DIST       = 0.40 * STICKMAN_GLYPH_SIZE;  // whole body hop on strike
-const PUSH_FIST_PULSE     = 0.35;                        // fist grows to (1 + pulse)× at strike peak
 const PUSH_EXTEND_ANGLE   = Math.PI * 0.5;
 const PUSH_BACK_TILT      = 0.28;                        // rad — body leans back during windup
 const PUSH_FWD_TILT       = 0.42;                        // rad — body leans forward on strike
@@ -363,17 +379,23 @@ export class Renderer {
     // than the outline's, so `_placeTorso` insets the clipping range
     // accordingly (otherwise stamina=0/1 would map outside the fill).
     const torsoFillBodyLen = torsoBodyLen;
-    const armBodyLen = STICKMAN_LIMB_FULL_H - 2 * STICKMAN_ARM_RADIUS;
+    // Arms split at the elbow — upper arm is 15% thicker than the
+    // forearm. Both halves have body_len = UPPER_ARM − 2·radius so
+    // the overlapping caps at the elbow line up with the (larger)
+    // elbow sphere the joint draws at that point.
+    const upperArmBodyLen = STICKMAN_UPPER_ARM - 2 * STICKMAN_UPPER_ARM_RADIUS;
+    const lowerArmBodyLen = STICKMAN_LOWER_ARM - 2 * STICKMAN_LOWER_ARM_RADIUS;
     // Leg is drawn as TWO half-length capsules meeting at the knee,
     // so the mesh geometry's span is UPPER_LEG (= LOWER_LEG), not the
     // full limb height. Overlapping hemispherical caps at the knee
     // read as a natural joint without a separate knee sphere.
     const halfLegBodyLen = STICKMAN_UPPER_LEG - 2 * STICKMAN_LEG_RADIUS;
-    const stickmanTorsoGeom     = new THREE.CapsuleGeometry(STICKMAN_TORSO_RADIUS,      torsoBodyLen,     4, 12);
-    const stickmanTorsoFillGeom = new THREE.CapsuleGeometry(STICKMAN_TORSO_FILL_RADIUS, torsoFillBodyLen, 4, 12);
-    const stickmanArmGeom       = new THREE.CapsuleGeometry(STICKMAN_ARM_RADIUS,        armBodyLen,       4, 10);
-    const stickmanLegGeom       = new THREE.CapsuleGeometry(STICKMAN_LEG_RADIUS,        halfLegBodyLen,   4, 10);
-    this._staticGeometries.push(stickmanTorsoGeom, stickmanTorsoFillGeom, stickmanArmGeom, stickmanLegGeom);
+    const stickmanTorsoGeom      = new THREE.CapsuleGeometry(STICKMAN_TORSO_RADIUS,      torsoBodyLen,     4, 12);
+    const stickmanTorsoFillGeom  = new THREE.CapsuleGeometry(STICKMAN_TORSO_FILL_RADIUS, torsoFillBodyLen, 4, 12);
+    const stickmanUpperArmGeom   = new THREE.CapsuleGeometry(STICKMAN_UPPER_ARM_RADIUS,  upperArmBodyLen,  4, 10);
+    const stickmanLowerArmGeom   = new THREE.CapsuleGeometry(STICKMAN_LOWER_ARM_RADIUS,  lowerArmBodyLen,  4, 10);
+    const stickmanLegGeom        = new THREE.CapsuleGeometry(STICKMAN_LEG_RADIUS,        halfLegBodyLen,   4, 10);
+    this._staticGeometries.push(stickmanTorsoGeom, stickmanTorsoFillGeom, stickmanUpperArmGeom, stickmanLowerArmGeom, stickmanLegGeom);
 
     // Fill-capsule dimensions drive the disc scaling math in _placeTorso
     // (the disc caps the FILL, not the outline).
@@ -387,7 +409,8 @@ export class Renderer {
     this._stickmanTorsoFill = [];
     this._stickmanTorsoDisc = [];
     this._stickmanTorsoFillPlanes = [];
-    this._stickmanArm = [];
+    this._stickmanUpperArm = [];
+    this._stickmanLowerArm = [];
     this._stickmanLeg = [];
 
     // Water-surface disc geometry — circle in the XZ plane, sized to
@@ -398,14 +421,23 @@ export class Renderer {
     discGeom.rotateX(-Math.PI / 2);
     this._staticGeometries.push(discGeom);
 
-    const makeArmMesh = () => {
+    const makeUpperArmMesh = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-      const mesh = new THREE.Mesh(stickmanArmGeom, mat);
+      const mesh = new THREE.Mesh(stickmanUpperArmGeom, mat);
       mesh.visible = false;
       mesh.frustumCulled = false;
       this._staticMaterials.push(mat);
       this.scene.add(mesh);
-      this._stickmanArm.push(mesh);
+      this._stickmanUpperArm.push(mesh);
+    };
+    const makeLowerArmMesh = () => {
+      const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+      const mesh = new THREE.Mesh(stickmanLowerArmGeom, mat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      this._staticMaterials.push(mat);
+      this.scene.add(mesh);
+      this._stickmanLowerArm.push(mesh);
     };
     const makeLegMesh = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
@@ -469,13 +501,15 @@ export class Renderer {
       makeTorsoFillMesh();
       makeTorsoDiscMesh();
     }
-    // Two players × 2 arms = 4 arms on screen (pool of 8 for
-    // headroom). Legs are split at the knee: 2 players × 2 legs ×
-    // 2 halves = 8, so a pool of 16 keeps the same headroom ratio.
-    for (let i = 0; i < 8; i++) makeArmMesh();
+    // Arms and legs both split at a joint: 2 players × 2 limbs ×
+    // 2 halves = 8 segments of each kind. Pools of 8 with no slack
+    // are fine (meshes are static and the draw order is
+    // deterministic); bump if future anims add extra draws.
+    for (let i = 0; i < 8; i++) { makeUpperArmMesh(); makeLowerArmMesh(); }
     for (let i = 0; i < 16; i++) makeLegMesh();
     this._stickmanTorsoCursor = 0;
-    this._stickmanArmCursor = 0;
+    this._stickmanUpperArmCursor = 0;
+    this._stickmanLowerArmCursor = 0;
     this._stickmanLegCursor = 0;
 
     // Stickman sphere pool — used for heads and fists. One shared
@@ -598,14 +632,16 @@ export class Renderer {
     const celebrating = state.pauseState === 'celebrate';
     const p1Celebrating = celebrating && state.goalScorer === state.p1;
     const p2Celebrating = celebrating && state.goalScorer === state.p2;
-    const prevTorsoCursor = this._stickmanTorsoCursor;
-    const prevArmCursor   = this._stickmanArmCursor;
-    const prevLegCursor   = this._stickmanLegCursor;
-    const prevSphCursor   = this._stickmanSphCursor;
-    this._stickmanTorsoCursor = 0;
-    this._stickmanArmCursor   = 0;
-    this._stickmanLegCursor   = 0;
-    this._stickmanSphCursor   = 0;
+    const prevTorsoCursor    = this._stickmanTorsoCursor;
+    const prevUpperArmCursor = this._stickmanUpperArmCursor;
+    const prevLowerArmCursor = this._stickmanLowerArmCursor;
+    const prevLegCursor      = this._stickmanLegCursor;
+    const prevSphCursor      = this._stickmanSphCursor;
+    this._stickmanTorsoCursor    = 0;
+    this._stickmanUpperArmCursor = 0;
+    this._stickmanLowerArmCursor = 0;
+    this._stickmanLegCursor      = 0;
+    this._stickmanSphCursor      = 0;
     this._addStickman(state.p1, COLOR_TEXT, tick, p1Celebrating);
     this._addStickman(state.p2, COLOR_TEXT, tick, p2Celebrating);
     for (let i = this._stickmanTorsoCursor; i < prevTorsoCursor; i++) {
@@ -613,15 +649,10 @@ export class Renderer {
       this._stickmanTorsoFill[i].visible = false;
       this._stickmanTorsoDisc[i].visible = false;
     }
-    for (let i = this._stickmanArmCursor; i < prevArmCursor; i++) {
-      this._stickmanArm[i].visible = false;
-    }
-    for (let i = this._stickmanLegCursor; i < prevLegCursor; i++) {
-      this._stickmanLeg[i].visible = false;
-    }
-    for (let i = this._stickmanSphCursor; i < prevSphCursor; i++) {
-      this._stickmanSph[i].visible = false;
-    }
+    for (let i = this._stickmanUpperArmCursor; i < prevUpperArmCursor; i++) this._stickmanUpperArm[i].visible = false;
+    for (let i = this._stickmanLowerArmCursor; i < prevLowerArmCursor; i++) this._stickmanLowerArm[i].visible = false;
+    for (let i = this._stickmanLegCursor; i < prevLegCursor; i++) this._stickmanLeg[i].visible = false;
+    for (let i = this._stickmanSphCursor; i < prevSphCursor; i++) this._stickmanSph[i].visible = false;
 
     // Ball — real 3D sphere in world space. Altitude comes straight
     // from physics ball.z; gravity, bounce, and all collisions live
@@ -1385,19 +1416,15 @@ export class Renderer {
     // into world space.
     let pushArmAngle   = 0;
     let pushBodyDip    = 0;
-    let pushFistScale  = 1;
     let pushTiltOffset = 0;
-    let strikeActive   = false;
     if (pushing > 0) {
       const pushT = Math.min(anim.pushProgress / PUSH_TOTAL_TICKS, 1);
       pushArmAngle   =  pushArmAngleAt(pushT);
       pushBodyDip    =  pushBodyDipAt(pushT);
-      pushFistScale  =  pushFistScaleAt(pushT);
       pushTiltOffset =  pushBodyTiltAt(pushT);
       const hop       =  pushHopAt(pushT);
       baseX          +=  forwardX * hop;
       baseZ          +=  forwardZ * hop;
-      strikeActive   =  pushT >= PUSH_WINDUP_T && pushT <= PUSH_LOWER_T;
     }
 
     // Kick scripted state — the contralateral arm (left arm) drives
@@ -1526,30 +1553,21 @@ export class Renderer {
       rightArmAngle = -kickArmAngle * KICK_ARM_OPP_FRAC;
     }
 
+    // Per-arm (upper, lower) angles. Walk / celebrate / kick-
+    // counter-swing use the same cosmetic forearm follow-through as
+    // the knee — `forearmAngleFor` bends the forearm in the direction
+    // of the upper-arm swing. The punch (when pushing > 0) overrides
+    // both angles below the push block.
+    const leftUpperArmAngle  = leftArmAngle;
+    const leftLowerArmAngle  = forearmAngleFor(leftArmAngle);
+    const rightUpperArmAngle = rightArmAngle;
+    const rightLowerArmAngle = forearmAngleFor(rightArmAngle);
+
     const shoulderY = upperHipY + torsoH * tiltC;
-    this._placeArm(lShX, shoulderY, lShZ, leftArmAngle,  forwardX, forwardZ, color);
-    this._placeArm(rShX, shoulderY, rShZ, rightArmAngle, forwardX, forwardZ, color);
+    this._placeArm(lShX, shoulderY, lShZ, leftUpperArmAngle,  leftLowerArmAngle,  forwardX, forwardZ, color);
+    this._placeArm(rShX, shoulderY, rShZ, rightUpperArmAngle, rightLowerArmAngle, forwardX, forwardZ, color);
     this._placeLeg(lHipX, hipBaseY, lHipZ, leftUpperAngle,  leftLowerAngle,  forwardX, forwardZ, color);
     this._placeLeg(rHipX, hipBaseY, rHipZ, rightUpperAngle, rightLowerAngle, forwardX, forwardZ, color);
-
-    // Push fists — spheres at the end of each extended arm during the
-    // strike window. Size pulses larger at strike peak via pushFistScale.
-    if (strikeActive && pushing > 0) {
-      const fistR = STICKMAN_FIST_RADIUS * pushFistScale;
-      const L = STICKMAN_LIMB_FULL_H;
-      const lSin = Math.sin(leftArmAngle);
-      const lCos = Math.cos(leftArmAngle);
-      const rSin = Math.sin(rightArmAngle);
-      const rCos = Math.cos(rightArmAngle);
-      this._placeSph(
-        lShX + forwardX * L * lSin, shoulderY - L * lCos, lShZ + forwardZ * L * lSin,
-        fistR, color,
-      );
-      this._placeSph(
-        rShX + forwardX * L * rSin, shoulderY - L * rCos, rShZ + forwardZ * L * rSin,
-        fistR, color,
-      );
-    }
   }
 
   /** Orient `mesh` so its local +y axis points from A toward B and
@@ -1646,8 +1664,39 @@ export class Renderer {
     this._orientBetween(mesh, px, py, pz, ex, ey, ez, color);
   }
 
-  _placeArm(px, py, pz, angle, forwardX, forwardZ, color) {
-    this._placeLimbFromPool(this._stickmanArm, '_stickmanArmCursor', px, py, pz, angle, forwardX, forwardZ, color);
+  /** Two-segment arm with an elbow. `upperAngle` is the shoulder
+   *  swing angle (same convention as the old single-capsule arm:
+   *  0 = straight down, +π/2 = forward, +π = straight up).
+   *  `lowerAngle` is the forearm's world-space swing angle (not
+   *  relative to the upper arm). Both capsules meet at the elbow,
+   *  where the slightly-oversized `STICKMAN_ELBOW_RADIUS` sphere is
+   *  drawn. Upper arm is 15 % thicker than the forearm, matching
+   *  rough human proportions. */
+  _placeArm(px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color) {
+    const U = STICKMAN_UPPER_ARM;
+    const L = STICKMAN_LOWER_ARM;
+    const upperSin = Math.sin(upperAngle);
+    const elbowX = px + forwardX * U * upperSin;
+    const elbowY = py - U * Math.cos(upperAngle);
+    const elbowZ = pz + forwardZ * U * upperSin;
+    const lowerSin = Math.sin(lowerAngle);
+    const handX = elbowX + forwardX * L * lowerSin;
+    const handY = elbowY - L * Math.cos(lowerAngle);
+    const handZ = elbowZ + forwardZ * L * lowerSin;
+
+    // Upper segment (thicker): shoulder → elbow.
+    if (this._stickmanUpperArmCursor < this._stickmanUpperArm.length) {
+      const upperMesh = this._stickmanUpperArm[this._stickmanUpperArmCursor++];
+      this._orientBetween(upperMesh, px, py, pz, elbowX, elbowY, elbowZ, color);
+    }
+    // Lower segment (thinner): elbow → hand.
+    if (this._stickmanLowerArmCursor < this._stickmanLowerArm.length) {
+      const lowerMesh = this._stickmanLowerArm[this._stickmanLowerArmCursor++];
+      this._orientBetween(lowerMesh, elbowX, elbowY, elbowZ, handX, handY, handZ, color);
+    }
+    // Elbow sphere — reads as a joint bump even when the arm is
+    // straight and the two capsules are collinear.
+    this._placeSph(elbowX, elbowY, elbowZ, STICKMAN_ELBOW_RADIUS, color);
   }
 
   /** Two-segment leg with a knee. `upperAngle` is the hip-swing
@@ -1898,22 +1947,6 @@ function pushHopAt(t) {
   return 0;
 }
 
-/**
- * Fist glyph scale multiplier. 1.0 baseline, pulses to (1 + PUSH_FIST_PULSE)
- * linearly through the strike phase, decays back to 1 during settle.
- */
-function pushFistScaleAt(t) {
-  if (t < PUSH_WINDUP_T) return 1;
-  if (t < PUSH_STRIKE_T) {
-    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
-    return 1 + PUSH_FIST_PULSE * p;
-  }
-  if (t < PUSH_SETTLE_T) {
-    const p = (t - PUSH_STRIKE_T) / (PUSH_SETTLE_T - PUSH_STRIKE_T);
-    return 1 + PUSH_FIST_PULSE * (1 - easeInOut(p));
-  }
-  return 1;
-}
 
 /**
  * Body lean along the player's heading as a signed "forward amount":

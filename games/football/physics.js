@@ -169,10 +169,15 @@ export const STICKMAN_HEAD_GAP_Y   = 0.0476 * STICKMAN_GLYPH_SIZE;    // 1.047 â
 export const STICKMAN_LIMB_FULL_H  = 20;                               // was 19.8; cleaner 10+10 split
 export const STICKMAN_UPPER_LEG    = STICKMAN_LIMB_FULL_H / 2;         // 10
 export const STICKMAN_LOWER_LEG    = STICKMAN_LIMB_FULL_H / 2;         // 10
+export const STICKMAN_UPPER_ARM    = STICKMAN_LIMB_FULL_H / 2;         // 10
+export const STICKMAN_LOWER_ARM    = STICKMAN_LIMB_FULL_H / 2;         // 10
 export const STICKMAN_TORSO_RADIUS = 3.3;
 export const STICKMAN_HEAD_RADIUS  = 4.0;
 export const STICKMAN_LEG_RADIUS   = 2.2;
-export const STICKMAN_ARM_RADIUS   = STICKMAN_LEG_RADIUS * 0.8;        // 1.76
+// Arms taper: upper 15% thicker than the forearm, matching rough
+// human proportions. Used by the renderer's two-capsule-per-arm rig.
+export const STICKMAN_LOWER_ARM_RADIUS = STICKMAN_LEG_RADIUS * 0.8;    // 1.76
+export const STICKMAN_UPPER_ARM_RADIUS = STICKMAN_LOWER_ARM_RADIUS * 1.15; // ~2.024
 
 // Ball-trap inelastic deflect factor. 0 = full absorb (dead stop on
 // surface normal); 1 = elastic. 0.25 cushions the normal component

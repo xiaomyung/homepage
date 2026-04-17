@@ -42,7 +42,8 @@ import {
   STICKMAN_HEAD_RADIUS,
   STICKMAN_LEG_RADIUS,
   STICKMAN_ARM_RADIUS,
-} from './physics.js?v=53';
+  kickLegPose,
+} from './physics.js?v=54';
 
 // Physics field depth (42) is ~21× narrower than its width (900); stretch
 // render-space z so the field fills more of the canvas vertically. Re-
@@ -132,42 +133,26 @@ const PUSH_FIST_SIZE      = 0.65 * STICKMAN_GLYPH_SIZE;
 const PUSH_BACK_TILT      = 0.28;                        // rad — body leans back during windup
 const PUSH_FWD_TILT       = 0.42;                        // rad — body leans forward on strike
 
-// Kick pose — a windup → whip-through → follow-through curve on the
-// kicking leg, with a counter-balance arm swing and a small body
-// dip/lean. Animation is driven by `player.kick.timer` read directly
-// from the physics state.
-//
-// Phases over normalized progress t ∈ [0, 1] for a ground kick:
-//   [0,         KICK_FIRE_T]    windup:   kicking leg rotates 0 → KICK_WINDUP_ANGLE
-//                                         (behind the player, loading the swing)
-//   [KICK_FIRE_T, KICK_STRIKE_END_T]  strike: leg whips through
-//                                         KICK_WINDUP_ANGLE → KICK_STRIKE_ANGLE
-//                                         (explosive, short window)
-//   [KICK_STRIKE_END_T, 1]      recovery: leg eases back to 0
-//
-// KICK_FIRE_T is the physics fire fraction — impact is applied at
-// this exact point in the animation so ball launch and foot contact
-// are visually synchronised.
+// Kick body-english cosmetics. The leg pose itself is IK'd by
+// `kickLegPose` from physics.js (target = ball); what's here are
+// the counter-balance arm swing, body dip, and back/forward tilt
+// that sell the weight transfer. `KICK_FIRE_T` / `KICK_STRIKE_END_T`
+// gate the arm / dip / tilt curves on normalized t ∈ [0, 1].
 const KICK_FIRE_T         = KICK_WINDUP_MS / KICK_DURATION_MS;
 const KICK_STRIKE_SPAN_T  = 0.15;
 const KICK_STRIKE_END_T   = Math.min(0.95, KICK_FIRE_T + KICK_STRIKE_SPAN_T);
-const KICK_WINDUP_ANGLE   = -Math.PI * 0.28;             // rad — leg rotated behind body
-const KICK_STRIKE_ANGLE   =  Math.PI * 0.55;             // rad — foot past vertical forward
 const KICK_ARM_SWING      =  Math.PI * 0.45;             // rad — counter-arm forward throw
 const KICK_ARM_OPP_FRAC   = 0.35;                        // same-side arm small back-swing
 const KICK_BACK_TILT      = 0.12;                        // rad — body lean back during windup
 const KICK_FWD_TILT       = 0.22;                        // rad — body lean forward on strike
 const KICK_CROUCH_DEPTH   = 0.12 * STICKMAN_GLYPH_SIZE;  // body dip during windup
 
-// Airkick: the player leaps (player.airZ supplies the world-y lift)
-// and the leg swings through a steeper arc. Fire point comes from
-// physics.AIRKICK_PEAK_FRAC so the visual strike syncs with the
-// moment the physics applies force to the ball.
+// Airkick body cosmetics. The leap lifts the figure via
+// `player.airZ`; the leg itself comes from IK. Tilt is a long back-
+// lean that holds through the strike window.
 const AIRKICK_STRIKE_SPAN_T = 0.20;
 const AIRKICK_STRIKE_END_T = Math.min(0.95, AIRKICK_PEAK_FRAC + AIRKICK_STRIKE_SPAN_T);
-const AIRKICK_WINDUP_ANGLE = -Math.PI * 0.22;            // smaller windup, more time in the air
-const AIRKICK_STRIKE_ANGLE =  Math.PI * 0.80;            // foot near horizontal-forward (bicycle kick)
-const AIRKICK_BACK_TILT    = 0.55;                        // rad — body leans way back on volley
+const AIRKICK_BACK_TILT    = 0.55;                       // rad — body leans way back on volley
 // Ball visual radius comes straight from physics.js so the rendered
 // sphere and the collision envelope are the same object — no drift.
 const BALL_VISUAL_RADIUS = BALL_RADIUS;
@@ -519,6 +504,10 @@ export class Renderer {
     // low-pass filtered toward their speed-derived targets; phase is
     // accumulated with the current swing rate so rate changes never snap.
     this._animByPlayer = new WeakMap();
+
+    // Scratch buffer for per-frame kick-leg IK; reused across both
+    // players so the hot draw path never allocates.
+    this._scratchKickPose = { upperAngle: 0, lowerAngle: 0 };
 
     // Splash particle pool — ring-buffer allocation, `life === 0` means
     // free. Fields are all numbers so there's zero GC churn per frame.
@@ -1417,23 +1406,17 @@ export class Renderer {
       strikeActive   =  pushT >= PUSH_WINDUP_T && pushT <= PUSH_LOWER_T;
     }
 
-    // Kick scripted state — the kicking leg (right leg by convention)
-    // and the contralateral arm (left arm) drive the swing, with a
-    // body dip + tilt to sell the weight transfer.
-    let kickLegAngle   = 0;
+    // Kick scripted state — the contralateral arm (left arm) drives
+    // the counter-swing; body dip + tilt sell the weight transfer.
+    // The kicking leg itself is no longer scripted: it's IK'd to
+    // `kick.footTarget` below, after the leg-angle block.
     let kickArmAngle   = 0;
     let kickBodyDip    = 0;
     let kickTiltOffset = 0;
     if (isKicking) {
       const totalMs = isAirkick ? AIRKICK_MS : KICK_DURATION_MS;
       const kickT   = Math.min(kick.timer / totalMs, 1);
-      if (isAirkick) {
-        kickLegAngle   = airkickLegAngleAt(kickT);
-        kickTiltOffset = airkickTiltAt(kickT);
-      } else {
-        kickLegAngle   = kickLegAngleAt(kickT);
-        kickTiltOffset = kickTiltAt(kickT);
-      }
+      kickTiltOffset = isAirkick ? airkickTiltAt(kickT) : kickTiltAt(kickT);
       kickArmAngle = kickArmAngleAt(kickT);
       kickBodyDip  = kickDipAt(kickT);
     }
@@ -1507,30 +1490,32 @@ export class Renderer {
       rightArmAngle = pushArmAngle;
     }
 
+    // Per-leg (upper, lower) angles for the 2-bone draw. Walk /
+    // celebrate use a cosmetic follow-through shin derived from the
+    // thigh via `shinAngleFor`; the kicking leg (right by convention)
+    // overrides with real 2-bone IK to `kick.footTarget` below.
+    let leftUpperAngle  = leftLegAngle;
+    let leftLowerAngle  = shinAngleFor(leftLegAngle);
+    let rightUpperAngle = rightLegAngle;
+    let rightLowerAngle = shinAngleFor(rightLegAngle);
+
     // Kick takes precedence over walk swing (but not push — physics
-    // guarantees the two never overlap). The right leg is the kicking
-    // leg; the left arm counter-swings forward; the right arm pulls
-    // slightly back. Celebration still overrides everything.
+    // guarantees the two never overlap). Right leg IK's to the foot
+    // target; left arm counter-swings forward; right arm pulls back.
+    // Celebration still overrides everything.
     if (isKicking && celeb < 0.001) {
-      rightLegAngle = kickLegAngle;
+      kickLegPose(kick, rHipX, hipBaseY, rHipZ, forwardX, forwardZ, this._scratchKickPose);
+      rightUpperAngle = this._scratchKickPose.upperAngle;
+      rightLowerAngle = this._scratchKickPose.lowerAngle;
       leftArmAngle  = kickArmAngle;
       rightArmAngle = -kickArmAngle * KICK_ARM_OPP_FRAC;
     }
 
-    // Draw the four limbs. Arms stay as single capsules. Legs split
-    // at a knee: the shin follows the thigh with a mild "follow-
-    // through" factor so the foot stays slightly behind the hip
-    // swing, which reads as a natural gait bend. Phase C replaces
-    // this with real 2-bone IK to a ball target; for now both legs
-    // use the same cosmetic curve so walk/push/kick/airkick all
-    // pick up the knee joint "for free."
     const shoulderY = upperHipY + torsoH * tiltC;
     this._placeArm(lShX, shoulderY, lShZ, leftArmAngle,  forwardX, forwardZ, color);
     this._placeArm(rShX, shoulderY, rShZ, rightArmAngle, forwardX, forwardZ, color);
-    const leftShin  = shinAngleFor(leftLegAngle);
-    const rightShin = shinAngleFor(rightLegAngle);
-    this._placeLeg(lHipX, hipBaseY, lHipZ, leftLegAngle,  leftShin,  forwardX, forwardZ, color);
-    this._placeLeg(rHipX, hipBaseY, rHipZ, rightLegAngle, rightShin, forwardX, forwardZ, color);
+    this._placeLeg(lHipX, hipBaseY, lHipZ, leftUpperAngle,  leftLowerAngle,  forwardX, forwardZ, color);
+    this._placeLeg(rHipX, hipBaseY, rHipZ, rightUpperAngle, rightLowerAngle, forwardX, forwardZ, color);
 
     // Push fists — spheres at the end of each extended arm during the
     // strike window. Size pulses larger at strike peak via pushFistScale.
@@ -1941,32 +1926,10 @@ function pushBodyTiltAt(t) {
 
 /* ── Kick curves ───────────────────────────────────────────── */
 
-/**
- * Three-phase swing curve: windup eases the leg from 0 back to
- * startAngle, strike whips it through to endAngle at the physics fire
- * point, recovery eases it back to 0. Shared by ground kick and
- * airkick with different angle magnitudes / phase boundaries.
- */
-function swingCurve(t, fireT, strikeEndT, startAngle, endAngle) {
-  if (t < fireT) {
-    const p = t / fireT;
-    return startAngle * easeInOut(p);
-  }
-  if (t < strikeEndT) {
-    const p = (t - fireT) / (strikeEndT - fireT);
-    return startAngle + (endAngle - startAngle) * easeInOut(p);
-  }
-  const p = (t - strikeEndT) / (1 - strikeEndT);
-  return endAngle * (1 - easeInOut(p));
-}
-
-function kickLegAngleAt(t) {
-  return swingCurve(t, KICK_FIRE_T, KICK_STRIKE_END_T, KICK_WINDUP_ANGLE, KICK_STRIKE_ANGLE);
-}
-
-function airkickLegAngleAt(t) {
-  return swingCurve(t, AIRKICK_PEAK_FRAC, AIRKICK_STRIKE_END_T, AIRKICK_WINDUP_ANGLE, AIRKICK_STRIKE_ANGLE);
-}
+// Leg-swing curves (`kickLegAngleAt` / `airkickLegAngleAt`) are gone
+// — the kicking leg is now 2-bone IK'd to `kick.footTarget` in
+// `kickLegPose`. Only the body-english curves (arm counter-swing,
+// torso dip/lean) remain as scripted cosmetics below.
 
 /**
  * Counter-balance arm swing: forward during windup + strike, returns

@@ -22,9 +22,15 @@ import {
   KICK_DURATION_MS,
   STICKMAN_TORSO_RADIUS,
   STICKMAN_HEAD_RADIUS,
+  STICKMAN_UPPER_LEG,
+  STICKMAN_LOWER_LEG,
   solve2BoneIK,
   KICK_STRIKE_WINDOW_MS,
   FOOT_RADIUS,
+  kickLegExtension,
+  kickLegPose,
+  AIRKICK_MS,
+  AIRKICK_PEAK_FRAC,
 } from '../physics.js';
 
 const NOOP = [0, 0, -1, 0, 0, 0, 0, -1, 0];
@@ -1847,6 +1853,32 @@ test('kick misses when ball moves out of foot reach during windup', () => {
   assert.equal(state.p1.kick.fired, false, 'kick should not have fired');
 });
 
+test('kick foot-contact hip aligns with the rendered right hip', () => {
+  // The physics foot contact test uses the RIGHT hip (perpendicular
+  // offset +STICKMAN_HIP_OFX to heading). A ball placed one HIP_OFX
+  // toward the right-hip side of the player should land right at
+  // the foot — contact must fire. A ball placed the same offset on
+  // the OPPOSITE (left-hip) side is twice as far from the foot's
+  // swing line and should miss the foot-sphere when placed past
+  // the reach margin there. Proves we're not silently using a
+  // centered hip that would symmetrize the response.
+  // Heading = 0 (facing +x). Right-hip offset direction in world
+  // coords: perp = (-sin(h), cos(h)) = (0, +1) in (x, z_world).
+  // So the right hip is at +z_world relative to body axis; in
+  // physics coords that's +y.
+  {
+    const state = kickBenchState();
+    // Shift ball toward right hip (+y physics) by HIP_OFX / Z_STRETCH
+    // — ball sits roughly on the right-hip's forward swing line.
+    state.ball.y = state.p1.y + (2.64 / Z_STRETCH);
+    tick(state, kickAction(1, 0, 0, 1), NOOP);
+    assert.ok(state.p1.kick.active, 'right-hip-aligned ball still reachable');
+    const strikeOnsetTicks = Math.ceil(KICK_WINDUP_MS / 16) + 1;
+    for (let i = 0; i < strikeOnsetTicks; i++) tick(state, NOOP, NOOP);
+    assert.ok(state.p1.kick.fired, 'foot-sphere should fire for ball on the right-hip swing line');
+  }
+});
+
 test('kick facing cone rejects a ball behind the player', () => {
   const state = kickBenchState();
   state.p1.heading = Math.PI;  // facing -x, ball is in +x
@@ -1858,22 +1890,117 @@ test('kick facing cone rejects a ball behind the player', () => {
   );
 });
 
-test('FOOT_RADIUS sphere contact is the actual kick gate', () => {
-  // Ball just barely outside (FOOT_RADIUS + BALL_RADIUS) from where
-  // the foot would land should NOT register contact — the old
-  // proximity-rectangle would have fired.
-  const state = kickBenchState();
-  state.ball.vx = 0;
-  // Prediction at strike = current ball position (vx=0). Place the
-  // ball such that foot reaches a point that is FOOT_RADIUS +
-  // BALL_RADIUS + 0.5 world units away from the actual ball center
-  // when the frozen target is reached. Simplest: start ball within
-  // reach for the reachability gate, then nudge it aside mid-windup.
-  tick(state, kickAction(1, 0, 0, 1), NOOP);
-  assert.ok(state.p1.kick.active);
-  // Shift the ball sideways by enough that it misses the foot
-  // sphere but stays within the old proximity rectangle.
-  state.ball.y = state.p1.y + (FOOT_RADIUS + BALL_RADIUS + 2) / Z_STRETCH;
-  for (let i = 0; i < 30; i++) tick(state, NOOP, NOOP);
-  assert.equal(state.p1.kick.fired, false, 'foot-sphere should miss a ball at > foot+ball radius');
+/* ── kickLegExtension — stage curve ──────────────────────────── */
+
+test('kickLegExtension returns 0 for inactive kick', () => {
+  assert.equal(kickLegExtension(null), 0);
+  assert.equal(kickLegExtension({ active: false }), 0);
 });
+
+test('kickLegExtension walks 0 → 0.7 → 1 → 0 across stages (ground)', () => {
+  const k = { active: true, kind: 'ground', timer: 0 };
+  assert.equal(kickLegExtension(k), 0, 'timer 0 → extension 0');
+  k.timer = KICK_WINDUP_MS / 2;
+  assert.ok(Math.abs(kickLegExtension(k) - 0.35) < 1e-9, 'mid-windup → 0.35');
+  k.timer = KICK_WINDUP_MS - 0.001;
+  assert.ok(Math.abs(kickLegExtension(k) - 0.7) < 1e-3, 'windup end → 0.7');
+  k.timer = KICK_WINDUP_MS;
+  assert.equal(kickLegExtension(k), 1, 'strike start → 1');
+  k.timer = KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS - 1;
+  assert.equal(kickLegExtension(k), 1, 'mid-strike → 1');
+  k.timer = KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS;
+  assert.equal(kickLegExtension(k), 1, 'recovery boundary → still 1 (just starting to decay)');
+  k.timer = KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS + 1;
+  assert.ok(kickLegExtension(k) < 1 && kickLegExtension(k) > 0.99, 'just inside recovery → <1');
+  k.timer = KICK_DURATION_MS;
+  assert.ok(Math.abs(kickLegExtension(k)) < 1e-9, 'recovery end → 0');
+});
+
+test('kickLegExtension uses AIRKICK_PEAK_FRAC * AIRKICK_MS as windup for air', () => {
+  const k = { active: true, kind: 'air', timer: 0 };
+  const windupMs = AIRKICK_PEAK_FRAC * AIRKICK_MS;
+  k.timer = windupMs / 2;
+  assert.ok(Math.abs(kickLegExtension(k) - 0.35) < 1e-9, 'air mid-windup → 0.35');
+  k.timer = windupMs + KICK_STRIKE_WINDOW_MS / 2;
+  assert.equal(kickLegExtension(k), 1, 'air strike → 1');
+});
+
+/* ── kickLegPose — IK integration ────────────────────────────── */
+
+test('kickLegPose neutral for inactive kick', () => {
+  const out = { upperAngle: 99, lowerAngle: 99 };
+  kickLegPose({ active: false }, 0, 20, 0, 1, 0, out);
+  assert.equal(out.upperAngle, 0);
+  assert.equal(out.lowerAngle, 0);
+});
+
+test('kickLegPose at strike reaches the foot target', () => {
+  // Hip at world (0, 20, 0), facing +x, target 8 forward at ground.
+  const k = {
+    active: true, kind: 'ground', stage: 'strike',
+    timer: KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS / 2,
+    footTargetX: 8, footTargetY: 4.224, footTargetZ: 0,
+  };
+  const out = { upperAngle: 0, lowerAngle: 0 };
+  kickLegPose(k, 0, 20, 0, 1, 0, out);
+  // Reconstruct foot position from angles.
+  const U = STICKMAN_UPPER_LEG, L = STICKMAN_LOWER_LEG;
+  const kneeFwd  = U * Math.sin(out.upperAngle);
+  const kneeDown = U * Math.cos(out.upperAngle);
+  const footFwd  = kneeFwd + L * Math.sin(out.lowerAngle);
+  const footDown = kneeDown + L * Math.cos(out.lowerAngle);
+  // Target local: fwd = 8, up = 4.224 - 20 = -15.776, down = 15.776.
+  assert.ok(Math.abs(footFwd - 8) < 1e-6, `foot fwd should be 8, got ${footFwd}`);
+  assert.ok(Math.abs(footDown - 15.776) < 1e-6, `foot down should be 15.776, got ${footDown}`);
+});
+
+test('kickLegPose windup peak = 70% extension toward target', () => {
+  const k = {
+    active: true, kind: 'ground', stage: 'windup',
+    timer: KICK_WINDUP_MS - 1,  // just before strike opens — peak windup
+    footTargetX: 10, footTargetY: 4.224, footTargetZ: 0,
+  };
+  const out = { upperAngle: 0, lowerAngle: 0 };
+  kickLegPose(k, 0, 20, 0, 1, 0, out);
+  const U = STICKMAN_UPPER_LEG, L = STICKMAN_LOWER_LEG;
+  const legLen = U + L;
+  const kneeFwd  = U * Math.sin(out.upperAngle);
+  const kneeDown = U * Math.cos(out.upperAngle);
+  const footFwd  = kneeFwd + L * Math.sin(out.lowerAngle);
+  const footDown = kneeDown + L * Math.cos(out.lowerAngle);
+  // Target at peak windup: fwd = 0.7 * 10 = 7, down = 0.7 * 15.776 + 0.3 * 20 = 11.0432 + 6 = 17.0432.
+  const tEff = 0.7 * ((KICK_WINDUP_MS - 1) / KICK_WINDUP_MS);
+  const expectedFwd = 10 * tEff;
+  const expectedDown = 15.776 * tEff + legLen * (1 - tEff);
+  assert.ok(Math.abs(footFwd - expectedFwd) < 1e-3, `foot fwd expected ${expectedFwd}, got ${footFwd}`);
+  assert.ok(Math.abs(footDown - expectedDown) < 1e-3, `foot down expected ${expectedDown}, got ${footDown}`);
+});
+
+test('kickLegPose projects along heading (rotation-invariant)', () => {
+  // Same relative target, different headings — the local angles
+  // must be identical because IK operates in hip-local (fwd, up).
+  const tgt = { fwd: 8, up: -15.776 };  // ball 8 forward, 15.776 below hip
+  const poses = [];
+  for (const h of [0, Math.PI / 3, Math.PI / 2, -Math.PI / 4, Math.PI]) {
+    const fwdX = Math.cos(h);
+    const fwdZ = Math.sin(h);
+    const targetX = tgt.fwd * fwdX;
+    const targetZ = tgt.fwd * fwdZ;
+    const k = {
+      active: true, kind: 'ground', stage: 'strike',
+      timer: KICK_WINDUP_MS,
+      footTargetX: targetX, footTargetY: 20 + tgt.up, footTargetZ: targetZ,
+    };
+    const out = { upperAngle: 0, lowerAngle: 0 };
+    kickLegPose(k, 0, 20, 0, fwdX, fwdZ, out);
+    poses.push({ h, ...out });
+  }
+  const ref = poses[0];
+  for (const p of poses) {
+    assert.ok(Math.abs(p.upperAngle - ref.upperAngle) < 1e-9,
+      `upperAngle drifts with heading ${p.h}: ${p.upperAngle} vs ${ref.upperAngle}`);
+    assert.ok(Math.abs(p.lowerAngle - ref.lowerAngle) < 1e-9,
+      `lowerAngle drifts with heading ${p.h}: ${p.lowerAngle} vs ${ref.lowerAngle}`);
+  }
+});
+

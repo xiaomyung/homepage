@@ -1261,16 +1261,30 @@ function resolveBallGoalBox(state, box) {
 /* ── Kick state machine ──────────────────────────────────────── */
 
 /**
- * Hip anchor in WORLD coords — the pivot the leg swings from.
- * Matches the renderer's draw origin: `(p.x + PLAYER_WIDTH/2, p.y *
- * Z_STRETCH)` on the floor, HIP_BASE_Z above the ground, offset
- * upward during an airkick by `p.airZ`.
+ * Hip anchor in WORLD coords — the pivot a leg swings from.
+ * `side` picks which hip: 'center' (body axis, used for the
+ * reachability gate) or 'right' (the kicking leg's pivot in the
+ * renderer, HIP_OFX perpendicular to heading). Matches the
+ * renderer's draw origin: `(p.x + PLAYER_WIDTH/2, p.y * Z_STRETCH)`
+ * on the floor, HIP_BASE_Z above the ground, plus `p.airZ` during
+ * an airkick.
  */
 const _scratchHip = { x: 0, y: 0, z: 0 };
-function hipAnchor(p, out) {
-  out.x = p.x + PLAYER_WIDTH / 2;
+function hipAnchor(p, side, out) {
+  const cx = p.x + PLAYER_WIDTH / 2;
+  const cz = p.y * Z_STRETCH;
   out.y = HIP_BASE_Z + (p.airZ || 0);
-  out.z = p.y * Z_STRETCH;
+  if (side === 'right') {
+    const fwdX = Math.cos(p.heading);
+    const fwdZ = Math.sin(p.heading);
+    // `lateral = (-fwdZ, fwdX)` matches the renderer's lateral axis
+    // so rightHipX/Z line up with what's drawn on screen.
+    out.x = cx + (-fwdZ) * STICKMAN_HIP_OFX;
+    out.z = cz + ( fwdX) * STICKMAN_HIP_OFX;
+  } else {
+    out.x = cx;
+    out.z = cz;
+  }
   return out;
 }
 
@@ -1325,7 +1339,9 @@ function predictBallAtStrike(ball, ticks, out) {
 const _scratchIKRes = { upperAngle: 0, lowerAngle: 0, footFwd: 0, footUp: 0 };
 function ikFootWorld(p, out) {
   const k = p.kick;
-  const hip = hipAnchor(p, _scratchHip);
+  // Right hip matches the renderer's kicking-leg draw pivot — test
+  // fires at the same world point the eye sees the foot land.
+  const hip = hipAnchor(p, 'right', _scratchHip);
   const local = projectHipLocal(hip, p.heading, k.footTargetX, k.footTargetY, k.footTargetZ, _scratchLocal);
   solve2BoneIK(local.fwd, local.up, STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG, _scratchIKRes);
   const fwdX = Math.cos(p.heading);
@@ -1351,7 +1367,11 @@ function tryStartKick(state, p, dx, dy, dz, power) {
   const leadTicks = strikeLeadTicks(kind);
 
   const predicted = predictBallAtStrike(state.ball, leadTicks, _scratchPredicted);
-  const hip = hipAnchor(p, _scratchHip);
+  // Reachability uses the body-center hip as a conservative gate:
+  // any kick committed here has at least one hip within U+L of the
+  // target. The foot-contact test in advanceKick switches to the
+  // right hip for visual alignment with the rendered leg.
+  const hip = hipAnchor(p, 'center', _scratchHip);
   const local = projectHipLocal(hip, p.heading, predicted.x, predicted.y, predicted.z, _scratchLocal);
   const dist = Math.hypot(local.fwd, local.up, local.perp);
   const which = p === state.p1 ? 'p1' : 'p2';
@@ -1418,6 +1438,65 @@ function testFootContact(state, p) {
   const dz = ballWZ - foot.z;
   const r = FOOT_RADIUS + BALL_RADIUS;
   return dx * dx + dy * dy + dz * dz <= r * r;
+}
+
+/**
+ * Stage-aware effective extension `tEff ∈ [0, 1]` for the kicking
+ * leg. Pure function of `kick.stage` + `kick.timer`:
+ *
+ *   windup   : 0 → WINDUP_PEAK_TEFF (0.7)   — leg extends partway
+ *   strike   : 1.0                          — leg locks on the target
+ *   recovery : 1.0 → 0                      — leg eases back to neutral
+ *   inactive : 0                            — neutral standing pose
+ *
+ * Shared by the renderer (for drawing) and the `kickLegPose`
+ * helper below; exported so tests can assert the stage curve
+ * without re-deriving it.
+ */
+const WINDUP_PEAK_TEFF = 0.7;
+export function kickLegExtension(kick) {
+  if (!kick || !kick.active) return 0;
+  const isAir = kick.kind === 'air';
+  const windupMs = isAir ? AIRKICK_PEAK_FRAC * AIRKICK_MS : KICK_WINDUP_MS;
+  const strikeEndMs = windupMs + KICK_STRIKE_WINDOW_MS;
+  const durationMs = isAir ? AIRKICK_MS : KICK_DURATION_MS;
+  const t = kick.timer;
+  if (t < windupMs) return WINDUP_PEAK_TEFF * (t / windupMs);
+  if (t < strikeEndMs) return 1;
+  const recT = (t - strikeEndMs) / Math.max(1, durationMs - strikeEndMs);
+  return Math.max(0, 1 - recT);
+}
+
+/**
+ * Two-bone IK pose for the kicking leg, as (upperAngle, lowerAngle)
+ * joint angles the renderer's `_placeLeg` consumes directly.
+ *
+ * Call with the world-space hip anchor the leg swings from
+ * (typically the kicking-side hip) and the unit heading. The
+ * helper reuses the shared rig constants so any future rig change
+ * propagates automatically.
+ *
+ * Pure, allocation-free into `out`. `out` is returned.
+ */
+export function kickLegPose(kick, hipWX, hipWY, hipWZ, forwardX, forwardZ, out) {
+  if (!kick || !kick.active) {
+    out.upperAngle = 0;
+    out.lowerAngle = 0;
+    return out;
+  }
+  const tEff = kickLegExtension(kick);
+  const dx = kick.footTargetX - hipWX;
+  const dy = kick.footTargetY - hipWY;
+  const dz = kick.footTargetZ - hipWZ;
+  const fwd = dx * forwardX + dz * forwardZ;
+  const up  = dy;
+  const legLen = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG;
+  const targetFwd = fwd * tEff;
+  const targetUp  = up * tEff + (-legLen) * (1 - tEff);
+  solve2BoneIK(targetFwd, targetUp, STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG, _scratchIKRes);
+  out.upperAngle = _scratchIKRes.upperAngle;
+  out.lowerAngle = _scratchIKRes.lowerAngle;
+  return out;
 }
 
 /** Advance the kick state machine. Returns true if the player is

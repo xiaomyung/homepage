@@ -60,9 +60,8 @@ self.onmessage = (ev) => {
       handlePopulation(msg);
     } else if (msg.type === 'batch') {
       handleBatch(msg);
-    } else if (msg.type === 'stop') {
-      /* no-op — main thread terminates the worker */
     }
+    // 'stop': no-op. The main thread terminates the worker directly.
   } catch (err) {
     self.postMessage({ type: 'error', message: String(err) });
   }

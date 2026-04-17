@@ -18,6 +18,8 @@ import {
   BALL_RADIUS,
   MAX_PLAYER_SPEED,
   Z_STRETCH,
+  TICK_MS,
+  GRAVITY,
   KICK_WINDUP_MS,
   KICK_DURATION_MS,
   STICKMAN_TORSO_RADIUS,
@@ -26,27 +28,45 @@ import {
   STICKMAN_LOWER_LEG,
   solve2BoneIK,
   KICK_STRIKE_WINDOW_MS,
-  FOOT_RADIUS,
   kickLegExtension,
   kickLegPose,
   canKickReach,
   AIRKICK_MS,
   AIRKICK_PEAK_FRAC,
+  ACTION_MOVE_X,
+  ACTION_MOVE_Y,
+  ACTION_KICK_GATE,
+  ACTION_KICK_DX,
+  ACTION_KICK_DY,
+  ACTION_KICK_DZ,
+  ACTION_KICK_POWER,
+  ACTION_PUSH_GATE,
+  ACTION_PUSH_POWER,
+  NN_OUTPUT_SIZE,
 } from '../physics.js';
 
-const NOOP = [0, 0, -1, 0, 0, 0, 0, -1, 0];
-
-function moveAction(mx, my = 0) {
-  return [mx, my, -1, 0, 0, 0, 0, -1, 0];
+/** Build a 9-float action vector by action-slot name rather than
+ *  magic index. All fields default to the neutral "do nothing" value
+ *  (gates at -1, power/direction at 0). */
+function action({ moveX = 0, moveY = 0, kickGate = -1, kickDx = 0, kickDy = 0, kickDz = 0, kickPower = 0, pushGate = -1, pushPower = 0 } = {}) {
+  const a = new Array(NN_OUTPUT_SIZE);
+  a[ACTION_MOVE_X]     = moveX;
+  a[ACTION_MOVE_Y]     = moveY;
+  a[ACTION_KICK_GATE]  = kickGate;
+  a[ACTION_KICK_DX]    = kickDx;
+  a[ACTION_KICK_DY]    = kickDy;
+  a[ACTION_KICK_DZ]    = kickDz;
+  a[ACTION_KICK_POWER] = kickPower;
+  a[ACTION_PUSH_GATE]  = pushGate;
+  a[ACTION_PUSH_POWER] = pushPower;
+  return a;
 }
 
-function pushAction(power = 1) {
-  return [0, 0, -1, 0, 0, 0, 0, 1, power];
-}
-
-function kickAction(dx = 1, dy = 0, dz = 0, power = 1) {
-  return [0, 0, 1, dx, dy, dz, power, -1, 0];
-}
+const NOOP = action();
+const moveAction = (mx, my = 0) => action({ moveX: mx, moveY: my });
+const pushAction = (power = 1) => action({ pushGate: 1, pushPower: power });
+const kickAction = (dx = 1, dy = 0, dz = 0, power = 1) =>
+  action({ kickGate: 1, kickDx: dx, kickDy: dy, kickDz: dz, kickPower: power });
 
 /** Fresh state with seeded RNG, grace frames zeroed, and events enabled. */
 function freshState(seed = 42) {
@@ -920,7 +940,7 @@ test('kick state machine fires impact at windup end and clears at duration end',
 
   // Drive the state machine up to just after the windup — impact
   // should fire (ball.vx becomes non-zero).
-  const windupTicks = Math.ceil(KICK_WINDUP_MS / 16);
+  const windupTicks = Math.ceil(KICK_WINDUP_MS / TICK_MS);
   for (let i = 0; i < windupTicks + 1; i++) tick(state, NOOP, NOOP);
   assert.ok(
     state.p1.kick.fired,
@@ -932,7 +952,7 @@ test('kick state machine fires impact at windup end and clears at duration end',
   );
 
   // Drive to the end of KICK_DURATION_MS — active must go false.
-  const totalTicks = Math.ceil(KICK_DURATION_MS / 16);
+  const totalTicks = Math.ceil(KICK_DURATION_MS / TICK_MS);
   for (let i = 0; i < totalTicks; i++) tick(state, NOOP, NOOP);
   assert.equal(state.p1.kick.active, false, 'kick should deactivate after KICK_DURATION_MS');
 });
@@ -1082,7 +1102,7 @@ test('headless auto-resets a stale match after ~3 wall-clock seconds of no kicks
   state.p2.y = 5;
 
   // 3000ms / 16ms per tick = ~188 ticks. Pin stall trigger just past.
-  const stallTicks = Math.ceil(3000 / 16);
+  const stallTicks = Math.ceil(3000 / TICK_MS);
   for (let i = 0; i <= stallTicks + 1; i++) tick(state, NOOP, NOOP);
 
   // Ball teleported back to midfield.
@@ -1606,7 +1626,7 @@ test('dribble survives a full sprint (tunnel-correction keeps ball in front)', (
   );
 });
 
-test('active kick skips body trap (foot will handle contact in Phase C)', () => {
+test('active kick skips body trap — foot contact handles impulse', () => {
   const state = trapState();
   const p = state.p1;
   // Ball aimed directly at torso, same as the first trap test.
@@ -1790,7 +1810,7 @@ test('kick prediction matches physics integration over 6 + 9 ticks', () => {
     const actualZ = state.ball.z;
     const predictedZ = Math.max(
       0,
-      50 + 2 * leadTicks - 0.5 * 0.3 * leadTicks * (leadTicks + 1),
+      50 + 2 * leadTicks - 0.5 * GRAVITY * leadTicks * (leadTicks + 1),
     );
     assert.ok(
       Math.abs(actualZ - predictedZ) < 0.01,
@@ -1863,7 +1883,7 @@ test('canKickReach safetyMargin shrinks the reach sphere', () => {
   assert.equal(canKickReach(state, state.p1, 0), false, 'margin=0 rejects at fwd=14');
 });
 
-/* ── Adaptive kick state machine — Phase C behavior ──────────── */
+/* ── Adaptive kick state machine ─────────────────────────────── */
 
 /** Place p1 with the ball at his feet, stationary, ball within hip
  *  reach along the body-axis. Returns the state. Used as a clean
@@ -1907,7 +1927,7 @@ test('kick footTarget tracks ball during windup and freezes at strike', () => {
 
   // Mid-windup: prediction has shrunk (fewer remaining ticks), so
   // with a ball still moving +x, the target SHOULD have moved.
-  const windupTicks = Math.ceil(KICK_WINDUP_MS / 16);
+  const windupTicks = Math.ceil(KICK_WINDUP_MS / TICK_MS);
   for (let i = 0; i < Math.floor(windupTicks / 2); i++) tick(state, NOOP, NOOP);
   const targetMidWindup = state.p1.kick.footTargetX;
   assert.notEqual(targetMidWindup, targetAtStart, 'target should update during windup');
@@ -1927,7 +1947,7 @@ test('kick fires on foot-ball contact during strike window', () => {
   tick(state, kickAction(1, 0, 0, 1), NOOP);
   assert.ok(state.p1.kick.active);
   // Drive through windup + first strike tick — contact should fire.
-  const strikeOnsetTicks = Math.ceil(KICK_WINDUP_MS / 16) + 1;
+  const strikeOnsetTicks = Math.ceil(KICK_WINDUP_MS / TICK_MS) + 1;
   for (let i = 0; i < strikeOnsetTicks; i++) tick(state, NOOP, NOOP);
   assert.ok(state.p1.kick.fired, `kick should have fired by tick ${strikeOnsetTicks}`);
   assert.ok(state.ball.vx > 0, `ball should have gained +x velocity, got ${state.ball.vx}`);
@@ -1945,7 +1965,7 @@ test('kick misses when ball moves out of foot reach during windup', () => {
   // ticks — state.events is cleared at the start of each tick so
   // we can't inspect it once at the end.
   let sawMiss = false;
-  const totalTicks = Math.ceil((KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS) / 16) + 2;
+  const totalTicks = Math.ceil((KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS) / TICK_MS) + 2;
   for (let i = 0; i < totalTicks; i++) {
     tick(state, NOOP, NOOP);
     if (state.events.some((e) => e.type === 'kick_missed' && e.reason === 'no_contact')) {
@@ -1967,7 +1987,7 @@ test('kick foot-contact is symmetric on both hip sides', () => {
     state.ball.y = state.p1.y + sign * (2.64 / Z_STRETCH);
     tick(state, kickAction(1, 0, 0, 1), NOOP);
     assert.ok(state.p1.kick.active, `ball on sign=${sign} side still reachable`);
-    const strikeOnsetTicks = Math.ceil(KICK_WINDUP_MS / 16) + 1;
+    const strikeOnsetTicks = Math.ceil(KICK_WINDUP_MS / TICK_MS) + 1;
     for (let i = 0; i < strikeOnsetTicks; i++) tick(state, NOOP, NOOP);
     assert.ok(state.p1.kick.fired, `foot-sphere should fire for ball on sign=${sign} side`);
   }

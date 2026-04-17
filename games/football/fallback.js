@@ -33,7 +33,7 @@ import {
   ACTION_PUSH_POWER,
   facingToward,
   canKickReach,
-} from './physics.js?v=56';
+} from './physics.js';
 
 const AI_PREDICT_FRAMES = 20;
 // Conservative margin on the hip-reach gate. Physics accepts kicks
@@ -62,9 +62,9 @@ export function fallbackAction(state, which) {
   const center = p.x + pw / 2;
   const dx = (ball.x + ball.vx * AI_PREDICT_FRAMES) - center;
   const dy = ball.y - p.y;
-  const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-  const moveX = dx / dist;
-  const moveY = dy / dist;
+  const dist = Math.hypot(dx, dy);
+  const moveX = dist > 0 ? dx / dist : 0;
+  const moveY = dist > 0 ? dy / dist : 0;
 
   // Kick gate mirrors `tryStartKick`'s ground-kick check: hip-to-
   // predicted-ball distance ≤ `U+L - FALLBACK_SAFETY_MARGIN`, plus

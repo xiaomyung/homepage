@@ -16,7 +16,7 @@
  * the user clicks [start].
  */
 
-import { Renderer } from './renderer.js?v=103';
+import { Renderer } from './renderer.js';
 import {
   createField,
   createState,
@@ -26,11 +26,11 @@ import {
   TICK_MS,
   NN_INPUT_SIZE,
   NN_ACTION_STRIDE,
-} from './physics.js?v=56';
+} from './physics.js';
 import { NeuralNet } from './nn.js';
 import { fallbackAction } from './fallback.js';
-import { createTrainingOrchestrator } from './training-orchestrator.js?v=2';
-import { computeTicks } from './frame-loop.js?v=2';
+import { createTrainingOrchestrator } from './training-orchestrator.js';
+import { computeTicks } from './frame-loop.js';
 import { renderStageLabel } from './api/reset-pipeline.js';
 import {
   createScoreboard,
@@ -43,7 +43,7 @@ import {
   createFreeCamToggle,
   createFollowCamToggle,
   installAutoPause,
-} from './ui.js?v=10';
+} from './ui.js';
 
 const API_BASE = '/api/football';
 // Showcase match length, in milliseconds. Fixed — no longer surfaced in
@@ -87,7 +87,7 @@ async function main() {
   scoreboard = createScoreboard();
   orchestrator = createTrainingOrchestrator({
     apiBase: API_BASE,
-    workerUrl: new URL('./worker.js?v=10', import.meta.url),
+    workerUrl: new URL('./worker.js', import.meta.url),
     onStats: ({ simsPerSec }) => statsPanel?.setSimsPerSec(simsPerSec),
   });
   // Runtime is broker-authoritative and comes back in the /stats

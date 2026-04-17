@@ -25,7 +25,7 @@ const STALL_TICKS = Math.ceil(10000 / TICK_MS);
 const STALL_TICKS_HEADLESS = Math.ceil(3000 / TICK_MS);
 
 // Ball
-const GRAVITY = 0.3;
+export const GRAVITY = 0.3;
 const AIR_FRICTION = 0.99;
 const GROUND_FRICTION = 0.944;
 const BOUNCE_RETAIN = 0.8;
@@ -179,6 +179,14 @@ export const STICKMAN_ARM_RADIUS   = STICKMAN_LEG_RADIUS * 0.8;        // 1.76
 // fully (v·n dropped) and retains 25 % of the tangential component
 // so the ball slides along the body surface and gravity settles it.
 const BODY_TANG_RETAIN = 0.25;
+// Tunnel-correction thresholds (see `tryBodyContact`): if the
+// player is moving faster than `TUNNEL_CORRECTION_MIN_SPEED` world
+// units/tick AND the ball's contact normal points more than
+// `TUNNEL_CORRECTION_BEHIND_DOT` *against* the player's forward
+// direction, the body moved past the ball in one tick — relocate
+// the ball to the player's forward face instead of clamping behind.
+const TUNNEL_CORRECTION_MIN_SPEED = 1.0;
+const TUNNEL_CORRECTION_BEHIND_DOT = -0.3;
 
 // Body column vertical anchors above the ground (z=0). Hip base is
 // where the leg capsules meet the torso; shoulder sits one torso
@@ -722,24 +730,17 @@ function resolveBallInsideGoal(state, box) {
   const isLeftGoal = box === state.field.goalBoxLeft;
   let hitBackOrSide = false;
 
-  // Inner back net.
-  if (isLeftGoal) {
-    const penetration = box.minX - (ball.x - BALL_RADIUS);
-    if (penetration > 0) {
-      ball.x = box.minX + BALL_RADIUS;
-      hitBackOrSide = true;
-      if (state.recordEvents && Math.abs(ball.vx) > BOUNCE_EVENT_MIN) {
-        state.events.push({ type: 'ball_bounce', axis: 'x', force: Math.abs(ball.vx), x: ball.x, y: ball.y, z: ball.z });
-      }
-    }
-  } else {
-    const penetration = (ball.x + BALL_RADIUS) - box.maxX;
-    if (penetration > 0) {
-      ball.x = box.maxX - BALL_RADIUS;
-      hitBackOrSide = true;
-      if (state.recordEvents && Math.abs(ball.vx) > BOUNCE_EVENT_MIN) {
-        state.events.push({ type: 'ball_bounce', axis: 'x', force: Math.abs(ball.vx), x: ball.x, y: ball.y, z: ball.z });
-      }
+  // Inner back net. For a left goal the back wall is `box.minX`
+  // (ball came in from +x); for a right goal it's `box.maxX`.
+  const backX = isLeftGoal ? box.minX : box.maxX;
+  const penetration = isLeftGoal
+    ? backX - (ball.x - BALL_RADIUS)
+    : (ball.x + BALL_RADIUS) - backX;
+  if (penetration > 0) {
+    ball.x = isLeftGoal ? backX + BALL_RADIUS : backX - BALL_RADIUS;
+    hitBackOrSide = true;
+    if (state.recordEvents && Math.abs(ball.vx) > BOUNCE_EVENT_MIN) {
+      state.events.push({ type: 'ball_bounce', axis: 'x', force: Math.abs(ball.vx), x: ball.x, y: ball.y, z: ball.z });
     }
   }
 
@@ -966,10 +967,10 @@ function tryBodyContact(state, p, collider, wx, wy, wz, wvx, wvy, wvz, colliderR
   // feel without solving a full swept-player collision.
   const pWVX = p.vx, pWVZ = p.vy * Z_STRETCH;
   const pSpeed = Math.hypot(pWVX, pWVZ);
-  if (pSpeed > 1.0) {
+  if (pSpeed > TUNNEL_CORRECTION_MIN_SPEED) {
     const fwdX = pWVX / pSpeed, fwdZ = pWVZ / pSpeed;
     const fwdDotN = fwdX * nxU + fwdZ * nzU;
-    if (fwdDotN < -0.3) {
+    if (fwdDotN < TUNNEL_CORRECTION_BEHIND_DOT) {
       // Ball ended up behind a walking player → relocate to front.
       nxU = fwdX;
       nyU = 0;
@@ -1056,7 +1057,6 @@ function tryBodyContact(state, p, collider, wx, wy, wz, wvx, wvy, wvz, colliderR
  * velocity components.
  */
 function resolvePlayerPairCollision(p1, p2, pre1x, pre1y, pre2x, pre2y) {
-  const _DBG = globalThis.__PPDBG;
   const r = 2 * STICKMAN_TORSO_RADIUS;
   // Pre-tick centers in world coords.
   const preC1x = pre1x + PLAYER_WIDTH / 2;
@@ -1259,29 +1259,17 @@ function resolveBallGoalBox(state, box) {
 
 /**
  * Hip anchor in WORLD coords — the pivot a leg swings from.
- * `side` picks which hip: 'center' (body axis, used for the
- * reachability gate) or 'right' (the kicking leg's pivot in the
- * renderer, HIP_OFX perpendicular to heading). Matches the
- * renderer's draw origin: `(p.x + PLAYER_WIDTH/2, p.y * Z_STRETCH)`
- * on the floor, HIP_BASE_Z above the ground, plus `p.airZ` during
- * an airkick.
+ * Uses the body-axis center so the reach gate and the foot-contact
+ * test stay symmetric on both kick sides. Matches the renderer's
+ * draw origin: `(p.x + PLAYER_WIDTH/2, p.y * Z_STRETCH)` on the
+ * floor, HIP_BASE_Z above the ground, plus `p.airZ` during an
+ * airkick.
  */
 const _scratchHip = { x: 0, y: 0, z: 0 };
-function hipAnchor(p, side, out) {
-  const cx = p.x + PLAYER_WIDTH / 2;
-  const cz = p.y * Z_STRETCH;
+function hipAnchor(p, out) {
+  out.x = p.x + PLAYER_WIDTH / 2;
   out.y = HIP_BASE_Z + (p.airZ || 0);
-  if (side === 'right') {
-    const fwdX = Math.cos(p.heading);
-    const fwdZ = Math.sin(p.heading);
-    // `lateral = (-fwdZ, fwdX)` matches the renderer's lateral axis
-    // so rightHipX/Z line up with what's drawn on screen.
-    out.x = cx + (-fwdZ) * STICKMAN_HIP_OFX;
-    out.z = cz + ( fwdX) * STICKMAN_HIP_OFX;
-  } else {
-    out.x = cx;
-    out.z = cz;
-  }
+  out.z = p.y * Z_STRETCH;
   return out;
 }
 
@@ -1351,7 +1339,7 @@ function ikFootWorld(p, out) {
   // the visible foot and the physics foot is well inside
   // (FOOT_RADIUS + BALL_RADIUS ≈ 5.7), so the eye still reads a
   // clean foot-ball contact.
-  const hip = hipAnchor(p, 'center', _scratchHip);
+  const hip = hipAnchor(p, _scratchHip);
   const local = projectHipLocal(hip, p.heading, k.footTargetX, k.footTargetY, k.footTargetZ, _scratchLocal);
   solve2BoneIK(local.fwd, local.up, STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG, _scratchIKRes);
   const fwdX = Math.cos(p.heading);
@@ -1374,9 +1362,8 @@ function ikFootWorld(p, out) {
  * free (reuses the module scratch buffers).
  */
 export function canKickReach(state, p, safetyMargin = 0) {
-  const leadTicks = Math.round(KICK_WINDUP_MS / TICK_MS);
-  const predicted = predictBallAtStrike(state.ball, leadTicks, _scratchPredicted);
-  const hip = hipAnchor(p, 'center', _scratchHip);
+  const predicted = predictBallAtStrike(state.ball, strikeLeadTicks('ground'), _scratchPredicted);
+  const hip = hipAnchor(p, _scratchHip);
   const local = projectHipLocal(hip, p.heading, predicted.x, predicted.y, predicted.z, _scratchLocal);
   const dist = Math.hypot(local.fwd, local.up, local.perp);
   if (dist > KICK_REACH_MAX - safetyMargin) return false;
@@ -1405,7 +1392,7 @@ function tryStartKick(state, p, dx, dy, dz, power) {
   // any kick committed here has at least one hip within U+L of the
   // target. The foot-contact test in advanceKick switches to the
   // right hip for visual alignment with the rendered leg.
-  const hip = hipAnchor(p, 'center', _scratchHip);
+  const hip = hipAnchor(p, _scratchHip);
   const local = projectHipLocal(hip, p.heading, predicted.x, predicted.y, predicted.z, _scratchLocal);
   const dist = Math.hypot(local.fwd, local.up, local.perp);
   const which = p === state.p1 ? 'p1' : 'p2';
@@ -1441,7 +1428,9 @@ function tryStartKick(state, p, dx, dy, dz, power) {
   k.dz = kickDz;
   k.power = (clamp(power, -1, 1) + 1) / 2;
   if (kind === 'air') {
-    const jumpFrac = (kickDz - AIRKICK_DZ_THRESHOLD) * 2;
+    // Map `dz ∈ [THRESHOLD, 1]` → `jumpFrac ∈ [0, 1]` so changing
+    // the threshold auto-rescales without a stale magic factor.
+    const jumpFrac = (kickDz - AIRKICK_DZ_THRESHOLD) / (1 - AIRKICK_DZ_THRESHOLD);
     k.airZ = jumpFrac * AIRKICK_MAX_Z;
     p.stamina = Math.max(0, p.stamina - STAMINA_AIRKICK_DRAIN);
   } else {
@@ -1488,12 +1477,23 @@ function testFootContact(state, p) {
  * without re-deriving it.
  */
 const WINDUP_PEAK_TEFF = 0.7;
-export function kickLegExtension(kick) {
-  if (!kick || !kick.active) return 0;
+
+/** Stage-boundary timings for a kick: windup ends at `windupMs`,
+ *  strike window closes at `strikeEndMs`, full kick ends at
+ *  `durationMs`. Shared by `kickLegExtension` and `advanceKick`. */
+function kickPhaseTimes(kick) {
   const isAir = kick.kind === 'air';
   const windupMs = isAir ? AIRKICK_PEAK_FRAC * AIRKICK_MS : KICK_WINDUP_MS;
-  const strikeEndMs = windupMs + KICK_STRIKE_WINDOW_MS;
-  const durationMs = isAir ? AIRKICK_MS : KICK_DURATION_MS;
+  return {
+    windupMs,
+    strikeEndMs: windupMs + KICK_STRIKE_WINDOW_MS,
+    durationMs: isAir ? AIRKICK_MS : KICK_DURATION_MS,
+  };
+}
+
+export function kickLegExtension(kick) {
+  if (!kick || !kick.active) return 0;
+  const { windupMs, strikeEndMs, durationMs } = kickPhaseTimes(kick);
   const t = kick.timer;
   if (t < windupMs) return WINDUP_PEAK_TEFF * (t / windupMs);
   if (t < strikeEndMs) return 1;
@@ -1540,9 +1540,7 @@ function advanceKick(state, p) {
   if (!k.active) return false;
   k.timer += TICK_MS;
   const isAir = k.kind === 'air';
-  const windupMs = isAir ? AIRKICK_PEAK_FRAC * AIRKICK_MS : KICK_WINDUP_MS;
-  const strikeEndMs = windupMs + KICK_STRIKE_WINDOW_MS;
-  const durationMs = isAir ? AIRKICK_MS : KICK_DURATION_MS;
+  const { windupMs, strikeEndMs, durationMs } = kickPhaseTimes(k);
 
   if (isAir) {
     const animFrac = Math.min(k.timer / AIRKICK_MS, 1);
@@ -1816,7 +1814,8 @@ function checkBallScoreOrOut(state) {
 
   const goalL = crossedL && fullyPastL && withinMouthY && belowCrossbar;
   const goalR = crossedR && fullyPastR && withinMouthY && belowCrossbar;
-  if (goalL || goalR) scoreGoal(state, goalL ? 'left' : 'right');
+  if (goalL) scoreGoal(state, 'left');
+  else if (goalR) scoreGoal(state, 'right');
 }
 
 /**

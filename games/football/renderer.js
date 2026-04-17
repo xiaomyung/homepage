@@ -153,6 +153,13 @@ const KICK_CROUCH_DEPTH   = 0.12 * STICKMAN_GLYPH_SIZE;  // body dip during wind
 const AIRKICK_STRIKE_SPAN_T = 0.20;
 const AIRKICK_STRIKE_END_T = Math.min(0.95, AIRKICK_PEAK_FRAC + AIRKICK_STRIKE_SPAN_T);
 const AIRKICK_BACK_TILT    = 0.55;                       // rad — body leans way back on volley
+
+// Whole-body kick motion: pelvis twists around the vertical axis
+// (right hip pulls back through windup, snaps forward on strike);
+// the planted (support) leg bends slightly during strike to absorb
+// the reaction force.
+const KICK_HIP_TWIST_MAX  = Math.PI * 0.11;              // ~20° at windup peak
+const KICK_SUPPORT_CROUCH = 0.2;                          // rad — upper-leg forward on support
 // Ball visual radius comes straight from physics.js so the rendered
 // sphere and the collision envelope are the same object — no drift.
 const BALL_VISUAL_RADIUS = BALL_RADIUS;
@@ -1407,18 +1414,24 @@ export class Renderer {
     }
 
     // Kick scripted state — the contralateral arm (left arm) drives
-    // the counter-swing; body dip + tilt sell the weight transfer.
-    // The kicking leg itself is no longer scripted: it's IK'd to
+    // the counter-swing; body dip + tilt sell the weight transfer;
+    // pelvis twists toward the kick direction and snaps through;
+    // the support (left) leg crouches a little during strike. The
+    // kicking leg itself is no longer scripted: it's IK'd to
     // `kick.footTarget` below, after the leg-angle block.
-    let kickArmAngle   = 0;
-    let kickBodyDip    = 0;
-    let kickTiltOffset = 0;
+    let kickArmAngle       = 0;
+    let kickBodyDip        = 0;
+    let kickTiltOffset     = 0;
+    let kickHipTwist       = 0;
+    let kickSupportCrouch  = 0;
     if (isKicking) {
       const totalMs = isAirkick ? AIRKICK_MS : KICK_DURATION_MS;
       const kickT   = Math.min(kick.timer / totalMs, 1);
-      kickTiltOffset = isAirkick ? airkickTiltAt(kickT) : kickTiltAt(kickT);
-      kickArmAngle = kickArmAngleAt(kickT);
-      kickBodyDip  = kickDipAt(kickT);
+      kickTiltOffset    = isAirkick ? airkickTiltAt(kickT) : kickTiltAt(kickT);
+      kickArmAngle      = kickArmAngleAt(kickT);
+      kickBodyDip       = kickDipAt(kickT);
+      kickHipTwist      = kickHipTwistAt(kickT);
+      kickSupportCrouch = kickSupportCrouchAt(kickT);
     }
 
     const walkTilt  = anim.tilt;
@@ -1462,10 +1475,19 @@ export class Renderer {
 
     // Hips: lateral to hip center along the same lateral vector.
     const hipHalfWidth = STICKMAN_HIP_OFX;
-    const lHipX = baseX - lateralX * hipHalfWidth;
-    const lHipZ = baseZ - lateralZ * hipHalfWidth;
-    const rHipX = baseX + lateralX * hipHalfWidth;
-    const rHipZ = baseZ + lateralZ * hipHalfWidth;
+    // Pelvis twist: rotate the right-hip lateral direction around the
+    // up axis by `kickHipTwist` so both hips describe the arc a real
+    // pelvis would during a right-footed kick. Left hip mirrors the
+    // right; when no kick is active, twist is 0 and we land back on
+    // the plain ±lateral offsets.
+    const twistSin = Math.sin(kickHipTwist);
+    const twistCos = Math.cos(kickHipTwist);
+    const twistedRightX = lateralX * twistCos - forwardX * twistSin;
+    const twistedRightZ = lateralZ * twistCos - forwardZ * twistSin;
+    const rHipX = baseX + twistedRightX * hipHalfWidth;
+    const rHipZ = baseZ + twistedRightZ * hipHalfWidth;
+    const lHipX = baseX - twistedRightX * hipHalfWidth;
+    const lHipZ = baseZ - twistedRightZ * hipHalfWidth;
 
     // Limb angles — contralateral walk swing + celebration override
     // (arms sweep to π = straight up, legs spread forward-back) +
@@ -1501,12 +1523,18 @@ export class Renderer {
 
     // Kick takes precedence over walk swing (but not push — physics
     // guarantees the two never overlap). Right leg IK's to the foot
-    // target; left arm counter-swings forward; right arm pulls back.
-    // Celebration still overrides everything.
+    // target; left (support) leg micro-crouches through strike so the
+    // planted weight reads visually; left arm counter-swings forward;
+    // right arm pulls back. Celebration still overrides everything.
     if (isKicking && celeb < 0.001) {
       kickLegPose(kick, rHipX, hipBaseY, rHipZ, forwardX, forwardZ, this._scratchKickPose);
       rightUpperAngle = this._scratchKickPose.upperAngle;
       rightLowerAngle = this._scratchKickPose.lowerAngle;
+      // Support leg: upper forward by `kickSupportCrouch`, lower
+      // rotates the opposite way (2× upper) so the foot stays close
+      // to the ground while the knee pokes forward.
+      leftUpperAngle = leftLegAngle + kickSupportCrouch;
+      leftLowerAngle = shinAngleFor(leftLegAngle) - 2 * kickSupportCrouch;
       leftArmAngle  = kickArmAngle;
       rightArmAngle = -kickArmAngle * KICK_ARM_OPP_FRAC;
     }
@@ -1992,6 +2020,42 @@ function airkickTiltAt(t) {
   if (t < AIRKICK_STRIKE_END_T) return -AIRKICK_BACK_TILT;
   const p = (t - AIRKICK_STRIKE_END_T) / (1 - AIRKICK_STRIKE_END_T);
   return -AIRKICK_BACK_TILT * (1 - easeInOut(p));
+}
+
+/**
+ * Pelvis twist around the vertical axis. +angle rotates the right
+ * hip back (and left hip forward) — the wind-up position for a
+ * right-footed kick. Strike snaps the hip through to −MAX (right
+ * hip forward, follow-through); recovery eases back to 0. Shared
+ * between ground and airkick.
+ */
+function kickHipTwistAt(t) {
+  if (t < KICK_FIRE_T) {
+    const p = t / KICK_FIRE_T;
+    return KICK_HIP_TWIST_MAX * easeInOut(p);
+  }
+  if (t < KICK_STRIKE_END_T) {
+    const p = (t - KICK_FIRE_T) / (KICK_STRIKE_END_T - KICK_FIRE_T);
+    return KICK_HIP_TWIST_MAX * (1 - 2 * easeInOut(p));
+  }
+  const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
+  return -KICK_HIP_TWIST_MAX * (1 - easeInOut(p));
+}
+
+/**
+ * Support-leg (planted, non-kicking) micro-crouch. Kicks in at the
+ * strike phase and fades through recovery. Used as the upper-leg
+ * forward angle; the shin rotates the opposite way to keep the foot
+ * roughly planted under the hip (knee-out crouch).
+ */
+function kickSupportCrouchAt(t) {
+  if (t < KICK_FIRE_T) return 0;
+  if (t < KICK_STRIKE_END_T) {
+    const p = (t - KICK_FIRE_T) / (KICK_STRIKE_END_T - KICK_FIRE_T);
+    return KICK_SUPPORT_CROUCH * easeInOut(p);
+  }
+  const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
+  return KICK_SUPPORT_CROUCH * (1 - easeInOut(p));
 }
 
 /**

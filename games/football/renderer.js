@@ -28,7 +28,17 @@ import {
   AIRKICK_MS,
   AIRKICK_PEAK_FRAC,
   Z_STRETCH as PHYSICS_Z_STRETCH,
-} from './physics.js?v=49';
+  STICKMAN_GLYPH_SIZE,
+  STICKMAN_SHOULDER_OFX,
+  STICKMAN_SHOULDER_OFY,
+  STICKMAN_HIP_OFX,
+  STICKMAN_HEAD_GAP_Y,
+  STICKMAN_LIMB_FULL_H,
+  STICKMAN_TORSO_RADIUS,
+  STICKMAN_HEAD_RADIUS,
+  STICKMAN_LEG_RADIUS,
+  STICKMAN_ARM_RADIUS,
+} from './physics.js?v=50';
 
 // Physics field depth (42) is ~21× narrower than its width (900); stretch
 // render-space z so the field fills more of the canvas vertically. Re-
@@ -42,7 +52,12 @@ if (PHYSICS_Z_STRETCH !== Z_STRETCH) {
 // Small margin so field edges don't touch the canvas boundary.
 const HORIZONTAL_MARGIN = 1.15;
 
-const STICKMAN_GLYPH_SIZE = 22;
+// Rig proportions (STICKMAN_GLYPH_SIZE, SHOULDER/HIP offsets, LIMB_FULL_H,
+// TORSO/HEAD/LEG/ARM radii) come from physics.js so the ball-body
+// collider and the rendered silhouette can't drift apart.
+// STICKMAN_LIMB_HALF_H is the single-leg half-length — with the new
+// knee split in Phase B this is also the upper/lower leg length.
+const STICKMAN_LIMB_HALF_H  = STICKMAN_LIMB_FULL_H / 2;
 // Per-frame LPF coefficient for smoothing animation state (tilt, amplitude).
 // ~0.15 → time constant ≈ 100ms at 60 fps.
 const STICKMAN_SMOOTH = 0.15;
@@ -51,26 +66,11 @@ const STICKMAN_SMOOTH = 0.15;
 const STICKMAN_RUN_THRESHOLD = 1.2;
 const STICKMAN_TILT_PER_SPEED = 0.09;
 const STICKMAN_TILT_MAX = 0.45;
-// Body-local glyph offsets, pre-multiplied by STICKMAN_GLYPH_SIZE so the
-// hot path does zero multiplies to materialise them. All measured from
-// the hip center, which is itself placed at hipBaseY = 0.10 * s + bob.
-const STICKMAN_SHOULDER_OFX = 0.216 * STICKMAN_GLYPH_SIZE;
-const STICKMAN_SHOULDER_OFY = 0.92 * STICKMAN_GLYPH_SIZE;
-const STICKMAN_HIP_OFX      = 0.12 * STICKMAN_GLYPH_SIZE;
-const STICKMAN_HEAD_GAP_Y   = 0.13041 * STICKMAN_GLYPH_SIZE;
-const STICKMAN_LIMB_HALF_H  = 0.45 * STICKMAN_GLYPH_SIZE;
-const STICKMAN_LIMB_FULL_H  = STICKMAN_LIMB_HALF_H * 2;
-// Thickness of the stickman's 3D pipe parts, in world units.
-const STICKMAN_LEG_RADIUS   = 2.2;
-// Arms are thinner than legs — 20% reduction from the leg radius.
-const STICKMAN_ARM_RADIUS   = STICKMAN_LEG_RADIUS * 0.8;
-const STICKMAN_TORSO_RADIUS = 3.3;
 // Stamina fill capsule is inset inside the outline shell, creating a
 // visible "shell wall" (the outline appears thicker inward while the
 // outer silhouette is unchanged). Delta is in world units.
 const STICKMAN_TORSO_SHELL_THICKNESS = 1.0;
 const STICKMAN_TORSO_FILL_RADIUS = STICKMAN_TORSO_RADIUS - STICKMAN_TORSO_SHELL_THICKNESS;
-const STICKMAN_HEAD_RADIUS  = 4.0;
 const STICKMAN_FIST_RADIUS  = 3.0;
 // Sphere pool for heads + push fists: 1 head + up to 2 fists per
 // stickman × 2 stickmen + spare. (Torso and limb pools are sized

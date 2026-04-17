@@ -20,6 +20,8 @@ import {
   Z_STRETCH,
   KICK_WINDUP_MS,
   KICK_DURATION_MS,
+  STICKMAN_TORSO_RADIUS,
+  STICKMAN_HEAD_RADIUS,
 } from '../physics.js';
 
 const NOOP = [0, 0, -1, 0, 0, 0, 0, -1, 0];
@@ -1344,4 +1346,293 @@ test('reset after pause clears inGoal so next play uses outer resolver', () => {
   for (let i = 0; i < 5; i++) tick(state, NOOP, NOOP);
   assert.equal(state.ball.inGoal, false,
     'inGoal should be cleared when the ball is reset for kickoff');
+});
+
+/* ── Body collider: cushion + deflect trap ──────────────── */
+
+// Shared setup for body-trap scenarios. Place p1 in the middle of
+// the field, park p2 out of the way, disable grace/pauses.
+function trapState(seed = 7) {
+  const state = freshState(seed);
+  state.headless = true;  // skip pause state machine
+  // p1 at a clean midfield spot.
+  state.p1.x = 400;
+  state.p1.y = 24;  // center-y = 27
+  state.p1.vx = 0; state.p1.vy = 0;
+  state.p1.heading = 0;
+  // p2 far out of the way.
+  state.p2.x = 800;
+  state.p2.y = 24;
+  state.p2.vx = 0; state.p2.vy = 0;
+  return state;
+}
+
+test('ball straight at torso — trap fires immediately and kills normal velocity', () => {
+  const state = trapState();
+  state.recordEvents = true;
+  const p = state.p1;
+  const initialSpeed = 10;
+  // Ball waist-high, on the body axis y, moving directly at the torso.
+  state.ball.x = p.x + PLAYER_WIDTH / 2 - 10;
+  state.ball.y = p.y + PLAYER_HEIGHT / 2;
+  state.ball.z = 12;
+  state.ball.vx = initialSpeed; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  // One tick is enough for the ball to contact the torso
+  // (distance 10, vx=10 → contact this tick).
+  tick(state, NOOP, NOOP);
+
+  // Trap event fired.
+  assert.ok(
+    state.events.some((e) => e.type === 'ball_trap'),
+    'trap event must fire on torso contact',
+  );
+  // Head-on hit: normal is purely -x, tangential velocity is zero, so
+  // the cushion brings ball.vx all the way to 0 (within float noise).
+  assert.ok(
+    Math.abs(state.ball.vx) < 0.01,
+    `head-on trap must zero the normal-component velocity, got vx=${state.ball.vx}`,
+  );
+});
+
+test('ball that was trapped settles on the ground close to the player', () => {
+  const state = trapState();
+  const p = state.p1;
+  state.ball.x = p.x + PLAYER_WIDTH / 2 - 10;
+  state.ball.y = p.y + PLAYER_HEIGHT / 2;
+  state.ball.z = 12;
+  state.ball.vx = 10; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  for (let i = 0; i < 60; i++) tick(state, NOOP, NOOP);
+
+  assert.ok(state.ball.z <= BALL_RADIUS + 0.1,
+    `ball should settle on ground, got z=${state.ball.z}`);
+  // Head-on hit zeroes horizontal velocity; ball drops through gravity
+  // to the ground and sits roughly at the clamp point. Bound is the
+  // expected contact distance plus a small margin — any meaningful
+  // roll would exceed this.
+  const contactDist = STICKMAN_TORSO_RADIUS + BALL_RADIUS;
+  const horizontalDist = Math.hypot(
+    state.ball.x - (p.x + PLAYER_WIDTH / 2),
+    state.ball.y - (p.y + PLAYER_HEIGHT / 2),
+  );
+  assert.ok(horizontalDist <= contactDist + 1,
+    `trapped ball should stop at ~contact distance (${contactDist.toFixed(2)}), got ${horizontalDist.toFixed(2)}`);
+});
+
+test('ball falling onto head fires a trap event and kills normal velocity', () => {
+  const state = trapState();
+  state.recordEvents = true;
+  const p = state.p1;
+  state.ball.x = p.x + PLAYER_WIDTH / 2 - 1;
+  state.ball.y = p.y + PLAYER_HEIGHT / 2;
+  state.ball.z = 60;
+  state.ball.vx = 1; state.ball.vy = 0; state.ball.vz = -8;
+  state.ball.frozen = false;
+
+  // Advance until trap fires. Head-hit is expected ~1 tick after
+  // ball.z crosses head-contact (≈52.87). Gravity + vz=−8 → ~1 tick.
+  let fireTickVz = null;
+  for (let i = 0; i < 20; i++) {
+    tick(state, NOOP, NOOP);
+    if (state.events.some((e) => e.type === 'ball_trap')) {
+      fireTickVz = state.ball.vz;
+      break;
+    }
+  }
+
+  assert.ok(fireTickVz !== null, 'trap event must fire when ball contacts the head');
+  // The cushion kills the normal-component (mostly −y) completely —
+  // the stuck-escape nudge zeroes vz when it kicks in, and even a
+  // small lateral component leaves the surviving vertical tiny. A
+  // full tick of gravity afterwards (−0.3) is the only real residue.
+  assert.ok(
+    fireTickVz > -0.5,
+    `head trap must kill most of downward velocity (was −8), got vz=${fireTickVz}`,
+  );
+});
+
+test('ball that was head-trapped settles on the ground close to the player', () => {
+  const state = trapState();
+  const p = state.p1;
+  state.ball.x = p.x + PLAYER_WIDTH / 2 - 1;
+  state.ball.y = p.y + PLAYER_HEIGHT / 2;
+  state.ball.z = 60;
+  state.ball.vx = 1; state.ball.vy = 0; state.ball.vz = -8;
+  state.ball.frozen = false;
+
+  // Stop short of the 188-tick headless stall reset which would
+  // teleport the ball to midfield and hide the real settling point.
+  for (let i = 0; i < 150; i++) tick(state, NOOP, NOOP);
+
+  assert.ok(state.ball.z <= BALL_RADIUS + 0.1,
+    `ball must end up on ground, got z=${state.ball.z}`);
+  // Tight bound: post-trap the ball drops mostly straight down off
+  // the head (tunnel-correction places it ~contact distance to the
+  // player's front), so it should rest within one player-width.
+  const horizontalDist = Math.hypot(
+    state.ball.x - (p.x + PLAYER_WIDTH / 2),
+    state.ball.y - (p.y + PLAYER_HEIGHT / 2),
+  );
+  assert.ok(horizontalDist <= PLAYER_WIDTH,
+    `head-trapped ball should settle within one player-width, got ${horizontalDist.toFixed(2)}`);
+});
+
+test('ball passing at shoulder clearance does NOT contact torso', () => {
+  const state = trapState();
+  state.recordEvents = true;
+  const p = state.p1;
+  // Lateral clearance (physics y in world-depth units): translate the
+  // world-space "just past torso+ball radii" into physics y by
+  // dividing by Z_STRETCH.
+  const clearanceWorld = STICKMAN_TORSO_RADIUS + BALL_RADIUS + 1;
+  const clearancePhysY = clearanceWorld / Z_STRETCH;
+  const initialVx = 15;
+  state.ball.x = p.x + PLAYER_WIDTH / 2 - 60;
+  state.ball.y = p.y + PLAYER_HEIGHT / 2 + clearancePhysY;
+  state.ball.z = 12;
+  state.ball.vx = initialVx; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  // Run just long enough for the ball to cross the player's x range,
+  // staying airborne (no ground friction). Air friction * ~10 ticks
+  // is ~10 %, so we check vx stays >70 % of initial.
+  for (let i = 0; i < 10; i++) tick(state, NOOP, NOOP);
+
+  assert.ok(
+    !state.events.some((e) => e.type === 'ball_trap'),
+    'ball passing at shoulder clearance must not fire trap',
+  );
+  assert.ok(state.ball.x > p.x + PLAYER_WIDTH,
+    `ball should have passed player, x=${state.ball.x}`);
+  assert.ok(state.ball.vx > initialVx * 0.7,
+    `ball vx should retain most of its speed in 10 ticks, got ${state.ball.vx}`);
+});
+
+test('walking into a stationary ball pins it ahead of the player (dribble, stable regime)', () => {
+  // Drive the player at a modest constant speed (5 u/tick) that the
+  // ball can track — GROUND_FRICTION decays ball.vx ~5.6 %/tick, so
+  // the per-contact boost just needs to refill that. Max-speed ramp
+  // is the RUN case and is tested separately below.
+  const state = trapState();
+  const p = state.p1;
+  state.ball.x = p.x + PLAYER_WIDTH / 2 + 30;
+  state.ball.y = p.y + PLAYER_HEIGHT / 2;
+  state.ball.z = BALL_RADIUS;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  const walkHalf = [0.5, 0, -1, 0, 0, 0, 0, -1, 0];  // target vx = 5
+
+  // Let the player ramp + catch the ball (takes about 10-15 ticks).
+  for (let i = 0; i < 20; i++) tick(state, walkHalf, NOOP);
+
+  // Now verify that the dribble stays stable for the NEXT 20 ticks:
+  // the gap must stay at contact distance each tick (tight tolerance).
+  const expected = STICKMAN_TORSO_RADIUS + BALL_RADIUS;
+  for (let i = 0; i < 20; i++) {
+    tick(state, walkHalf, NOOP);
+    const gap = state.ball.x - (state.p1.x + PLAYER_WIDTH / 2);
+    assert.ok(
+      Math.abs(gap - expected) < 0.5,
+      `dribble tick ${i}: gap should be ~${expected.toFixed(2)}, got ${gap.toFixed(2)}`,
+    );
+  }
+});
+
+test('dribble survives a full sprint (tunnel-correction keeps ball in front)', () => {
+  // User's choice for this task was "ball stays pinned at feet" even
+  // at sprint speed (arcade feel, not realistic-physics). This test
+  // pins that contract: if the player runs past the ball, the
+  // tunnel-correction teleports the ball back to the front, dribble
+  // continues.
+  const state = trapState();
+  const p = state.p1;
+  state.ball.x = p.x + PLAYER_WIDTH / 2 + 30;
+  state.ball.y = p.y + PLAYER_HEIGHT / 2;
+  state.ball.z = BALL_RADIUS;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  const moveRight = [1, 0, -1, 0, 0, 0, 0, -1, 0];
+  // 40 ticks of full sprint gives the player time to ramp to
+  // MAX_PLAYER_SPEED (10 u/tick) and then some.
+  for (let i = 0; i < 40; i++) tick(state, moveRight, NOOP);
+
+  const gap = state.ball.x - (state.p1.x + PLAYER_WIDTH / 2);
+  const expected = STICKMAN_TORSO_RADIUS + BALL_RADIUS;
+  // Ball should be on the player's forward side (+x) at roughly the
+  // contact distance, even after acceleration past the ball.
+  assert.ok(
+    gap > 0 && gap < expected + 1,
+    `ball should still be pinned in front after sprint, got gap=${gap.toFixed(2)}`,
+  );
+});
+
+test('active kick skips body trap (foot will handle contact in Phase C)', () => {
+  const state = trapState();
+  const p = state.p1;
+  // Ball aimed directly at torso, same as the first trap test.
+  state.ball.x = p.x + PLAYER_WIDTH / 2 - 30;
+  state.ball.y = p.y + PLAYER_HEIGHT / 2;
+  state.ball.z = 12;
+  state.ball.vx = 15; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  // Force an active kick on the player — body collider should be inert.
+  p.kick.active = true;
+  p.kick.phase = 'windup';
+  p.kick.timer = 0;
+
+  // Run just long enough for the ball to reach the torso region.
+  for (let i = 0; i < 10; i++) tick(state, NOOP, NOOP);
+
+  // Ball should have carried through the torso zone without being trapped —
+  // horizontal speed stays mostly intact (subject to air friction), and it's
+  // past the player's x position.
+  assert.ok(state.ball.x > p.x + PLAYER_WIDTH,
+    `ball should have passed through torso zone, x=${state.ball.x}`);
+  assert.ok(state.ball.vx > 10,
+    `active kick should leave ball vx mostly intact, got ${state.ball.vx}`);
+});
+
+test('adaptive hitbox — contact fires exactly at (torso_radius + ball_radius)', () => {
+  // Instead of mutating the constant, assert that the contact distance
+  // IS the sum of radii, by placing the ball at known distances and
+  // checking whether a trap fires (ball.vx changes).
+  const ASSUMED_RADIUS_SUM = STICKMAN_TORSO_RADIUS + BALL_RADIUS;
+
+  // Just-inside: ball slightly closer than the sum → should contact.
+  {
+    const state = trapState();
+    const p = state.p1;
+    state.ball.x = p.x + PLAYER_WIDTH / 2 + (ASSUMED_RADIUS_SUM - 0.3);
+    state.ball.y = p.y + PLAYER_HEIGHT / 2;
+    state.ball.z = 12;
+    state.ball.vx = -3; state.ball.vy = 0; state.ball.vz = 0;  // moving INTO torso
+    state.ball.frozen = false;
+    state.recordEvents = true;
+    tick(state, NOOP, NOOP);
+    assert.ok(
+      state.events.some((e) => e.type === 'ball_trap'),
+      'ball inside contact distance should fire ball_trap event',
+    );
+  }
+  // Just-outside: ball slightly farther than the sum → no contact.
+  {
+    const state = trapState();
+    const p = state.p1;
+    state.ball.x = p.x + PLAYER_WIDTH / 2;
+    state.ball.y = p.y + PLAYER_HEIGHT / 2 + ASSUMED_RADIUS_SUM + 0.5;
+    state.ball.z = 12;
+    state.ball.vx = 0; state.ball.vy = -2; state.ball.vz = 0;  // moving toward body but not yet in
+    state.ball.frozen = false;
+    state.recordEvents = true;
+    tick(state, NOOP, NOOP);
+    assert.ok(
+      !state.events.some((e) => e.type === 'ball_trap'),
+      'ball outside contact distance should NOT fire ball_trap',
+    );
+  }
 });

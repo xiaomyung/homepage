@@ -147,6 +147,40 @@ const REPOSITION_SPEED = 6;
 const REPOSITION_TOL = 5;
 const RESPAWN_DELAY_TICKS = Math.ceil(300 / TICK_MS);
 
+/* ── Stickman rig constants (shared with renderer) ─────────────
+ *
+ * All rig proportions live here. `renderer.js` imports them so a
+ * single change — e.g. bumping torso radius — is picked up by both
+ * the drawn silhouette AND the physics ball-vs-body collider without
+ * drift. Dimensions are in world units (y-up, same axis for physics
+ * z and rendering y).
+ */
+export const STICKMAN_GLYPH_SIZE   = 22;
+export const STICKMAN_HIP_OFX      = 0.12 * STICKMAN_GLYPH_SIZE;       // 2.64
+export const STICKMAN_SHOULDER_OFX = 0.216 * STICKMAN_GLYPH_SIZE;      // 4.752
+export const STICKMAN_SHOULDER_OFY = 0.92 * STICKMAN_GLYPH_SIZE;       // 20.24
+export const STICKMAN_HEAD_GAP_Y   = 0.13041 * STICKMAN_GLYPH_SIZE;    // 2.869
+export const STICKMAN_LIMB_FULL_H  = 20;                               // was 19.8; cleaner 10+10 split
+export const STICKMAN_UPPER_LEG    = STICKMAN_LIMB_FULL_H / 2;         // 10
+export const STICKMAN_LOWER_LEG    = STICKMAN_LIMB_FULL_H / 2;         // 10
+export const STICKMAN_TORSO_RADIUS = 3.3;
+export const STICKMAN_HEAD_RADIUS  = 4.0;
+export const STICKMAN_LEG_RADIUS   = 2.2;
+export const STICKMAN_ARM_RADIUS   = STICKMAN_LEG_RADIUS * 0.8;        // 1.76
+
+// Ball-trap inelastic deflect factor. 0 = full absorb (dead stop on
+// surface normal); 1 = elastic. 0.25 cushions the normal component
+// fully (v·n dropped) and retains 25 % of the tangential component
+// so the ball slides along the body surface and gravity settles it.
+const BODY_TANG_RETAIN = 0.25;
+
+// Body column vertical anchors above the ground (z=0). Hip base is
+// where the leg capsules meet the torso; shoulder sits one torso
+// length above; head sits a neck-gap + head-radius above the shoulder.
+const HIP_BASE_Z      = STICKMAN_LIMB_FULL_H;                          // 20
+const SHOULDER_Z      = HIP_BASE_Z + STICKMAN_SHOULDER_OFY;            // 40.24
+const HEAD_CENTER_Z   = SHOULDER_Z + STICKMAN_HEAD_GAP_Y + STICKMAN_HEAD_RADIUS; // 47.11
+
 /* ── Field & state factories ──────────────────────────────────── */
 
 export function createField(width = FIELD_WIDTH_REF) {
@@ -714,6 +748,202 @@ function resolveBallInsideGoal(state, box) {
   }
 }
 
+/* ── Ball vs player body (torso capsule + head sphere) ──────── */
+
+const _scratchClosest = { x: 0, y: 0, z: 0 };
+
+/** Closest point on segment AB to point P, written into `out` (same
+ *  {x,y,z} object style as _scratchPush). Pure math, no allocation. */
+function closestPointOnSegment(ax, ay, az, bx, by, bz, px, py, pz, out) {
+  const dx = bx - ax, dy = by - ay, dz = bz - az;
+  const len2 = dx * dx + dy * dy + dz * dz;
+  let t = 0;
+  if (len2 > 1e-12) {
+    t = ((px - ax) * dx + (py - ay) * dy + (pz - az) * dz) / len2;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+  }
+  out.x = ax + t * dx;
+  out.y = ay + t * dy;
+  out.z = az + t * dz;
+  return out;
+}
+
+/**
+ * Ball vs player's body-column capsule + head sphere.
+ *
+ * Collision math runs in WORLD coordinates (y = vertical,
+ * z = depth) so the spherical body radii compare apples-to-apples
+ * against physics distances. Physics space has its depth axis
+ * compressed by Z_STRETCH for gameplay feel — if we used physics y
+ * directly the collider would be stretched into a flat sheet.
+ *
+ * Body is inert for the entire duration of an active kick (any
+ * phase) so the foot can reach the ball without the torso stealing
+ * it first. Other players' bodies still trap normally.
+ *
+ * Emergent dribble: a stationary ball gets clamped to the body
+ * surface each tick. As the player walks forward, the clamp
+ * re-fires and the ball stays "pinned" at contact distance — no
+ * special-case code.
+ *
+ * Returns `true` if a clamp fired, so the caller can break the
+ * substep integration loop — otherwise the post-clamp substeps
+ * would keep advancing the ball with the freshly-boosted velocity
+ * and over-shoot the contact distance.
+ */
+function resolveBallVsPlayerBody(state, p) {
+  if (p.kick.active) return false;
+  const ball = state.ball;
+  if (ball.frozen) return false;
+
+  const airZ = p.airZ || 0;
+  const centerX = p.x + PLAYER_WIDTH / 2;
+  const centerYPhys = p.y + PLAYER_HEIGHT / 2;
+  const centerWorldZ = centerYPhys * Z_STRETCH;
+
+  // Ball in world coords: physics (x, y=depth, z=vertical) → world
+  // (x, y=vertical, z=depth). Velocity follows the same mapping.
+  const ballWX = ball.x;
+  const ballWY = ball.z;
+  const ballWZ = ball.y * Z_STRETCH;
+  const ballWVX = ball.vx;
+  const ballWVY = ball.vz;
+  const ballWVZ = ball.vy * Z_STRETCH;
+
+  // Body-column capsule in world coords: vertical from ground
+  // (+airZ) to shoulder height, x and z fixed at the player center.
+  const closest = closestPointOnSegment(
+    centerX, airZ, centerWorldZ,
+    centerX, SHOULDER_Z + airZ, centerWorldZ,
+    ballWX, ballWY, ballWZ,
+    _scratchClosest,
+  );
+  const torsoHit = tryBodyContact(state, p, closest, ballWX, ballWY, ballWZ,
+    ballWVX, ballWVY, ballWVZ, STICKMAN_TORSO_RADIUS);
+
+  // Head sphere in world coords.
+  _scratchClosest.x = centerX;
+  _scratchClosest.y = HEAD_CENTER_Z + airZ;
+  _scratchClosest.z = centerWorldZ;
+  // After possible torso clamp, re-read ball world coords so the
+  // head test sees the post-clamp position.
+  const ballWX2 = ball.x;
+  const ballWY2 = ball.z;
+  const ballWZ2 = ball.y * Z_STRETCH;
+  const ballWVX2 = ball.vx;
+  const ballWVY2 = ball.vz;
+  const ballWVZ2 = ball.vy * Z_STRETCH;
+  const headHit = tryBodyContact(state, p, _scratchClosest, ballWX2, ballWY2, ballWZ2,
+    ballWVX2, ballWVY2, ballWVZ2, STICKMAN_HEAD_RADIUS);
+  return torsoHit || headHit;
+}
+
+/** Apply cushion + deflect against a single sphere/segment-closest-
+ *  point in world coords. Writes new ball position + velocity back
+ *  to physics coords. `collider` is the world-space closest point
+ *  of the collider to the ball. Returns true if a clamp fired. */
+function tryBodyContact(state, p, collider, wx, wy, wz, wvx, wvy, wvz, colliderRadius) {
+  const ball = state.ball;
+  let nx = wx - collider.x;
+  let ny = wy - collider.y;
+  let nz = wz - collider.z;
+  let d2 = nx * nx + ny * ny + nz * nz;
+  const r = colliderRadius + BALL_RADIUS;
+  if (d2 >= r * r) return false;
+
+  let d = Math.sqrt(d2);
+  if (d < 1e-9) {
+    // Ball coincident with collider — push out on +x (deterministic).
+    nx = 1; ny = 0; nz = 0; d = 1;
+  }
+  let inv = 1 / d;
+  let nxU = nx * inv, nyU = ny * inv, nzU = nz * inv;
+
+  // Tunnel correction: if the player is walking in a direction that
+  // has the ball behind them (contact normal is opposite to player's
+  // heading-projected velocity), the player has tunneled past the
+  // ball this tick — its per-tick step can be larger than the torso
+  // radius. In that case, flip the contact normal to the player's
+  // forward direction so the dribble clamp puts the ball AHEAD of
+  // the player, not behind. Preserves arcade "ball stays at feet"
+  // feel without solving a full swept-player collision.
+  const pWVX = p.vx, pWVZ = p.vy * Z_STRETCH;
+  const pSpeed = Math.hypot(pWVX, pWVZ);
+  if (pSpeed > 1.0) {
+    const fwdX = pWVX / pSpeed, fwdZ = pWVZ / pSpeed;
+    const fwdDotN = fwdX * nxU + fwdZ * nzU;
+    if (fwdDotN < -0.3) {
+      // Ball ended up behind a walking player → relocate to front.
+      nxU = fwdX;
+      nyU = 0;
+      nzU = fwdZ;
+    }
+  }
+  const overlap = r - d;
+
+  // Clamp ball out along the (possibly adjusted) normal.
+  const newWX = collider.x + nxU * r;  // in the "tunnel" case, clamp to contact distance exactly in front
+  const newWY = (nyU !== 0) ? wy + nyU * overlap : wy;
+  const newWZ = collider.z + nzU * r;
+  // Note: we use `collider.x/z` plus full r for the horizontal clamp.
+  // For the untunneled case this is equivalent to `w* + n* * overlap`.
+
+  // Cushion + deflect velocity. Normal component is absorbed, the
+  // tangential component is damped to BODY_TANG_RETAIN.
+  const vDotN = wvx * nxU + wvy * nyU + wvz * nzU;
+  let newWVX = wvx, newWVY = wvy, newWVZ = wvz;
+  if (vDotN < 0) {
+    const vnx = vDotN * nxU, vny = vDotN * nyU, vnz = vDotN * nzU;
+    newWVX = (wvx - vnx) * BODY_TANG_RETAIN;
+    newWVY = (wvy - vny) * BODY_TANG_RETAIN;
+    newWVZ = (wvz - vnz) * BODY_TANG_RETAIN;
+    if (state.recordEvents) {
+      state.events.push({
+        type: 'ball_trap',
+        player: p === state.p1 ? 'p1' : 'p2',
+        x: newWX, y: newWZ / Z_STRETCH, z: newWY,
+      });
+    }
+  }
+
+  // Dribble assist: if the player is walking along +normal (into
+  // ball's side of the body), match the player's normal-component
+  // velocity so the ball keeps up instead of falling behind.
+  const pvDotN = pWVX * nxU + pWVZ * nzU;
+  if (pvDotN > 0) {
+    const ballVAlongN = newWVX * nxU + newWVY * nyU + newWVZ * nzU;
+    const delta = pvDotN - ballVAlongN;
+    if (delta > 0) {
+      newWVX += delta * nxU;
+      newWVY += delta * nyU;
+      newWVZ += delta * nzU;
+    }
+  }
+
+  // Stuck-on-top escape: a perfectly vertical contact (ball dropped
+  // directly onto head / shoulder) produces zero tangential velocity
+  // after cushion and re-clamps each tick. Give a small deterministic
+  // forward slide so gravity carries the ball off the body instead
+  // of pinning it on top. Cap is small (~0.5) so non-pathological
+  // cases aren't affected.
+  if (vDotN < 0 && nyU > 0.95
+      && Math.abs(newWVX) < 0.05 && Math.abs(newWVZ) < 0.05) {
+    const fwdX = Math.cos(p.heading);
+    const fwdZ = Math.sin(p.heading);
+    newWVX = fwdX * 0.5;
+    newWVZ = fwdZ * 0.5;
+  }
+
+  ball.x  = newWX;
+  ball.z  = newWY;
+  ball.y  = newWZ / Z_STRETCH;
+  ball.vx = newWVX;
+  ball.vz = newWVY;
+  ball.vy = newWVZ / Z_STRETCH;
+  return true;
+}
+
 /**
  * Player-vs-player AABB separation on the ground plane. When the two
  * bodies overlap, split the minimum overlap across both along the
@@ -1015,7 +1245,11 @@ function tryPush(state, pusher, victim, powerNorm) {
 function updateBall(state) {
   const ball = state.ball;
   if (ball.frozen) return;
-  if (ball.vx === 0 && ball.vy === 0 && ball.z === 0 && ball.vz === 0) return;
+  // No early-exit for a completely-at-rest ball — the body-collider
+  // resolver still needs to fire so a player walking into a dead
+  // ball can push it. The substep loop does zero work when all
+  // velocities are zero, so the only per-tick cost is two
+  // capsule-sphere tests.
 
   // Z physics in one step per tick (gravity + ground/ceiling bounces)
   // — preserves the existing parabola timing for vertical motion.
@@ -1080,6 +1314,14 @@ function updateBall(state) {
       resolveBallGoalBox(state, field.goalBoxRight);
     }
     if (ball.frozen) return;
+    // Ball vs player bodies — cushion + deflect trap on torso/head.
+    // Skipped internally for any player with an active kick so the
+    // foot can reach the ball (see resolveBallVsPlayerBody). On a
+    // clamp, break the substep loop — the cushioned / pinned velocity
+    // should NOT drive further advancement within the same tick.
+    const hit1 = resolveBallVsPlayerBody(state, state.p1);
+    const hit2 = resolveBallVsPlayerBody(state, state.p2);
+    if (hit1 || hit2) break;
   }
 
   const friction = ball.z > 0 ? AIR_FRICTION : GROUND_FRICTION;

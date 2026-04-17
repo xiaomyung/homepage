@@ -36,6 +36,8 @@ import {
   STICKMAN_HIP_OFX,
   STICKMAN_HEAD_GAP_Y,
   STICKMAN_LIMB_FULL_H,
+  STICKMAN_UPPER_LEG,
+  STICKMAN_LOWER_LEG,
   STICKMAN_TORSO_RADIUS,
   STICKMAN_HEAD_RADIUS,
   STICKMAN_LEG_RADIUS,
@@ -79,6 +81,22 @@ const STICKMAN_FIST_RADIUS  = 3.0;
 // inline alongside their geometries.)
 const STICKMAN_SPH_POOL     = 8;
 const TWO_PI = Math.PI * 2;
+
+// Shin's world-space swing angle given the thigh's. Mild "follow-
+// through" curve: shin tracks 1 − `flex` of the thigh's angle where
+// `flex` grows with the thigh's swing magnitude, capped at 0.5. So
+// a straight-down thigh gives a straight-down shin (no bend at rest),
+// a forward-swinging thigh gets a knee that bends +forward, and a
+// backward-swinging push-off thigh also bends the knee +forward —
+// knees only hinge one way, just like real ones. Phase C will
+// replace this cosmetic curve with a 2-bone IK solve toward the
+// ball's foot-contact target.
+const STICKMAN_KNEE_FLEX_MAX   = 0.5;
+const STICKMAN_KNEE_FLEX_SLOPE = 0.4;
+function shinAngleFor(thighAngle) {
+  const flex = Math.min(STICKMAN_KNEE_FLEX_MAX, STICKMAN_KNEE_FLEX_SLOPE * Math.abs(thighAngle));
+  return thighAngle * (1 - flex);
+}
 
 // Celebration pose — jumping-jack with arms straight up.
 const CELEB_PHASE_RATE = 0.25;           // rad per tick; ~25 ticks per hop
@@ -360,11 +378,15 @@ export class Renderer {
     // accordingly (otherwise stamina=0/1 would map outside the fill).
     const torsoFillBodyLen = torsoBodyLen;
     const armBodyLen = STICKMAN_LIMB_FULL_H - 2 * STICKMAN_ARM_RADIUS;
-    const legBodyLen = STICKMAN_LIMB_FULL_H - 2 * STICKMAN_LEG_RADIUS;
+    // Leg is drawn as TWO half-length capsules meeting at the knee,
+    // so the mesh geometry's span is UPPER_LEG (= LOWER_LEG), not the
+    // full limb height. Overlapping hemispherical caps at the knee
+    // read as a natural joint without a separate knee sphere.
+    const halfLegBodyLen = STICKMAN_UPPER_LEG - 2 * STICKMAN_LEG_RADIUS;
     const stickmanTorsoGeom     = new THREE.CapsuleGeometry(STICKMAN_TORSO_RADIUS,      torsoBodyLen,     4, 12);
     const stickmanTorsoFillGeom = new THREE.CapsuleGeometry(STICKMAN_TORSO_FILL_RADIUS, torsoFillBodyLen, 4, 12);
     const stickmanArmGeom       = new THREE.CapsuleGeometry(STICKMAN_ARM_RADIUS,        armBodyLen,       4, 10);
-    const stickmanLegGeom       = new THREE.CapsuleGeometry(STICKMAN_LEG_RADIUS,        legBodyLen,       4, 10);
+    const stickmanLegGeom       = new THREE.CapsuleGeometry(STICKMAN_LEG_RADIUS,        halfLegBodyLen,   4, 10);
     this._staticGeometries.push(stickmanTorsoGeom, stickmanTorsoFillGeom, stickmanArmGeom, stickmanLegGeom);
 
     // Fill-capsule dimensions drive the disc scaling math in _placeTorso
@@ -461,10 +483,11 @@ export class Renderer {
       makeTorsoFillMesh();
       makeTorsoDiscMesh();
     }
-    // Two players × 2 arms/legs = 4 of each on screen. Pool of 8
-    // leaves headroom for future multi-stickman scenes.
+    // Two players × 2 arms = 4 arms on screen (pool of 8 for
+    // headroom). Legs are split at the knee: 2 players × 2 legs ×
+    // 2 halves = 8, so a pool of 16 keeps the same headroom ratio.
     for (let i = 0; i < 8; i++) makeArmMesh();
-    for (let i = 0; i < 8; i++) makeLegMesh();
+    for (let i = 0; i < 16; i++) makeLegMesh();
     this._stickmanTorsoCursor = 0;
     this._stickmanArmCursor = 0;
     this._stickmanLegCursor = 0;
@@ -1490,16 +1513,20 @@ export class Renderer {
       rightArmAngle = -kickArmAngle * KICK_ARM_OPP_FRAC;
     }
 
-    // Draw the four limbs — each is a fixed-length capsule pivoted
-    // at its joint and rotated by the swing angle in the (forward,
-    // up) plane. The forward unit vector is the heading-based
-    // (forwardX, forwardZ), so at angle=0 the limb hangs straight
-    // down and at angle=π/2 it points along +forward.
+    // Draw the four limbs. Arms stay as single capsules. Legs split
+    // at a knee: the shin follows the thigh with a mild "follow-
+    // through" factor so the foot stays slightly behind the hip
+    // swing, which reads as a natural gait bend. Phase C replaces
+    // this with real 2-bone IK to a ball target; for now both legs
+    // use the same cosmetic curve so walk/push/kick/airkick all
+    // pick up the knee joint "for free."
     const shoulderY = upperHipY + torsoH * tiltC;
     this._placeArm(lShX, shoulderY, lShZ, leftArmAngle,  forwardX, forwardZ, color);
     this._placeArm(rShX, shoulderY, rShZ, rightArmAngle, forwardX, forwardZ, color);
-    this._placeLeg(lHipX, hipBaseY, lHipZ, leftLegAngle,  forwardX, forwardZ, color);
-    this._placeLeg(rHipX, hipBaseY, rHipZ, rightLegAngle, forwardX, forwardZ, color);
+    const leftShin  = shinAngleFor(leftLegAngle);
+    const rightShin = shinAngleFor(rightLegAngle);
+    this._placeLeg(lHipX, hipBaseY, lHipZ, leftLegAngle,  leftShin,  forwardX, forwardZ, color);
+    this._placeLeg(rHipX, hipBaseY, rHipZ, rightLegAngle, rightShin, forwardX, forwardZ, color);
 
     // Push fists — spheres at the end of each extended arm during the
     // strike window. Size pulses larger at strike peak via pushFistScale.
@@ -1619,8 +1646,35 @@ export class Renderer {
     this._placeLimbFromPool(this._stickmanArm, '_stickmanArmCursor', px, py, pz, angle, forwardX, forwardZ, color);
   }
 
-  _placeLeg(px, py, pz, angle, forwardX, forwardZ, color) {
-    this._placeLimbFromPool(this._stickmanLeg, '_stickmanLegCursor', px, py, pz, angle, forwardX, forwardZ, color);
+  /** Two-segment leg with a knee. `upperAngle` is the hip-swing
+   *  angle (same convention as the old single-capsule leg: 0 =
+   *  straight down, +π/2 = forward, +π = straight up). `lowerAngle`
+   *  is the shin's world-space swing angle (not relative to the
+   *  upper leg). Both capsules meet at the knee; the overlapping
+   *  hemispherical caps at that point read visually as the joint,
+   *  so no separate kneecap sphere is needed. Passing
+   *  `lowerAngle === upperAngle` reproduces the old straight leg. */
+  _placeLeg(px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color) {
+    const U = STICKMAN_UPPER_LEG;
+    const L = STICKMAN_LOWER_LEG;
+    const upperSin = Math.sin(upperAngle);
+    const kneeX = px + forwardX * U * upperSin;
+    const kneeY = py - U * Math.cos(upperAngle);
+    const kneeZ = pz + forwardZ * U * upperSin;
+    const lowerSin = Math.sin(lowerAngle);
+    const footX = kneeX + forwardX * L * lowerSin;
+    const footY = kneeY - L * Math.cos(lowerAngle);
+    const footZ = kneeZ + forwardZ * L * lowerSin;
+
+    // Upper segment: hip → knee.
+    if (this._stickmanLegCursor >= this._stickmanLeg.length) return;
+    const upperMesh = this._stickmanLeg[this._stickmanLegCursor++];
+    this._orientBetween(upperMesh, px, py, pz, kneeX, kneeY, kneeZ, color);
+
+    // Lower segment: knee → foot.
+    if (this._stickmanLegCursor >= this._stickmanLeg.length) return;
+    const lowerMesh = this._stickmanLeg[this._stickmanLegCursor++];
+    this._orientBetween(lowerMesh, kneeX, kneeY, kneeZ, footX, footY, footZ, color);
   }
 
   /** Pull a sphere from the pool and place it at a world point with

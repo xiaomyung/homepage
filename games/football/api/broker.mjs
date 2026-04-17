@@ -48,7 +48,16 @@ const ROUTE_PREFIX = '/api/football';
 const PORT = Number(process.env.FOOTBALL_PORT || 5050);
 const HOST = '127.0.0.1';
 
-const SHOWCASE_FALLBACK_EVERY_N = 5;
+// Showcase cadence. Half the showcases are the top brain playing the
+// fallback teacher — that's the visually clearest match (the user
+// sees the evolved policy competing against a known baseline). The
+// other half sample from the TOP 10 brains for variety — not the
+// full 50, because lower-ranked brains often have polarised
+// strategies that clash into 0-0 stalemates or 30-0 blowouts when
+// paired with each other, which reads as "the game is broken"
+// despite the training working fine.
+const SHOWCASE_FALLBACK_EVERY_N = 2;
+const SHOWCASE_TOP_POOL_SIZE    = 10;
 
 const SURNAMES = [
   'Messi', 'Ronaldo', 'Neymar', 'Mbappe', 'Salah', 'Bruyne', 'Haaland',
@@ -587,6 +596,7 @@ function pickShowcase() {
   const pop = state.population;
   if (pop.length === 0) return { mode: 'vs_fallback', p1: null, p2: null };
   state.showcaseCounter += 1;
+  ensureFitnessFresh();
 
   if (pop.length < 2 || state.showcaseCounter % SHOWCASE_FALLBACK_EVERY_N === 0) {
     let best = pop[0];
@@ -598,10 +608,17 @@ function pickShowcase() {
     };
   }
 
-  const a = pickRandom(pop);
-  let b = pickRandom(pop);
+  // Top-K sample for brain-vs-brain. Random-from-all-50 pulled in
+  // bottom-tier brains ~80% of the time, producing either 0-0
+  // stalemates or lopsided 30-0 blowouts — neither looks like
+  // football. Top 10 are consistent winners against fallback so at
+  // least both sides play competently.
+  const k = Math.min(SHOWCASE_TOP_POOL_SIZE, pop.length);
+  const top = pop.slice().sort((x, y) => y.fitness - x.fitness).slice(0, k);
+  const a = pickRandom(top);
+  let b = pickRandom(top);
   for (let attempts = 0; b.id === a.id && attempts < 5; attempts++) {
-    b = pickRandom(pop);
+    b = pickRandom(top);
   }
   return {
     mode: 'recent',

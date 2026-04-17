@@ -1088,11 +1088,33 @@ function resolvePlayerPairCollision(p1, p2, pre1x, pre1y, pre2x, pre2y) {
   const preDist2 = preDx * preDx + preDz * preDz;
   const postDist2 = postDx * postDx + postDz * postDz;
 
-  // Quick reject: no overlap at start OR end, and no trajectory
-  // crossing in between (swept solve handles the crossing case).
-  // Check sign flip on either axis as a cheap tunneling sentinel.
-  const tunneled = (preDx * postDx < 0) || (preDz * postDz < 0);
-  if (postDist2 >= r * r && preDist2 >= r * r && !tunneled) return;
+  // Swept-minimum reject. For linear motion of two centres over
+  // [0, 1], distance²(t) is a quadratic with minimum at
+  //   t* = −(preD·m) / |m|²
+  // clamped to [0, 1]. If the minimum distance² stays ≥ r², the
+  // pair never overlapped this tick — early out.
+  //
+  // The previous implementation used a per-axis sign-flip heuristic
+  // (`preDz * postDz < 0 → tunneled`) which fires as a false positive
+  // whenever the perpendicular centre-offset crossed zero — common
+  // for two players on nearly-identical y-coordinates with any tiny
+  // y-velocity difference. That false positive reached the full
+  // solver with roots far outside [0, 1], fell through to `tc = 0`,
+  // rewound both players to pre-tick positions, and zeroed their x-
+  // velocities along the wide separation normal — stalling motion
+  // for players 79 units apart.
+  const aMot = mdx * mdx + mdz * mdz;
+  let minDist2;
+  if (aMot < 1e-12) {
+    minDist2 = preDist2;
+  } else {
+    const preDotM = preDx * mdx + preDz * mdz;
+    let tStar = -preDotM / aMot;
+    if      (tStar <= 0) minDist2 = preDist2;
+    else if (tStar >= 1) minDist2 = postDist2;
+    else                 minDist2 = preDist2 + 2 * tStar * preDotM + tStar * tStar * aMot;
+  }
+  if (minDist2 >= r * r) return;
 
   // Solve |preD + t * m|² = r² for t in [0, 1]. Quadratic
   // |m|² t² + 2 (preD · m) t + (|preD|² − r²) = 0.
@@ -1105,16 +1127,15 @@ function resolvePlayerPairCollision(p1, p2, pre1x, pre1y, pre2x, pre2y) {
   // so we don't accidentally take t2 (exit) as the contact time and
   // teleport the players past each other.
   let tc = 0;
-  const a = mdx * mdx + mdz * mdz;
   const TOL = 1e-4;
-  if (a > 1e-9) {
+  if (aMot > 1e-9) {
     const b = 2 * (preDx * mdx + preDz * mdz);
     const c = preDist2 - r * r;
-    const disc = b * b - 4 * a * c;
+    const disc = b * b - 4 * aMot * c;
     if (disc >= 0) {
       const sq = Math.sqrt(disc);
-      const t1 = (-b - sq) / (2 * a);
-      const t2 = (-b + sq) / (2 * a);
+      const t1 = (-b - sq) / (2 * aMot);
+      const t2 = (-b + sq) / (2 * aMot);
       if (t1 >= -TOL && t1 <= 1 + TOL) {
         tc = Math.max(0, Math.min(1, t1));
       } else if (t2 >= -TOL && t2 <= 1 + TOL) {

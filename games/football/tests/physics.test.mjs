@@ -1225,6 +1225,44 @@ test('overlapping starting positions get separated to capsule-contact distance',
   );
 });
 
+test('far-apart players with tiny perpendicular velocity do NOT stall on false-positive collision', () => {
+  // Regression: the pair-collision guard used a per-axis sign-flip
+  // heuristic on the centre-offset vector. Two players 79 units
+  // apart in x but nearly aligned in y would trigger that heuristic
+  // on any tick where their y-offsets crossed sign. The solver then
+  // rewound positions and zeroed both players' x-velocities along
+  // the (far-away) separation normal — stalling all motion.
+  //
+  // Setup: symmetric x positions (80 units apart), same y, both
+  // moving toward each other in x, with OPPOSITE tiny y moves that
+  // cause their y-offsets to cross zero every few ticks.
+  const state = freshState();
+  state.p1.x = 400; state.p1.y = 27;
+  state.p2.x = 480; state.p2.y = 27;
+  // moveX converging, tiny opposite moveY with sign flips each tick
+  // to reproduce the false-positive trigger.
+  let flip = 1;
+  for (let i = 0; i < 10; i++) {
+    flip = -flip;
+    const a1 = [ 1,  0.01 * flip, -1,  1, 0, 0, 0, -1, 0];
+    const a2 = [-1, -0.01 * flip, -1, -1, 0, 0, 0, -1, 0];
+    tick(state, a1, a2);
+  }
+  // Both players should have accelerated over 10 ticks. With
+  // PLAYER_ACCEL = 0.5 per tick, after ~10 ticks speeds should be
+  // near MAX_PLAYER_SPEED = 10. Asserting > 3 gives plenty of margin
+  // while still catching a stall at ~0.5 that would appear after the
+  // first tick if the bug re-emerged.
+  assert.ok(
+    state.p1.vx > 3,
+    `p1 should have accelerated; stall bug returned? vx=${state.p1.vx}`,
+  );
+  assert.ok(
+    state.p2.vx < -3,
+    `p2 should have accelerated; stall bug returned? vx=${state.p2.vx}`,
+  );
+});
+
 test('a push impulse cannot impale the opponent body', () => {
   const state = freshState();
   // Position the pusher right next to the victim and facing them.

@@ -22,6 +22,7 @@ import {
   KICK_DURATION_MS,
   STICKMAN_TORSO_RADIUS,
   STICKMAN_HEAD_RADIUS,
+  solve2BoneIK,
 } from '../physics.js';
 
 const NOOP = [0, 0, -1, 0, 0, 0, 0, -1, 0];
@@ -1658,4 +1659,92 @@ test('adaptive hitbox — contact fires exactly at (torso_radius + ball_radius)'
       'ball outside contact distance should NOT fire ball_trap',
     );
   }
+});
+
+/* ── solve2BoneIK — pure solver ──────────────────────────────── */
+
+/** Project through the solver output and verify the foot ends at
+ *  the expected (fwd, up) position. Returns the absolute error. */
+function footError(res, expectedFwd, expectedUp) {
+  return Math.hypot(res.footFwd - expectedFwd, res.footUp - expectedUp);
+}
+
+/** Reconstruct the foot position from the solver's angles + bone
+ *  lengths. Tests that upperAngle/lowerAngle are self-consistent
+ *  with footFwd/footUp (would catch a sign error in the shin
+ *  computation). */
+function reconstructFoot(res, U, L) {
+  const kneeFwd  = U * Math.sin(res.upperAngle);
+  const kneeDown = U * Math.cos(res.upperAngle);
+  const footFwd  = kneeFwd + L * Math.sin(res.lowerAngle);
+  const footDown = kneeDown + L * Math.cos(res.lowerAngle);
+  return { fwd: footFwd, up: -footDown };
+}
+
+test('solve2BoneIK reachable target → foot lands on target', () => {
+  const U = 10, L = 10;
+  // Typical kick pose: ball 10 forward, 16 below hip.
+  const res = solve2BoneIK(10, -16, U, L, { upperAngle: 0, lowerAngle: 0, footFwd: 0, footUp: 0 });
+  assert.ok(footError(res, 10, -16) < 1e-9, `foot missed: ${footError(res, 10, -16)}`);
+  const recon = reconstructFoot(res, U, L);
+  assert.ok(Math.hypot(recon.fwd - 10, recon.up - (-16)) < 1e-9, 'angles inconsistent with foot position');
+});
+
+test('solve2BoneIK knee bends forward of hip→foot line', () => {
+  const U = 10, L = 10;
+  // Target forward and below — knee should be MORE forward than
+  // the midpoint of the hip→foot line (knee-forward branch).
+  const res = solve2BoneIK(8, -14, U, L, {});
+  const kneeFwd = U * Math.sin(res.upperAngle);
+  const midFwd = res.footFwd / 2;  // hip at 0, foot at footFwd
+  assert.ok(kneeFwd > midFwd, `knee should be forward of midpoint: knee=${kneeFwd} mid=${midFwd}`);
+});
+
+test('solve2BoneIK target at max reach → straight leg pointed at target', () => {
+  const U = 10, L = 10;
+  // D = U+L = 20 exactly.
+  const res = solve2BoneIK(20, 0, U, L, {});
+  assert.ok(Math.abs(res.upperAngle - res.lowerAngle) < 1e-9, 'straight leg: upper == lower angle');
+  assert.ok(footError(res, 20, 0) < 1e-9, 'foot on target at max reach');
+});
+
+test('solve2BoneIK target beyond max reach → clamped to straight leg toward target', () => {
+  const U = 10, L = 10;
+  // D = 30 > 20. Clamp to direction at reach 20.
+  const res = solve2BoneIK(30, 0, U, L, {});
+  assert.ok(Math.abs(res.upperAngle - res.lowerAngle) < 1e-9, 'clamped: straight leg');
+  // Foot should lie on the hip→target ray, at distance U+L from hip.
+  const footD = Math.hypot(res.footFwd, res.footUp);
+  assert.ok(Math.abs(footD - (U + L)) < 1e-9, `foot at max reach (got ${footD})`);
+  // Direction preserved.
+  assert.ok(res.footFwd > 0 && Math.abs(res.footUp) < 1e-9, 'along +fwd axis');
+});
+
+test('solve2BoneIK numerical stability at edge cases', () => {
+  const U = 10, L = 10;
+  // Fully extended (D exactly at U+L) should not NaN.
+  const r1 = solve2BoneIK(U + L, 0, U, L, {});
+  assert.ok(!Number.isNaN(r1.upperAngle), 'NaN at full extension');
+  // Target at hip (D=0) when U=L=0 is degenerate — our guard picks a default.
+  const r2 = solve2BoneIK(0, 0, U, L, {});
+  assert.ok(!Number.isNaN(r2.upperAngle), 'NaN at zero-distance target');
+  // Target directly below hip, distance = |U-L| = 0 (U=L case) → straight down, no bend.
+  const r3 = solve2BoneIK(0, -0.5, U, L, {});
+  assert.ok(!Number.isNaN(r3.upperAngle) && !Number.isNaN(r3.lowerAngle), 'NaN on near-zero vertical target');
+});
+
+test('solve2BoneIK unequal bone lengths reach correct foot position', () => {
+  const U = 12, L = 8;
+  const res = solve2BoneIK(9, -11, U, L, {});
+  assert.ok(footError(res, 9, -11) < 1e-9, 'foot on target with U != L');
+  const recon = reconstructFoot(res, U, L);
+  assert.ok(Math.hypot(recon.fwd - 9, recon.up - (-11)) < 1e-9, 'reconstruction matches');
+});
+
+test('solve2BoneIK scratch-out parameter is mutated and returned', () => {
+  const U = 10, L = 10;
+  const out = { upperAngle: -99, lowerAngle: -99, footFwd: -99, footUp: -99 };
+  const returned = solve2BoneIK(6, -12, U, L, out);
+  assert.equal(returned, out, 'returns same object');
+  assert.ok(out.upperAngle !== -99, 'out was mutated');
 });

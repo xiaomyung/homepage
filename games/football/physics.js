@@ -752,6 +752,71 @@ function resolveBallInsideGoal(state, box) {
   }
 }
 
+/* ── Two-bone IK (planar, hip → knee → foot) ────────────────── */
+
+/**
+ * Analytic 2-bone IK in the (forward, up) plane local to the hip.
+ *
+ * Inputs are already projected into that plane — `targetFwd` is the
+ * forward distance from hip to target (+ = player's facing
+ * direction), `targetUp` is the vertical offset (− = below hip).
+ *
+ * Outputs `upperAngle` and `lowerAngle` in the same convention the
+ * renderer's `_placeLeg` consumes: measured from straight-down,
+ * increasing toward the forward axis. `upperAngle = 0` is the
+ * neutral standing pose, `+π/2` is the thigh horizontal.
+ *
+ * The solver always picks the "knee forward" branch (knee bends in
+ * front of the hip→foot line) — the natural human kicking pose.
+ *
+ * When `targetFwd² + targetUp² > (U+L)²` the target is unreachable;
+ * distance is clamped to `U+L` and the returned foot lies on the
+ * hip→target ray at the leg's maximum extent. Similarly clamped to
+ * `|U−L|` from below so the leg never folds past itself.
+ *
+ * Pure, allocation-free into `out`. If `out` is omitted a fresh
+ * object is returned — use the scratch form in hot loops.
+ */
+const _scratchIK = { upperAngle: 0, lowerAngle: 0, footFwd: 0, footUp: 0 };
+export function solve2BoneIK(targetFwd, targetUp, U, L, out = _scratchIK) {
+  const targetDown = -targetUp;
+  const rawD = Math.hypot(targetFwd, targetDown);
+  const maxReach = U + L;
+  const minReach = Math.abs(U - L);
+  const clampedD = Math.min(Math.max(rawD, minReach), maxReach);
+
+  let tf, tdown;
+  if (rawD < 1e-6) {
+    // Degenerate: target coincides with hip. Default to straight
+    // down at whatever reach we're clamped to (usually minReach).
+    tf = 0;
+    tdown = clampedD;
+  } else {
+    const scale = clampedD / rawD;
+    tf = targetFwd * scale;
+    tdown = targetDown * scale;
+  }
+
+  const safeD = Math.max(clampedD, 1e-6);
+  const theta0 = Math.atan2(tf, tdown);
+  const cosAlpha = (U * U + safeD * safeD - L * L) / (2 * U * safeD);
+  const alpha = Math.acos(Math.max(-1, Math.min(1, cosAlpha)));
+  const upperAngle = theta0 + alpha;
+
+  // Knee position in local (forward, down) coords, then shin angle.
+  const kneeFwd = U * Math.sin(upperAngle);
+  const kneeDown = U * Math.cos(upperAngle);
+  const shinFwd = tf - kneeFwd;
+  const shinDown = tdown - kneeDown;
+  const lowerAngle = Math.atan2(shinFwd, shinDown);
+
+  out.upperAngle = upperAngle;
+  out.lowerAngle = lowerAngle;
+  out.footFwd = tf;
+  out.footUp = -tdown;
+  return out;
+}
+
 /* ── Ball vs player body (torso capsule + head sphere) ──────── */
 
 const _scratchClosest = { x: 0, y: 0, z: 0 };

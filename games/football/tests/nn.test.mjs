@@ -1,9 +1,10 @@
 /**
  * Unit tests for nn.js.
  *
- * Architecture: 20 → 20 → 16 → 18 → 9, LeakyReLU on hidden layers,
- * tanh on output. 1233 total weights (420 + 336 + 306 + 171). Inputs
- * 18 and 19 are cos/sin of the player's heading.
+ * Architecture: 25 → 16 → 9, LeakyReLU on hidden, tanh on output.
+ * 425 total weights (25*16 + 16 + 16*9 + 9 = 400 + 16 + 144 + 9).
+ * Inputs 18 and 19 are cos/sin of the player's heading; 20–24 are
+ * derived signals (see physics.js:buildInputs).
  */
 
 import { test } from 'node:test';
@@ -12,13 +13,13 @@ import { NeuralNet, WEIGHT_COUNT, ARCH } from '../nn.js';
 
 /* ── Shape + constants ─────────────────────────────────────── */
 
-test('ARCH is [20, 20, 16, 18, 9]', () => {
-  assert.deepEqual(ARCH, [20, 20, 16, 18, 9]);
+test('ARCH is [25, 16, 9]', () => {
+  assert.deepEqual(ARCH, [25, 16, 9]);
 });
 
-test('WEIGHT_COUNT is 1233', () => {
-  // 20*20+20 + 20*16+16 + 16*18+18 + 18*9+9 = 420 + 336 + 306 + 171 = 1233
-  assert.equal(WEIGHT_COUNT, 1233);
+test('WEIGHT_COUNT matches layer sum', () => {
+  // 25*16+16 + 16*9+9 = 416 + 153 = 569
+  assert.equal(WEIGHT_COUNT, 569);
 });
 
 /* ── Construction ──────────────────────────────────────────── */
@@ -47,7 +48,7 @@ test('new NeuralNet rejects weights of wrong length', () => {
 
 test('forward returns a 9-float array', () => {
   const nn = new NeuralNet();
-  const inputs = new Array(20).fill(0);
+  const inputs = new Array(25).fill(0);
   const out = nn.forward(inputs);
   assert.equal(out.length, 9);
 });
@@ -60,8 +61,8 @@ test('forward rejects inputs of wrong length', () => {
 test('forward output is in tanh range [-1, 1]', () => {
   const nn = new NeuralNet();
   // Feed large positive and negative to push tanh toward saturation
-  const large = new Array(20).fill(100);
-  const small = new Array(20).fill(-100);
+  const large = new Array(25).fill(100);
+  const small = new Array(25).fill(-100);
   for (const v of nn.forward(large)) {
     assert.ok(v >= -1 && v <= 1, `output out of tanh range: ${v}`);
   }
@@ -73,14 +74,14 @@ test('forward output is in tanh range [-1, 1]', () => {
 test('forward is deterministic: same weights + same inputs → same output', () => {
   const weights = new Array(WEIGHT_COUNT).fill(0).map((_, i) => Math.sin(i) * 0.1);
   const nn = new NeuralNet(weights);
-  const inputs = new Array(20).fill(0).map((_, i) => Math.cos(i) * 0.5);
+  const inputs = new Array(25).fill(0).map((_, i) => Math.cos(i) * 0.5);
   const out1 = nn.forward(inputs);
   const out2 = nn.forward(inputs);
   assert.deepEqual(out1, out2);
 });
 
 test('different weights produce different outputs on same input', () => {
-  const inputs = new Array(20).fill(0.5);
+  const inputs = new Array(25).fill(0.5);
   const weightsA = new Array(WEIGHT_COUNT).fill(0.1);
   const weightsB = new Array(WEIGHT_COUNT).fill(-0.1);
   const outA = new NeuralNet(weightsA).forward(inputs);
@@ -96,7 +97,7 @@ test('LeakyReLU lets negative inputs leak through hidden layers', () => {
   // negative slope through, which changes the final output.
   const leakyWeights = new Array(WEIGHT_COUNT).fill(-1);
   const zeroWeights = new Array(WEIGHT_COUNT).fill(0);
-  const inputs = new Array(20).fill(1);
+  const inputs = new Array(25).fill(1);
   const leakyOut = new NeuralNet(leakyWeights).forward(inputs);
   const zeroOut = new NeuralNet(zeroWeights).forward(inputs);
   // With all zero weights, output should be tanh(0) = 0 across the board

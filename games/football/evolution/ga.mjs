@@ -13,7 +13,7 @@
 
 /* ── NN architecture (must match games/football/nn.js) ─────────── */
 
-export const ARCH = [20, 20, 16, 18, 9];
+export const ARCH = [25, 16, 9];
 
 const LAYER_COUNT = ARCH.length - 1;
 

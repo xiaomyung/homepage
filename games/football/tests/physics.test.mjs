@@ -43,6 +43,7 @@ import {
   ACTION_PUSH_GATE,
   ACTION_PUSH_POWER,
   NN_OUTPUT_SIZE,
+  NN_INPUT_SIZE,
 } from '../physics.js';
 
 /** Build a 9-float action vector by action-slot name rather than
@@ -467,16 +468,30 @@ test('different seeds produce different trajectories', () => {
 
 /* ── Bonus: buildInputs shape ───────────────────────────────── */
 
-test('buildInputs produces 20 floats in [-1, 1]', () => {
+test('buildInputs produces NN_INPUT_SIZE floats in [-1, 1]', () => {
   const state = freshState();
   state.p1.x = 100;
   state.ball.vx = 5;
   const inputs = buildInputs(state, 'p1');
-  assert.equal(inputs.length, 20);
+  assert.equal(inputs.length, NN_INPUT_SIZE);
   for (const v of inputs) {
     assert.ok(v >= -1 && v <= 1, `input out of range: ${v}`);
     assert.ok(Number.isFinite(v), `non-finite input: ${v}`);
   }
+});
+
+test('buildInputs derived signals expose possession and goal distances', () => {
+  const state = freshState();
+  // Put ball right next to p1, far from p2 → possession > 0.
+  state.p1.x = 100; state.ball.x = 110; state.ball.y = state.p1.y;
+  state.p2.x = 800;
+  const inP1 = buildInputs(state, 'p1');
+  const inP2 = buildInputs(state, 'p2');
+  assert.ok(inP1[20] > 0, `p1 should own possession, got ${inP1[20]}`);
+  assert.ok(inP2[20] < 0, `p2 should sense p1 has possession, got ${inP2[20]}`);
+  // Self distances: p1 near left end → close to own goal, far from opp.
+  assert.ok(inP1[23] < inP1[24], 'p1 should be closer to own goal than opp');
+  assert.ok(inP2[23] < inP2[24], 'p2 should be closer to own goal than opp');
 });
 
 test('buildInputs heading outputs track cos/sin(heading)', () => {

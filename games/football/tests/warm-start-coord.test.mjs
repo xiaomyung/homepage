@@ -101,7 +101,7 @@ test('averageWeights: rejects empty input', () => {
 test('averageWeights: is numerically stable across many inputs', () => {
   // Simulate 16 workers each with slightly different weights.
   const n = 16;
-  const len = 1233;
+  const len = 569;
   const arrays = Array.from({ length: n }, (_, i) => {
     const w = new Float64Array(len);
     for (let k = 0; k < len; k++) w[k] = Math.sin(k * 0.01) + i * 1e-6;

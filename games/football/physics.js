@@ -2208,7 +2208,7 @@ function stepReposition(p, tx, ty) {
 
 /* ── NN input builder ────────────────────────────────────────── */
 
-export const NN_INPUT_SIZE = 20;
+export const NN_INPUT_SIZE = 25;
 
 /**
  * Action-repeat stride (a.k.a. frame-skip). The NN evaluates a fresh
@@ -2234,13 +2234,20 @@ export const NN_ACTION_STRIDE = 3;
 
 /**
  * Build the NN input vector for one player, normalized to [-1, 1].
- * Length is NN_INPUT_SIZE. The `out` parameter lets callers reuse
- * a buffer and skip the per-tick Array allocation.
+ * Length is NN_INPUT_SIZE.
  *
- * Inputs 18 and 19 are cos/sin of the player's heading — a direct
- * signal of which way the stickman is pointed, so a stationary
- * brain can still reason about its own facing relative to the
- * ball / opponent without having to move first.
+ * Raw state (0–19): self/opp pos+vel, ball pos+vel+z, target-goal
+ * line, own-goal line, field width, heading cos/sin.
+ *
+ * Derived signals (20–24): pre-computed answers to questions the
+ * teacher asks every tick. The NN can derive these from the raw
+ * state given enough capacity, but exposing them directly cuts the
+ * imitation sample complexity substantially.
+ *   20 — possession:            sign+magnitude of whoever reaches the ball first
+ *   21 — ball_speed_to_my_goal: signed component of ball velocity toward own goal
+ *   22 — ball_range_to_my_goal: normalized distance from ball to own goal
+ *   23 — self_dist_to_own_goal: normalized distance from me to own goal
+ *   24 — self_dist_to_opp_goal: normalized distance from me to opponent goal
  */
 export function buildInputs(state, which, out) {
   if (!out) out = new Array(NN_INPUT_SIZE);
@@ -2270,9 +2277,40 @@ export function buildInputs(state, which, out) {
   out[15] = (tgx / fw) * 2 - 1;
   out[16] = (ogx / fw) * 2 - 1;
   out[17] = (fw / FIELD_WIDTH_REF) * 2 - 1;
-  // cos/sin of heading are already in [-1, 1] — no normalization.
   out[18] = Math.cos(p.heading);
   out[19] = Math.sin(p.heading);
+
+  // Derived signals — computed inline to avoid the extra fallback
+  // import; `buildInputs` is on the hot path (~50k calls/sec during
+  // training) so we want zero allocation and zero cross-module jumps.
+  const cx = p.x + PLAYER_WIDTH / 2;
+  const cy = p.y + PLAYER_HEIGHT / 2;
+  const ocx = opp.x + PLAYER_WIDTH / 2;
+  const ocy = opp.y + PLAYER_HEIGHT / 2;
+  const myDx = b.x - cx, myDy = b.y - cy;
+  const oppDx = b.x - ocx, oppDy = b.y - ocy;
+  const myDist = Math.hypot(myDx, myDy);
+  const oppDist = Math.hypot(oppDx, oppDy);
+  // Possession: positive = I'm closer. Normalise by half field width
+  // so the magnitude has a sensible [-1, 1] range.
+  const possHalfWidth = fw * 0.5;
+  out[20] = (oppDist - myDist) / possHalfWidth;
+
+  // Ball velocity component toward OWN goal (negative = receding).
+  // Magnitude normalised by MAX_KICK_POWER so shots read as ~1.
+  const ownGoalY = FIELD_HEIGHT / 2;
+  const ownDX = ogx - b.x, ownDY = ownGoalY - b.y;
+  const ownDLen = Math.hypot(ownDX, ownDY) || 1;
+  out[21] = (b.vx * ownDX + b.vy * ownDY) / (ownDLen * MAX_KICK_POWER);
+
+  // Ball range to own goal, normalised (1 = full field length away).
+  out[22] = Math.min(1, ownDLen / fw);
+
+  // Self distances to own/opp goal, normalised.
+  const selfOwnDist = Math.hypot(ogx - cx, ownGoalY - cy);
+  const selfOppDist = Math.hypot(tgx - cx, ownGoalY - cy);
+  out[23] = Math.min(1, selfOwnDist / fw);
+  out[24] = Math.min(1, selfOppDist / fw);
 
   for (let i = 0; i < NN_INPUT_SIZE; i++) {
     if (out[i] > 1) out[i] = 1;

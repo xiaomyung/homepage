@@ -813,8 +813,15 @@ function resolveBallVsPlayerBody(state, p) {
 
   // Ball in world coords: physics (x, y=depth, z=vertical) → world
   // (x, y=vertical, z=depth). Velocity follows the same mapping.
+  //
+  // `ball.z` stores the altitude of the ball's **bottom** (ball.z = 0
+  // ≡ resting on the pitch; the renderer draws the mesh at
+  // `ball.z + BALL_VISUAL_RADIUS`). Capsule/sphere collision needs
+  // the center, so we add `BALL_RADIUS` here. Missing this shifted
+  // contact ~4 units below the visible ball and made drops onto the
+  // head look like they were hitting the torso instead.
   const ballWX = ball.x;
-  const ballWY = ball.z;
+  const ballWY = ball.z + BALL_RADIUS;
   const ballWZ = ball.y * Z_STRETCH;
   const ballWVX = ball.vx;
   const ballWVY = ball.vz;
@@ -836,9 +843,10 @@ function resolveBallVsPlayerBody(state, p) {
   _scratchClosest.y = HEAD_CENTER_Z + airZ;
   _scratchClosest.z = centerWorldZ;
   // After possible torso clamp, re-read ball world coords so the
-  // head test sees the post-clamp position.
+  // head test sees the post-clamp position. Same bottom-to-center
+  // shift as the torso read above.
   const ballWX2 = ball.x;
-  const ballWY2 = ball.z;
+  const ballWY2 = ball.z + BALL_RADIUS;
   const ballWZ2 = ball.y * Z_STRETCH;
   const ballWVX2 = ball.vx;
   const ballWVY2 = ball.vz;
@@ -945,7 +953,8 @@ function tryBodyContact(state, p, collider, wx, wy, wz, wvx, wvy, wvz, colliderR
   }
 
   ball.x  = newWX;
-  ball.z  = newWY;
+  // `newWY` is the ball-center world-y; `ball.z` stores the bottom.
+  ball.z  = newWY - BALL_RADIUS;
   ball.y  = newWZ / Z_STRETCH;
   ball.vx = newWVX;
   ball.vz = newWVY;

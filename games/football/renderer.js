@@ -76,10 +76,14 @@ const STICKMAN_TILT_MAX = 0.45;
 const STICKMAN_TORSO_SHELL_THICKNESS = 1.0;
 const STICKMAN_TORSO_FILL_RADIUS = STICKMAN_TORSO_RADIUS - STICKMAN_TORSO_SHELL_THICKNESS;
 const STICKMAN_FIST_RADIUS  = 3.0;
-// Sphere pool for heads + push fists: 1 head + up to 2 fists per
-// stickman × 2 stickmen + spare. (Torso and limb pools are sized
-// inline alongside their geometries.)
-const STICKMAN_SPH_POOL     = 8;
+// Kneecap — a small bump at the hinge. Slightly under the leg shaft
+// radius so it reads as a joint detail, not a growth.
+const STICKMAN_KNEE_RADIUS  = STICKMAN_LEG_RADIUS * 0.92;
+// Sphere pool: 1 head + up to 2 fists per stickman × 2 stickmen = 6
+// for upper-body, plus 2 knees per stickman × 2 stickmen = 4 for
+// knees, plus a spare. (Torso and limb pools are sized inline
+// alongside their geometries.)
+const STICKMAN_SPH_POOL     = 12;
 const TWO_PI = Math.PI * 2;
 
 // Shin's world-space swing angle given the thigh's. Mild "follow-
@@ -1675,6 +1679,11 @@ export class Renderer {
     if (this._stickmanLegCursor >= this._stickmanLeg.length) return;
     const lowerMesh = this._stickmanLeg[this._stickmanLegCursor++];
     this._orientBetween(lowerMesh, kneeX, kneeY, kneeZ, footX, footY, footZ, color);
+
+    // Kneecap sphere at the joint — slightly larger than the leg
+    // shaft so it reads as an actual joint bump even when the leg
+    // is straight and the two capsules are collinear.
+    this._placeSph(kneeX, kneeY, kneeZ, STICKMAN_KNEE_RADIUS, color);
   }
 
   /** Pull a sphere from the pool and place it at a world point with

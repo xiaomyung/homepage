@@ -46,6 +46,7 @@ import {
   STICKMAN_UPPER_ARM_RADIUS,
   STICKMAN_LOWER_ARM_RADIUS,
   kickLegPose,
+  pushArmPose,
 } from './physics.js';
 
 // Small margin so field edges don't touch the canvas boundary.
@@ -112,16 +113,18 @@ function forearmAngleFor(upperArmAngle) {
 const CELEB_PHASE_RATE = 0.25;           // rad per tick; ~25 ticks per hop
 const CELEB_JUMP_PEAK  = 0.55 * STICKMAN_GLYPH_SIZE;
 const CELEB_LEG_SPREAD = 0.55;           // leg outward angle at jump apex (rad)
-// Push pose — a spring-loaded boxing-glove jab. Animation is driven
-// directly by `anim.pushProgress` (ticks since pushTimer went positive);
-// the scripted curves return both arm angle and pivot shift per phase.
+// Push pose — a one-armed boxing punch (jab / hook / uppercut).
+// The striking arm gets real 2-bone IK to the opponent's body in
+// `pushArmPose` (physics.js). These scripted curves drive the
+// SUPPORTING body english (crouch / tilt / hop / pivot) — they
+// animate the non-striking side of the rig only.
 // Phases over normalized progress t ∈ [0, 1]:
-//   [0,        RAISE_T]     raise:   arms rotate 0 → π/2, pivot 0
-//   [RAISE_T,  WINDUP_T]    windup:  arms horizontal, pivot slides 0 → -WINDUP_DIST
-//   [WINDUP_T, STRIKE_T]    strike:  arms horizontal, pivot snaps -WINDUP → +STRIKE (explosive)
-//   [STRIKE_T, SETTLE_T]    settle:  arms horizontal, pivot +STRIKE → 0
-//   [SETTLE_T, LOWER_T]     hold:    arms horizontal, pivot 0
-//   [LOWER_T,  1]           lower:   arms rotate π/2 → 0, pivot 0
+//   [0,        RAISE_T]     raise:   body inits, pivot 0
+//   [RAISE_T,  WINDUP_T]    windup:  pivot slides 0 → -WINDUP_DIST
+//   [WINDUP_T, STRIKE_T]    strike:  pivot snaps -WINDUP → +STRIKE (explosive hop)
+//   [STRIKE_T, SETTLE_T]    settle:  pivot +STRIKE → 0
+//   [SETTLE_T, LOWER_T]     hold:    pivot 0
+//   [LOWER_T,  1]           lower:   body returns to neutral
 const PUSH_TOTAL_TICKS    = 18;             // matches physics PUSH_ANIM_MS (300ms / TICK_MS)
 const PUSH_RAISE_T        = 0.15;
 const PUSH_WINDUP_T       = 0.35;
@@ -131,7 +134,6 @@ const PUSH_LOWER_T        = 0.85;
 const PUSH_WINDUP_DIST    = 0.70 * STICKMAN_GLYPH_SIZE;  // pivot pull-back
 const PUSH_CROUCH_DEPTH   = 0.30 * STICKMAN_GLYPH_SIZE;  // upper body dip during windup
 const PUSH_HOP_DIST       = 0.40 * STICKMAN_GLYPH_SIZE;  // whole body hop on strike
-const PUSH_EXTEND_ANGLE   = Math.PI * 0.5;
 const PUSH_BACK_TILT      = 0.28;                        // rad — body leans back during windup
 const PUSH_FWD_TILT       = 0.42;                        // rad — body leans forward on strike
 
@@ -535,9 +537,10 @@ export class Renderer {
     // accumulated with the current swing rate so rate changes never snap.
     this._animByPlayer = new WeakMap();
 
-    // Scratch buffer for per-frame kick-leg IK; reused across both
+    // Scratch buffers for per-frame IK solves; reused across both
     // players so the hot draw path never allocates.
     this._scratchKickPose = { upperAngle: 0, lowerAngle: 0 };
+    this._scratchPushPose = { upperAngle: 0, lowerAngle: 0 };
 
     // Splash particle pool — ring-buffer allocation, `life === 0` means
     // free. Fields are all numbers so there's zero GC churn per frame.
@@ -1411,15 +1414,13 @@ export class Renderer {
     const jumpY = Math.max(0, Math.sin(anim.celebratePhase)) * CELEB_JUMP_PEAK * celeb;
     const bob = Math.abs(swing) * 0.08 * amplitude * celebInv;
 
-    // Push scripted state — in the local (forward, up) frame. The
-    // forward transform (forwardX, forwardZ) applies when mixing
-    // into world space.
-    let pushArmAngle   = 0;
+    // Push body cosmetics — dip / tilt / hop stay scripted; the
+    // striking arm itself gets real 2-bone IK to the opponent's
+    // body (see `pushArmPose` call below, after shoulderY is known).
     let pushBodyDip    = 0;
     let pushTiltOffset = 0;
     if (pushing > 0) {
       const pushT = Math.min(anim.pushProgress / PUSH_TOTAL_TICKS, 1);
-      pushArmAngle   =  pushArmAngleAt(pushT);
       pushBodyDip    =  pushBodyDipAt(pushT);
       pushTiltOffset =  pushBodyTiltAt(pushT);
       const hop       =  pushHopAt(pushT);
@@ -1521,10 +1522,11 @@ export class Renderer {
       rightLegAngle = rightLegAngle * celebInv +  legSpread * celeb;
     }
 
-    if (pushing > 0) {
-      leftArmAngle  = pushArmAngle;
-      rightArmAngle = pushArmAngle;
-    }
+    // Push arm override is applied AFTER the per-arm (upper, lower)
+    // split below — IK to the opponent's body needs the striking
+    // shoulder's world anchor, which we don't have yet. See the
+    // `if (pushing > 0 && celeb < 0.001)` block after `_placeArm`
+    // setup.
 
     // Per-leg (upper, lower) angles for the 2-bone draw. Walk /
     // celebrate use a cosmetic follow-through shin derived from the
@@ -1556,14 +1558,27 @@ export class Renderer {
     // Per-arm (upper, lower) angles. Walk / celebrate / kick-
     // counter-swing use the same cosmetic forearm follow-through as
     // the knee — `forearmAngleFor` bends the forearm in the direction
-    // of the upper-arm swing. The punch (when pushing > 0) overrides
-    // both angles below the push block.
-    const leftUpperArmAngle  = leftArmAngle;
-    const leftLowerArmAngle  = forearmAngleFor(leftArmAngle);
-    const rightUpperArmAngle = rightArmAngle;
-    const rightLowerArmAngle = forearmAngleFor(rightArmAngle);
+    // of the upper-arm swing. A punch (when player.pushTimer > 0)
+    // overrides ONLY the striking arm via IK to the physics-picked
+    // push target; the non-striking arm stays on its cosmetic swing.
+    let leftUpperArmAngle  = leftArmAngle;
+    let leftLowerArmAngle  = forearmAngleFor(leftArmAngle);
+    let rightUpperArmAngle = rightArmAngle;
+    let rightLowerArmAngle = forearmAngleFor(rightArmAngle);
 
     const shoulderY = upperHipY + torsoH * tiltC;
+    if (player.pushTimer > 0 && celeb < 0.001) {
+      if (player.pushArm === 'right') {
+        pushArmPose(player, rShX, shoulderY, rShZ, forwardX, forwardZ, this._scratchPushPose);
+        rightUpperArmAngle = this._scratchPushPose.upperAngle;
+        rightLowerArmAngle = this._scratchPushPose.lowerAngle;
+      } else {
+        pushArmPose(player, lShX, shoulderY, lShZ, forwardX, forwardZ, this._scratchPushPose);
+        leftUpperArmAngle = this._scratchPushPose.upperAngle;
+        leftLowerArmAngle = this._scratchPushPose.lowerAngle;
+      }
+    }
+
     this._placeArm(lShX, shoulderY, lShZ, leftUpperArmAngle,  leftLowerArmAngle,  forwardX, forwardZ, color);
     this._placeArm(rShX, shoulderY, rShZ, rightUpperArmAngle, rightLowerArmAngle, forwardX, forwardZ, color);
     this._placeLeg(lHipX, hipBaseY, lHipZ, leftUpperAngle,  leftLowerAngle,  forwardX, forwardZ, color);
@@ -1895,21 +1910,6 @@ export class Renderer {
 /* ── Helpers ───────────────────────────────────────────────── */
 
 /**
- * Arm angle curve for the spring-loaded push. Arms rotate from down
- * to horizontal during RAISE, hold horizontal through WINDUP/STRIKE/
- * SETTLE/hold, then rotate back to down during LOWER. Magnitude only —
- * multiply by pushDir outside.
- */
-function pushArmAngleAt(t) {
-  if (t < PUSH_RAISE_T) {
-    const p = t / PUSH_RAISE_T;
-    return PUSH_EXTEND_ANGLE * easeInOut(p);
-  }
-  if (t < PUSH_LOWER_T) return PUSH_EXTEND_ANGLE;
-  const p = (t - PUSH_LOWER_T) / (1 - PUSH_LOWER_T);
-  return PUSH_EXTEND_ANGLE * (1 - easeInOut(p));
-}
-
 /**
  * Upper-body crouch depth during push. Body drops while the pivot
  * pulls back, snaps upright during the strike, settles at 0. Negative

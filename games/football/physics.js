@@ -124,7 +124,7 @@ const PUSH_APPLY = 0.12;
 const PUSH_VEL_THRESHOLD = 0.5;
 const PUSH_VEL_THRESHOLD_SQ = PUSH_VEL_THRESHOLD * PUSH_VEL_THRESHOLD;
 const MIN_PUSH_STAMINA = 0.2;
-const PUSH_ANIM_MS = 300;
+export const PUSH_ANIM_MS = 300;
 const PUSH_STAMINA_COST = 0.15;
 const PUSH_VICTIM_STAMINA_MULT = 3;
 
@@ -163,7 +163,7 @@ const RESPAWN_DELAY_TICKS = Math.ceil(300 / TICK_MS);
  */
 export const STICKMAN_GLYPH_SIZE   = 22;
 export const STICKMAN_HIP_OFX      = 0.12 * STICKMAN_GLYPH_SIZE;       // 2.64
-export const STICKMAN_SHOULDER_OFX = 0.216 * STICKMAN_GLYPH_SIZE;      // 4.752
+export const STICKMAN_SHOULDER_OFX = 0.23814 * STICKMAN_GLYPH_SIZE;    // 5.2391 (~10.25% wider than the old 4.752)
 export const STICKMAN_SHOULDER_OFY = 0.92 * STICKMAN_GLYPH_SIZE;       // 20.24
 export const STICKMAN_HEAD_GAP_Y   = 0.0476 * STICKMAN_GLYPH_SIZE;    // 1.047 — head tucked close to the shoulders
 export const STICKMAN_LIMB_FULL_H  = 20;                               // was 19.8; cleaner 10+10 split
@@ -278,7 +278,15 @@ function createPlayer(side, field) {
       power: 0,
       footTargetX: 0, footTargetY: 0, footTargetZ: 0,
     },
+    // Push state — timer is the countdown driven by `advancePush`;
+    // target/arm/type are set at `tryPush` commit and consumed by the
+    // renderer to IK the striking arm to the opponent's body. Impulse
+    // still applies instantly at commit — this state is purely for
+    // animation (+ future fist-contact if we ever need it).
     pushTimer: 0,
+    pushTargetX: 0, pushTargetY: 0, pushTargetZ: 0,
+    pushArm: 'right',                           // 'left' | 'right'
+    pushType: 'jab',                            // 'jab' | 'hook' | 'uppercut'
     // Heading: 0 = facing toward +x (right side of field). Players
     // start facing the opposing goal so the first frame of a match
     // looks like a kick-off, not two stickmen staring at the camera.
@@ -1507,6 +1515,74 @@ export function kickLegExtension(kick) {
 }
 
 /**
+ * Stage-aware arm extension for a punch, mirroring
+ * `kickLegExtension`. Pure function of `pushTimer` in ms:
+ *   windup   : 0 → 0.7 (arm cocks back)
+ *   strike   : 1.0      (arm extended to target)
+ *   recovery : 1.0 → 0  (arm eases to neutral)
+ * Returns 0 when `pushTimer <= 0` (no active push).
+ */
+const PUSH_WINDUP_FRAC = 0.35;
+const PUSH_STRIKE_FRAC = 0.50;
+const PUSH_WINDUP_PEAK_TEFF = 0.7;
+export function pushArmExtension(pushTimer) {
+  if (pushTimer <= 0) return 0;
+  const t = 1 - (pushTimer / PUSH_ANIM_MS);
+  if (t < PUSH_WINDUP_FRAC) return PUSH_WINDUP_PEAK_TEFF * (t / PUSH_WINDUP_FRAC);
+  if (t < PUSH_STRIKE_FRAC) return 1;
+  const recT = (t - PUSH_STRIKE_FRAC) / Math.max(1e-6, 1 - PUSH_STRIKE_FRAC);
+  return Math.max(0, 1 - recT);
+}
+
+/**
+ * Two-bone IK pose for the striking arm of a punch. Same shape as
+ * `kickLegPose`: project the push target into shoulder-local (fwd,
+ * up), lerp between neutral (arm hanging straight down) and the
+ * target via `pushArmExtension`, solve IK.
+ *
+ * For `hook` and `uppercut`, the swing plane rotates around the
+ * vertical axis so the arm cuts across the body / rises from low
+ * instead of jabbing straight. Pure, allocation-free into `out`.
+ */
+const _scratchPushIK = { upperAngle: 0, lowerAngle: 0, footFwd: 0, footUp: 0 };
+export function pushArmPose(player, shoulderWX, shoulderWY, shoulderWZ, forwardX, forwardZ, out) {
+  if (!player || player.pushTimer <= 0) {
+    out.upperAngle = 0;
+    out.lowerAngle = 0;
+    return out;
+  }
+  const tEff = pushArmExtension(player.pushTimer);
+  // Variant-specific swing-plane rotation. A hook sweeps the arm
+  // laterally toward the opposite side, so we rotate `forward`
+  // toward the pusher's cross-body direction by a moderate angle.
+  // An uppercut doesn't need plane rotation — the target's higher
+  // `up` is enough to produce the rising arc out of the IK solver.
+  let fwdX = forwardX, fwdZ = forwardZ;
+  if (player.pushType === 'hook') {
+    const sign = player.pushArm === 'right' ? -1 : 1;  // cross-body
+    const a = sign * 0.45;   // ~26° inward
+    const c = Math.cos(a), s = Math.sin(a);
+    // Rotate around vertical: fwd' = rotZ(-a) · fwd (for a left-
+    // handed y-up world). Simpler: standard 2D rotation in xz.
+    const rX = fwdX * c - fwdZ * s;
+    const rZ = fwdX * s + fwdZ * c;
+    fwdX = rX; fwdZ = rZ;
+  }
+  const dx = player.pushTargetX - shoulderWX;
+  const dy = player.pushTargetY - shoulderWY;
+  const dz = player.pushTargetZ - shoulderWZ;
+  const fwd = dx * fwdX + dz * fwdZ;
+  const up  = dy;
+  const armLen = STICKMAN_UPPER_ARM + STICKMAN_LOWER_ARM;
+  const targetFwd = fwd * tEff;
+  const targetUp  = up * tEff + (-armLen) * (1 - tEff);
+  solve2BoneIK(targetFwd, targetUp, STICKMAN_UPPER_ARM, STICKMAN_LOWER_ARM, _scratchPushIK);
+  out.upperAngle = _scratchPushIK.upperAngle;
+  out.lowerAngle = _scratchPushIK.lowerAngle;
+  return out;
+}
+
+/**
  * Two-bone IK pose for the kicking leg, as (upperAngle, lowerAngle)
  * joint angles the renderer's `_placeLeg` consumes directly.
  *
@@ -1639,6 +1715,15 @@ function executeKick(state, p) {
 
 /* ── Push ─────────────────────────────────────────────────────── */
 
+// Punch variant thresholds, in world-xz units (pusher→victim
+// distance projected onto the heading plane). Very-close contact
+// wants an uppercut (rising arc, comes up under the chin); mid
+// range is the hook (lateral sweep); farther range is the jab
+// (straight-forward reach). All three still cover the same
+// `PUSH_RANGE_X` gate, they just shape the animation differently.
+const PUSH_UPPERCUT_RANGE = 14;
+const PUSH_HOOK_RANGE     = 22;
+
 function tryPush(state, pusher, victim, powerNorm) {
   const f = state.field;
   const pusherCenterX = pusher.x + f.playerWidth / 2;
@@ -1671,12 +1756,36 @@ function tryPush(state, pusher, victim, powerNorm) {
   victim.pushVx = (fxWorld / pMag) * force;
   victim.pushVy = (fyPhys  / pMag) * force;
 
+  // Punch animation state. Pick the arm on the same side as the
+  // victim (perpendicular to the pusher's heading) so the swing
+  // reads naturally instead of crossing the body. Variant depends
+  // on the pusher→victim distance in the heading plane.
+  const victimCenterWX = victimCenterX;
+  const victimCenterWZ = victim.y * Z_STRETCH;
+  const pusherCenterWZ = pusher.y * Z_STRETCH;
+  const dx = victimCenterWX - pusherCenterX;
+  const dz = victimCenterWZ - pusherCenterWZ;
+  const fwdDist = dx * fxWorld + dz * fzWorld;
+  const perp    = -dx * fzWorld + dz * fxWorld;   // +ve = victim on pusher's right
+  pusher.pushArm = perp >= 0 ? 'right' : 'left';
+  if (fwdDist < PUSH_UPPERCUT_RANGE) pusher.pushType = 'uppercut';
+  else if (fwdDist < PUSH_HOOK_RANGE) pusher.pushType = 'hook';
+  else pusher.pushType = 'jab';
+  // Target height varies by punch type so the arm's strike arc
+  // looks right: uppercut rises to the chin, jab/hook hit the
+  // sternum. All three aim at the victim's body-axis in xz.
+  const chestY = HIP_BASE_Z + STICKMAN_SHOULDER_OFY * 0.5;
+  const chinY  = HEAD_CENTER_Z - STICKMAN_HEAD_RADIUS * 0.4;
+  pusher.pushTargetX = victimCenterWX;
+  pusher.pushTargetY = pusher.pushType === 'uppercut' ? chinY : chestY;
+  pusher.pushTargetZ = victimCenterWZ;
+
   pusher.stamina = Math.max(0, pusher.stamina - PUSH_STAMINA_COST * power01);
   victim.stamina = Math.max(0, victim.stamina - PUSH_STAMINA_COST * power01 * PUSH_VICTIM_STAMINA_MULT);
 
   if (state.recordEvents) {
     const pusherWhich = pusher === state.p1 ? 'p1' : 'p2';
-    state.events.push({ type: 'push', pusher: pusherWhich, force });
+    state.events.push({ type: 'push', pusher: pusherWhich, force, variant: pusher.pushType, arm: pusher.pushArm });
   }
 }
 

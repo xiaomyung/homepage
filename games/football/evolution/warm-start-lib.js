@@ -61,6 +61,67 @@ export function collectImitationDataset(numMatches, ticksPerMatch, seed) {
   return { inputs, actions };
 }
 
+/**
+ * DAgger-lite aggregation round. The student policy (from `weights`)
+ * plays one side; the fallback teacher plays the other. On every
+ * tick we record the student-visited state paired with the ACTION
+ * THE FALLBACK WOULD TAKE at that same state — the teacher's
+ * correction for states the student actually reaches rather than
+ * only the states the teacher visits on its own.
+ *
+ * This addresses the classic behavioural-cloning distribution shift:
+ * when the student drifts off the teacher's trajectory, plain BC has
+ * no training signal for the off-distribution states. DAgger closes
+ * that gap by querying the expert at student-visited states.
+ *
+ * Returns new training pairs to concatenate with the existing
+ * dataset before the next retrain round.
+ */
+export function collectDAggerDataset(weights, numMatches, ticksPerMatch, seed) {
+  const inputs = [];
+  const actions = [];
+  const studentIn = new Array(NN_INPUT_SIZE);
+  const teacherIn = new Array(NN_INPUT_SIZE);
+  // Scratch buffers for the student's forward pass.
+  const activations = makeActivationBuffers();
+  const preacts = makePreactivationBuffers();
+  for (let m = 0; m < numMatches; m++) {
+    const field = createField();
+    const state = createState(field, createSeededRng(seed + m));
+    state.graceFrames = 0;
+    // Alternate which side the student plays so the dataset is
+    // balanced across the symmetry axis.
+    const studentIsP1 = m % 2 === 0;
+    const studentWhich = studentIsP1 ? 'p1' : 'p2';
+    const teacherWhich = studentIsP1 ? 'p2' : 'p1';
+    for (let t = 0; t < ticksPerMatch; t++) {
+      // Student action — forward pass of current weights.
+      buildInputs(state, studentWhich, studentIn);
+      forwardCached(weights, studentIn, activations, preacts);
+      const studentOut = activations[LAYER_COUNT];
+      // Teacher action for the OTHER side — what it normally does.
+      const teacherAct = fallbackAction(state, teacherWhich);
+      // DAgger correction: what would the teacher do at the
+      // STUDENT'S state? Record (studentIn, teacherActionAtStudentState).
+      const teacherAtStudent = fallbackAction(state, studentWhich);
+      inputs.push(studentIn.slice());
+      actions.push(teacherAtStudent.slice());
+      // Also record the teacher-side pair so the dataset still has
+      // teacher-visited samples on the other side of the match.
+      buildInputs(state, teacherWhich, teacherIn);
+      inputs.push(teacherIn.slice());
+      actions.push(teacherAct.slice());
+      // Drive the simulation with student-vs-teacher so the state
+      // trajectory reflects the student's policy.
+      const p1Act = studentIsP1 ? Array.from(studentOut) : teacherAct;
+      const p2Act = studentIsP1 ? teacherAct : Array.from(studentOut);
+      tick(state, p1Act, p2Act);
+      if (state.matchOver) break;
+    }
+  }
+  return { inputs, actions };
+}
+
 /* ── Forward + backward with cached activations ───────────────── */
 
 function makeActivationBuffers() {

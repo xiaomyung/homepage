@@ -20,6 +20,7 @@ import { NeuralNet, ARCH } from '../nn.js';
 import { createSeededRng } from '../physics.js';
 import {
   collectImitationDataset,
+  collectDAggerDataset,
   trainWarmStartWeights,
   heInit,
   forwardCached,
@@ -27,6 +28,8 @@ import {
   OUTPUT_SIZE,
   WARM_START_HYPERPARAMS,
 } from './warm-start-lib.js';
+
+const DAGGER_ROUNDS = 2;
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT_PATH = join(HERE, '..', 'warm_start_weights.json');
@@ -66,20 +69,39 @@ async function main() {
   selfCheck();
 
   const { matches, ticksPerMatch, baseSeed, epochs, batchSize, lr } = WARM_START_HYPERPARAMS;
-  console.log('Collecting imitation dataset...');
-  const { inputs, actions } = collectImitationDataset(matches, ticksPerMatch, baseSeed);
+
+  // Round 0 — pure behavioural cloning on fallback-vs-fallback.
+  console.log('Round 0: BC on fallback-vs-fallback trajectories...');
+  const bc = collectImitationDataset(matches, ticksPerMatch, baseSeed);
+  let inputs  = bc.inputs;
+  let actions = bc.actions;
   console.log(`  dataset size: ${inputs.length} samples`);
 
-  console.log('Training imitation NN...');
-  const { weights, history } = await trainWarmStartWeights(inputs, actions, {
-    epochs,
-    batchSize,
-    lr,
-    seed: baseSeed,
+  let trained = await trainWarmStartWeights(inputs, actions, {
+    epochs, batchSize, lr, seed: baseSeed,
   });
-  console.log(`  loss: ${history[0].toFixed(4)} → ${history[history.length - 1].toFixed(4)}`);
-  console.log(`  weight count: ${weights.length}`);
+  let weights = trained.weights;
+  console.log(`  round 0 loss: ${trained.history[0].toFixed(4)} → ${trained.history[trained.history.length - 1].toFixed(4)}`);
 
+  // Rounds 1..N — DAgger-lite: aggregate student-visited states with
+  // the teacher's correction actions, then retrain. Covers the
+  // distribution shift that pure BC can't address.
+  for (let r = 1; r <= DAGGER_ROUNDS; r++) {
+    console.log(`Round ${r}: DAgger — student-visited states + teacher corrections...`);
+    const dagSeed = baseSeed + 10000 * r;
+    const extra = collectDAggerDataset(weights, matches, ticksPerMatch, dagSeed);
+    inputs  = inputs.concat(extra.inputs);
+    actions = actions.concat(extra.actions);
+    console.log(`  aggregated dataset size: ${inputs.length} samples (+${extra.inputs.length})`);
+
+    trained = await trainWarmStartWeights(inputs, actions, {
+      epochs, batchSize, lr, seed: baseSeed + r,
+    });
+    weights = trained.weights;
+    console.log(`  round ${r} loss: ${trained.history[0].toFixed(4)} → ${trained.history[trained.history.length - 1].toFixed(4)}`);
+  }
+
+  console.log(`Weight count: ${weights.length}`);
   console.log(`Writing ${OUT_PATH}`);
   writeFileSync(OUT_PATH, JSON.stringify(Array.from(weights)));
   console.log('Done.');

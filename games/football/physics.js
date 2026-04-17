@@ -163,7 +163,7 @@ export const STICKMAN_GLYPH_SIZE   = 22;
 export const STICKMAN_HIP_OFX      = 0.12 * STICKMAN_GLYPH_SIZE;       // 2.64
 export const STICKMAN_SHOULDER_OFX = 0.216 * STICKMAN_GLYPH_SIZE;      // 4.752
 export const STICKMAN_SHOULDER_OFY = 0.92 * STICKMAN_GLYPH_SIZE;       // 20.24
-export const STICKMAN_HEAD_GAP_Y   = 0.13041 * STICKMAN_GLYPH_SIZE;    // 2.869
+export const STICKMAN_HEAD_GAP_Y   = 0.0476 * STICKMAN_GLYPH_SIZE;    // 1.047 — head tucked close to the shoulders
 export const STICKMAN_LIMB_FULL_H  = 20;                               // was 19.8; cleaner 10+10 split
 export const STICKMAN_UPPER_LEG    = STICKMAN_LIMB_FULL_H / 2;         // 10
 export const STICKMAN_LOWER_LEG    = STICKMAN_LIMB_FULL_H / 2;         // 10
@@ -802,9 +802,14 @@ function resolveBallVsPlayerBody(state, p) {
   if (ball.frozen) return false;
 
   const airZ = p.airZ || 0;
+  // Body-column capsule is anchored at the same world position the
+  // renderer draws the figure at: `(player.x + PLAYER_WIDTH/2,
+  // player.y * Z_STRETCH)`. PLAYER_HEIGHT is only a ground-plane
+  // personal-space span used by player-pair math; using it here
+  // shifted the collider ~14 world-z units deeper than the visible
+  // stickman, so the ball looked like it was bouncing off empty air.
   const centerX = p.x + PLAYER_WIDTH / 2;
-  const centerYPhys = p.y + PLAYER_HEIGHT / 2;
-  const centerWorldZ = centerYPhys * Z_STRETCH;
+  const centerWorldZ = p.y * Z_STRETCH;
 
   // Ball in world coords: physics (x, y=depth, z=vertical) → world
   // (x, y=vertical, z=depth). Velocity follows the same mapping.

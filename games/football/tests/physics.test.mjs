@@ -1397,7 +1397,7 @@ test('ball straight at torso — trap fires immediately and kills normal velocit
   const initialSpeed = 10;
   // Ball waist-high, on the body axis y, moving directly at the torso.
   state.ball.x = p.x + PLAYER_WIDTH / 2 - 10;
-  state.ball.y = p.y + PLAYER_HEIGHT / 2;
+  state.ball.y = p.y;
   state.ball.z = 12;
   state.ball.vx = initialSpeed; state.ball.vy = 0; state.ball.vz = 0;
   state.ball.frozen = false;
@@ -1423,7 +1423,7 @@ test('ball that was trapped settles on the ground close to the player', () => {
   const state = trapState();
   const p = state.p1;
   state.ball.x = p.x + PLAYER_WIDTH / 2 - 10;
-  state.ball.y = p.y + PLAYER_HEIGHT / 2;
+  state.ball.y = p.y;
   state.ball.z = 12;
   state.ball.vx = 10; state.ball.vy = 0; state.ball.vz = 0;
   state.ball.frozen = false;
@@ -1439,7 +1439,7 @@ test('ball that was trapped settles on the ground close to the player', () => {
   const contactDist = STICKMAN_TORSO_RADIUS + BALL_RADIUS;
   const horizontalDist = Math.hypot(
     state.ball.x - (p.x + PLAYER_WIDTH / 2),
-    state.ball.y - (p.y + PLAYER_HEIGHT / 2),
+    state.ball.y - (p.y),
   );
   assert.ok(horizontalDist <= contactDist + 1,
     `trapped ball should stop at ~contact distance (${contactDist.toFixed(2)}), got ${horizontalDist.toFixed(2)}`);
@@ -1450,7 +1450,7 @@ test('ball falling onto head fires a trap event and kills normal velocity', () =
   state.recordEvents = true;
   const p = state.p1;
   state.ball.x = p.x + PLAYER_WIDTH / 2 - 1;
-  state.ball.y = p.y + PLAYER_HEIGHT / 2;
+  state.ball.y = p.y;
   state.ball.z = 60;
   state.ball.vx = 1; state.ball.vy = 0; state.ball.vz = -8;
   state.ball.frozen = false;
@@ -1481,7 +1481,7 @@ test('ball that was head-trapped settles on the ground close to the player', () 
   const state = trapState();
   const p = state.p1;
   state.ball.x = p.x + PLAYER_WIDTH / 2 - 1;
-  state.ball.y = p.y + PLAYER_HEIGHT / 2;
+  state.ball.y = p.y;
   state.ball.z = 60;
   state.ball.vx = 1; state.ball.vy = 0; state.ball.vz = -8;
   state.ball.frozen = false;
@@ -1497,7 +1497,7 @@ test('ball that was head-trapped settles on the ground close to the player', () 
   // player's front), so it should rest within one player-width.
   const horizontalDist = Math.hypot(
     state.ball.x - (p.x + PLAYER_WIDTH / 2),
-    state.ball.y - (p.y + PLAYER_HEIGHT / 2),
+    state.ball.y - (p.y),
   );
   assert.ok(horizontalDist <= PLAYER_WIDTH,
     `head-trapped ball should settle within one player-width, got ${horizontalDist.toFixed(2)}`);
@@ -1514,7 +1514,7 @@ test('ball passing at shoulder clearance does NOT contact torso', () => {
   const clearancePhysY = clearanceWorld / Z_STRETCH;
   const initialVx = 15;
   state.ball.x = p.x + PLAYER_WIDTH / 2 - 60;
-  state.ball.y = p.y + PLAYER_HEIGHT / 2 + clearancePhysY;
+  state.ball.y = p.y + clearancePhysY;
   state.ball.z = 12;
   state.ball.vx = initialVx; state.ball.vy = 0; state.ball.vz = 0;
   state.ball.frozen = false;
@@ -1542,7 +1542,7 @@ test('walking into a stationary ball pins it ahead of the player (dribble, stabl
   const state = trapState();
   const p = state.p1;
   state.ball.x = p.x + PLAYER_WIDTH / 2 + 30;
-  state.ball.y = p.y + PLAYER_HEIGHT / 2;
+  state.ball.y = p.y;
   state.ball.z = BALL_RADIUS;
   state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
   state.ball.frozen = false;
@@ -1574,7 +1574,7 @@ test('dribble survives a full sprint (tunnel-correction keeps ball in front)', (
   const state = trapState();
   const p = state.p1;
   state.ball.x = p.x + PLAYER_WIDTH / 2 + 30;
-  state.ball.y = p.y + PLAYER_HEIGHT / 2;
+  state.ball.y = p.y;
   state.ball.z = BALL_RADIUS;
   state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
   state.ball.frozen = false;
@@ -1599,7 +1599,7 @@ test('active kick skips body trap (foot will handle contact in Phase C)', () => 
   const p = state.p1;
   // Ball aimed directly at torso, same as the first trap test.
   state.ball.x = p.x + PLAYER_WIDTH / 2 - 30;
-  state.ball.y = p.y + PLAYER_HEIGHT / 2;
+  state.ball.y = p.y;
   state.ball.z = 12;
   state.ball.vx = 15; state.ball.vy = 0; state.ball.vz = 0;
   state.ball.frozen = false;
@@ -1631,7 +1631,7 @@ test('adaptive hitbox — contact fires exactly at (torso_radius + ball_radius)'
     const state = trapState();
     const p = state.p1;
     state.ball.x = p.x + PLAYER_WIDTH / 2 + (ASSUMED_RADIUS_SUM - 0.3);
-    state.ball.y = p.y + PLAYER_HEIGHT / 2;
+    state.ball.y = p.y;
     state.ball.z = 12;
     state.ball.vx = -3; state.ball.vy = 0; state.ball.vz = 0;  // moving INTO torso
     state.ball.frozen = false;
@@ -1647,7 +1647,7 @@ test('adaptive hitbox — contact fires exactly at (torso_radius + ball_radius)'
     const state = trapState();
     const p = state.p1;
     state.ball.x = p.x + PLAYER_WIDTH / 2;
-    state.ball.y = p.y + PLAYER_HEIGHT / 2 + ASSUMED_RADIUS_SUM + 0.5;
+    state.ball.y = p.y + ASSUMED_RADIUS_SUM + 0.5;
     state.ball.z = 12;
     state.ball.vx = 0; state.ball.vy = -2; state.ball.vz = 0;  // moving toward body but not yet in
     state.ball.frozen = false;

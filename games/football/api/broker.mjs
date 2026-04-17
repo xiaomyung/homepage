@@ -355,6 +355,16 @@ function getWeightsJson(brain) {
  *  copies so the initial GA pool has variance. Called from boot (when
  *  DB has weights but no population) and from /reset (seed arrives
  *  via request body). */
+// Mutation magnitudes applied to the warm-start seed when building
+// generation 1. The previous (0.3, 0.1) values — 30% of weights
+// shifted by N(0, 0.1) — perturbed ~170 weights per brain and
+// dropped gen-1 goals-per-match by 97% vs the pure warm-start. Those
+// values were tuned for BREEDING (mixing two parents, want divergent
+// offspring), not SEEDING (preserve the teacher, want small variance
+// across the pool). The new values still give diversity without
+// throwing away the imitation.
+const SEED_MUTATION_RATE = 0.05;
+const SEED_MUTATION_STD  = 0.02;
 function buildPopulationFromSeed(seedWeights, config) {
   if (!(seedWeights instanceof Float64Array) || seedWeights.length !== WEIGHT_COUNT) {
     throw new Error(`seed weights must be Float64Array of length ${WEIGHT_COUNT}`);
@@ -362,7 +372,7 @@ function buildPopulationFromSeed(seedWeights, config) {
   const rng = createGaRng((Math.random() * 2 ** 31) >>> 0);
   const population = [newBrain(0, seedWeights, true)];
   for (let i = 1; i < config.population_size; i++) {
-    const mutated = gaussianMutate(seedWeights, 0.3, 0.1, rng);
+    const mutated = gaussianMutate(seedWeights, SEED_MUTATION_RATE, SEED_MUTATION_STD, rng);
     population.push(newBrain(i, mutated, false));
   }
   return population;

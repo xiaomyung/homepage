@@ -1319,15 +1319,21 @@ function strikeLeadTicks(kind) {
 
 /**
  * Predict the ball's world-space CENTER position `ticks` from now.
- * Includes gravity on the vertical axis and clamps at the ground so
- * a shot-rolling-along-the-floor prediction doesn't dip below 0.
- * Ignores drag and bounces — accurate enough for a ~6-tick lead.
+ *
+ * Matches the integrator in `updateBall`:
+ *   - Horizontal (x, y): linear step — friction is applied once per
+ *     tick post-substep, so over a short ~6-tick lead the quadratic
+ *     decay is negligible (< 1 world-unit at typical kick speeds).
+ *   - Vertical (z): semi-implicit Euler — `vz -= g; z += vz;` — so
+ *     the closed form is `z₀ + N·vz₀ − g·N·(N+1)/2` (sum of the
+ *     post-integration velocities), NOT the continuous `−½·g·N²`.
+ *     Ignores bounces; clamps at the floor.
  */
 const _scratchPredicted = { x: 0, y: 0, z: 0 };
 function predictBallAtStrike(ball, ticks, out) {
   const nx = ball.x + ball.vx * ticks;
   const ny_phys = ball.y + ball.vy * ticks;
-  const nz_phys = Math.max(0, ball.z + ball.vz * ticks - 0.5 * GRAVITY * ticks * ticks);
+  const nz_phys = Math.max(0, ball.z + ball.vz * ticks - 0.5 * GRAVITY * ticks * (ticks + 1));
   out.x = nx;
   out.y = nz_phys + BALL_RADIUS;   // world vertical — ball CENTER, not bottom
   out.z = ny_phys * Z_STRETCH;

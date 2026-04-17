@@ -1760,6 +1760,44 @@ test('solve2BoneIK scratch-out parameter is mutated and returned', () => {
   assert.ok(out.upperAngle !== -99, 'out was mutated');
 });
 
+/* ── Ballistic prediction parity with the actual integrator ──── */
+
+test('kick prediction matches physics integration over 6 + 9 ticks', () => {
+  // Mirrors `predictBallAtStrike`'s use in the reachability gate.
+  // If the prediction formula drifts from the integrator, the gate
+  // accepts or rejects kicks the visible simulation can't finish.
+  for (const leadTicks of [6, 9]) {
+    // Freeze p1 in place so the body collider doesn't deflect the
+    // ball mid-prediction (clean ballistic parity check).
+    const state = freshState();
+    state.p1.x = -1000;  // park player far away so no interaction
+    state.p2.x = -1001;
+    state.ball.x = 0;
+    state.ball.y = FIELD_HEIGHT / 2;
+    state.ball.z = 50;
+    state.ball.vx = 3;
+    state.ball.vy = 0;
+    state.ball.vz = 2;
+    state.ball.frozen = false;
+
+    // Advance N ticks with no input — pure ballistic + friction.
+    for (let i = 0; i < leadTicks; i++) tick(state, NOOP, NOOP);
+
+    // Actual vs predicted vertical position (before friction affects it).
+    // Friction only damps x/y, so the prediction error on z is from the
+    // integrator discretization alone.
+    const actualZ = state.ball.z;
+    const predictedZ = Math.max(
+      0,
+      50 + 2 * leadTicks - 0.5 * 0.3 * leadTicks * (leadTicks + 1),
+    );
+    assert.ok(
+      Math.abs(actualZ - predictedZ) < 0.01,
+      `lead ${leadTicks}: predicted z ${predictedZ}, actual ${actualZ}`,
+    );
+  }
+});
+
 /* ── Adaptive kick state machine — Phase C behavior ──────────── */
 
 /** Place p1 with the ball at his feet, stationary, ball within hip

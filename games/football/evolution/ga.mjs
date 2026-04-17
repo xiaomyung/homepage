@@ -34,18 +34,26 @@ export const WEIGHT_COUNT = LAYER_OFFSETS[LAYER_OFFSETS.length - 1];
 
 /**
  * Build a FitnessWeights record. `wPop` and `wFallback` should sum to 1 so
- * fitness stays in [0, 1]; `maxGoalDiff` is the avg-goal-diff that saturates
- * the pop-score axis to 1.0.
+ * fitness stays in [0, 1]; `goalDiffScale` is the k in `tanh(avgDiff/k)`.
+ * k≈2 goals makes a two-goal lead land at tanh(1)≈0.76 and a blowout
+ * saturate smoothly rather than clip hard.
  */
-export function makeFitnessWeights({ wPop, wFallback, maxGoalDiff }) {
-  return { wPop, wFallback, maxGoalDiff };
+export function makeFitnessWeights({ wPop, wFallback, goalDiffScale, maxGoalDiff }) {
+  // Backwards-compat: if a caller still passes `maxGoalDiff`, use it as
+  // the tanh scale. New callers should pass `goalDiffScale`.
+  const k = goalDiffScale ?? maxGoalDiff ?? 2;
+  return { wPop, wFallback, goalDiffScale: k };
 }
 
 /**
  * Normalized hybrid fitness in [0, 1]. A brain with zero data on both
- * axes scores 0.0; one
- * axis of data yields neutral 0.5 on the missing axis so partial data is
- * still meaningful.
+ * axes scores 0.0; one axis of data yields neutral 0.5 on the missing
+ * axis so partial data is still meaningful.
+ *
+ * Pop axis uses `tanh(avgGoalDiff / k)` rather than a hard clamp. That
+ * choice (see 2026-04-17 brainstorm) is defined everywhere (no 0-0
+ * divide-by-zero), smoothly saturates at blowouts, and gives a strong
+ * signal on narrow wins without discarding information on big ones.
  */
 export function computeFitness(brain, w) {
   const popMatches = brain.popMatches || 0;
@@ -56,8 +64,9 @@ export function computeFitness(brain, w) {
   let popScore;
   if (popMatches > 0) {
     const avgDiff = (brain.popGoalDiff || 0) / popMatches;
-    const normalized = Math.max(-1.0, Math.min(1.0, avgDiff / w.maxGoalDiff));
-    popScore = (normalized + 1) / 2;
+    const scale = w.goalDiffScale ?? w.maxGoalDiff ?? 2;
+    // tanh(x) ∈ (-1, 1); shift to [0, 1].
+    popScore = (Math.tanh(avgDiff / scale) + 1) / 2;
   } else {
     popScore = 0.5;
   }

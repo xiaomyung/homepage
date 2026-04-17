@@ -101,7 +101,7 @@ function shinAngleFor(thighAngle) {
 // at rest) and `±π` (celebrate — arms straight overhead). The walk
 // anim uses small angles in the linear zone; celebrate reaches the
 // other zero so arms read as fully extended, not crumpled.
-// The punch pose uses explicit IK in `pushArmPose`, not this curve.
+// The punch pose is scripted per-variant in `pushArmPose`, not this curve.
 const STICKMAN_ELBOW_FLEX_MAX = 0.45;
 function forearmAngleFor(upperArmAngle) {
   const mag = Math.min(Math.abs(upperArmAngle), Math.PI);
@@ -114,8 +114,8 @@ const CELEB_PHASE_RATE = 0.25;           // rad per tick; ~25 ticks per hop
 const CELEB_JUMP_PEAK  = 0.55 * STICKMAN_GLYPH_SIZE;
 const CELEB_LEG_SPREAD = 0.55;           // leg outward angle at jump apex (rad)
 // Push pose — a one-armed boxing punch (jab / hook / uppercut).
-// The striking arm gets real 2-bone IK to the opponent's body in
-// `pushArmPose` (physics.js). These scripted curves drive the
+// The striking arm follows a variant-specific keyframe trajectory
+// in `pushArmPose` (physics.js). These scripted curves drive the
 // SUPPORTING body english (crouch / tilt / hop / pivot) — they
 // animate the non-striking side of the rig only.
 // Phases over normalized progress t ∈ [0, 1]:
@@ -540,7 +540,7 @@ export class Renderer {
     // Scratch buffers for per-frame IK solves; reused across both
     // players so the hot draw path never allocates.
     this._scratchKickPose = { upperAngle: 0, lowerAngle: 0 };
-    this._scratchPushPose = { upperAngle: 0, lowerAngle: 0 };
+    this._scratchPushPose = { upperAngle: 0, lowerAngle: 0, upperYaw: 0, lowerYaw: 0 };
 
     // Splash particle pool — ring-buffer allocation, `life === 0` means
     // free. Fields are all numbers so there's zero GC churn per frame.
@@ -1559,28 +1559,34 @@ export class Renderer {
     // counter-swing use the same cosmetic forearm follow-through as
     // the knee — `forearmAngleFor` bends the forearm in the direction
     // of the upper-arm swing. A punch (when player.pushTimer > 0)
-    // overrides ONLY the striking arm via IK to the physics-picked
-    // push target; the non-striking arm stays on its cosmetic swing.
+    // overrides ONLY the striking arm via the variant-specific
+    // scripted trajectory in `pushArmPose`; the non-striking arm
+    // keeps its cosmetic swing.
     let leftUpperArmAngle  = leftArmAngle;
     let leftLowerArmAngle  = forearmAngleFor(leftArmAngle);
     let rightUpperArmAngle = rightArmAngle;
     let rightLowerArmAngle = forearmAngleFor(rightArmAngle);
+    let leftUpperYaw = 0, leftLowerYaw = 0;
+    let rightUpperYaw = 0, rightLowerYaw = 0;
 
     const shoulderY = upperHipY + torsoH * tiltC;
     if (player.pushTimer > 0 && celeb < 0.001) {
+      pushArmPose(player, this._scratchPushPose);
       if (player.pushArm === 'right') {
-        pushArmPose(player, rShX, shoulderY, rShZ, forwardX, forwardZ, this._scratchPushPose);
         rightUpperArmAngle = this._scratchPushPose.upperAngle;
         rightLowerArmAngle = this._scratchPushPose.lowerAngle;
+        rightUpperYaw      = this._scratchPushPose.upperYaw;
+        rightLowerYaw      = this._scratchPushPose.lowerYaw;
       } else {
-        pushArmPose(player, lShX, shoulderY, lShZ, forwardX, forwardZ, this._scratchPushPose);
         leftUpperArmAngle = this._scratchPushPose.upperAngle;
         leftLowerArmAngle = this._scratchPushPose.lowerAngle;
+        leftUpperYaw      = this._scratchPushPose.upperYaw;
+        leftLowerYaw      = this._scratchPushPose.lowerYaw;
       }
     }
 
-    this._placeArm(lShX, shoulderY, lShZ, leftUpperArmAngle,  leftLowerArmAngle,  forwardX, forwardZ, color);
-    this._placeArm(rShX, shoulderY, rShZ, rightUpperArmAngle, rightLowerArmAngle, forwardX, forwardZ, color);
+    this._placeArm(lShX, shoulderY, lShZ, leftUpperArmAngle,  leftLowerArmAngle,  forwardX, forwardZ, color, leftUpperYaw,  leftLowerYaw);
+    this._placeArm(rShX, shoulderY, rShZ, rightUpperArmAngle, rightLowerArmAngle, forwardX, forwardZ, color, rightUpperYaw, rightLowerYaw);
     this._placeLeg(lHipX, hipBaseY, lHipZ, leftUpperAngle,  leftLowerAngle,  forwardX, forwardZ, color);
     this._placeLeg(rHipX, hipBaseY, rHipZ, rightUpperAngle, rightLowerAngle, forwardX, forwardZ, color);
   }
@@ -1687,17 +1693,27 @@ export class Renderer {
    *  where the slightly-oversized `STICKMAN_ELBOW_RADIUS` sphere is
    *  drawn. Upper arm is 15 % thicker than the forearm, matching
    *  rough human proportions. */
-  _placeArm(px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color) {
+  _placeArm(px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color, upperYaw = 0, lowerYaw = 0) {
     const U = STICKMAN_UPPER_ARM;
     const L = STICKMAN_LOWER_ARM;
+    // `upperYaw` / `lowerYaw` rotate the per-segment forward direction
+    // around the vertical axis independently, so a hook (horizontal arc)
+    // and uppercut (vertical arc) can both be expressed in the same rig.
+    const uyc = Math.cos(upperYaw), uys = Math.sin(upperYaw);
+    const uFwdX = forwardX * uyc - forwardZ * uys;
+    const uFwdZ = forwardX * uys + forwardZ * uyc;
+    const lyc = Math.cos(lowerYaw), lys = Math.sin(lowerYaw);
+    const lFwdX = forwardX * lyc - forwardZ * lys;
+    const lFwdZ = forwardX * lys + forwardZ * lyc;
+
     const upperSin = Math.sin(upperAngle);
-    const elbowX = px + forwardX * U * upperSin;
+    const elbowX = px + uFwdX * U * upperSin;
     const elbowY = py - U * Math.cos(upperAngle);
-    const elbowZ = pz + forwardZ * U * upperSin;
+    const elbowZ = pz + uFwdZ * U * upperSin;
     const lowerSin = Math.sin(lowerAngle);
-    const handX = elbowX + forwardX * L * lowerSin;
+    const handX = elbowX + lFwdX * L * lowerSin;
     const handY = elbowY - L * Math.cos(lowerAngle);
-    const handZ = elbowZ + forwardZ * L * lowerSin;
+    const handZ = elbowZ + lFwdZ * L * lowerSin;
 
     // Upper segment (thicker): shoulder → elbow.
     if (this._stickmanUpperArmCursor < this._stickmanUpperArm.length) {

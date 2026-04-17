@@ -1535,50 +1535,96 @@ export function pushArmExtension(pushTimer) {
 }
 
 /**
- * Two-bone IK pose for the striking arm of a punch. Same shape as
- * `kickLegPose`: project the push target into shoulder-local (fwd,
- * up), lerp between neutral (arm hanging straight down) and the
- * target via `pushArmExtension`, solve IK.
+ * Scripted striking-arm pose for a punch. Three visually-distinct
+ * variants share a single three-keyframe rig — rest (t=0), windup-
+ * peak (t≈0.35) and strike (t=0.5) — interpolated by the progress
+ * scalar derived from `pushTimer`. Each variant defines its own
+ * keyframe angles so jab (straight forward thrust), hook (horizontal
+ * cross-body sweep) and uppercut (vertical rising arc) read as
+ * genuinely different motions, not cosmetic tweaks of one pose.
  *
- * For `hook` and `uppercut`, the swing plane rotates around the
- * vertical axis so the arm cuts across the body / rises from low
- * instead of jabbing straight. Pure, allocation-free into `out`.
+ * Output is four angles consumed by the renderer's `_placeArm`:
+ *   upperAngle / lowerAngle — hip-to-vertical polar swing
+ *   upperYaw   / lowerYaw   — rotation of each segment's forward
+ *                             direction around the vertical axis
+ *
+ * Hook uses `upperYaw` to carry the arm laterally; jab and uppercut
+ * stay in the sagittal plane (yaw=0). The `pushArm` sign ('right' vs
+ * 'left') flips hook polarity so either shoulder can throw.
+ *
+ * Pure, allocation-free into `out`.
  */
-const _scratchPushIK = { upperAngle: 0, lowerAngle: 0, footFwd: 0, footUp: 0 };
-export function pushArmPose(player, shoulderWX, shoulderWY, shoulderWZ, forwardX, forwardZ, out) {
+
+// Lerp helper — not exported; local to the pose builders.
+const _lerp = (a, b, t) => a + (b - a) * t;
+
+// Per-variant keyframes as [upper, lower, upperYawMag, lowerYawMag].
+// Yaw magnitudes are unsigned; `pushArm` supplies the sign at
+// assembly time (right arm swings from right-outward to cross-body;
+// left arm mirrors).
+const JAB_REST   = [0,    0,    0, 0];
+const JAB_WINDUP = [-0.25, 2.4, 0, 0];
+const JAB_STRIKE = [Math.PI / 2, Math.PI / 2, 0, 0];
+
+const HOOK_REST   = [0,          0,           0,           0];
+// Windup: arm raised horizontal, yawed outward to the striking side;
+// forearm bent 90° inward (pointing forward relative to body).
+const HOOK_WINDUP = [Math.PI / 2, Math.PI / 2, Math.PI / 2, 0];
+// Strike: upper arm swept across body (yaw flips sign, small
+// magnitude); forearm extends past to continue the arc.
+const HOOK_STRIKE = [Math.PI / 2, Math.PI / 2, -0.35,      -1.2];
+
+const UPPERCUT_REST   = [0,          0,           0, 0];
+// Windup: elbow drops low and tucks, forearm rotated forward near
+// the belly — classic cocked-uppercut stance.
+const UPPERCUT_WINDUP = [-0.3,       1.7,         0, 0];
+// Strike: upper arm rises forward-and-up (elbow above shoulder),
+// forearm whips up past horizontal so the fist ends clearly above
+// the shoulder — chin-height punch driving up through the target.
+const UPPERCUT_STRIKE = [1.8,        2.8,         0, 0];
+
+function writePose(out, kf, armSign) {
+  out.upperAngle = kf[0];
+  out.lowerAngle = kf[1];
+  out.upperYaw   = kf[2] * armSign;
+  out.lowerYaw   = kf[3] * armSign;
+}
+
+function blendPose(out, a, b, t, armSign) {
+  out.upperAngle = _lerp(a[0], b[0], t);
+  out.lowerAngle = _lerp(a[1], b[1], t);
+  out.upperYaw   = _lerp(a[2], b[2], t) * armSign;
+  out.lowerYaw   = _lerp(a[3], b[3], t) * armSign;
+}
+
+function resolvePoseKeyframes(pushType) {
+  if (pushType === 'hook')     return [HOOK_REST,     HOOK_WINDUP,     HOOK_STRIKE];
+  if (pushType === 'uppercut') return [UPPERCUT_REST, UPPERCUT_WINDUP, UPPERCUT_STRIKE];
+  return [JAB_REST, JAB_WINDUP, JAB_STRIKE];
+}
+
+export function pushArmPose(player, out) {
   if (!player || player.pushTimer <= 0) {
     out.upperAngle = 0;
     out.lowerAngle = 0;
+    out.upperYaw   = 0;
+    out.lowerYaw   = 0;
     return out;
   }
-  const tEff = pushArmExtension(player.pushTimer);
-  // Variant-specific swing-plane rotation. A hook sweeps the arm
-  // laterally toward the opposite side, so we rotate `forward`
-  // toward the pusher's cross-body direction by a moderate angle.
-  // An uppercut doesn't need plane rotation — the target's higher
-  // `up` is enough to produce the rising arc out of the IK solver.
-  let fwdX = forwardX, fwdZ = forwardZ;
-  if (player.pushType === 'hook') {
-    const sign = player.pushArm === 'right' ? -1 : 1;  // cross-body
-    const a = sign * 0.45;   // ~26° inward
-    const c = Math.cos(a), s = Math.sin(a);
-    // Rotate around vertical: fwd' = rotZ(-a) · fwd (for a left-
-    // handed y-up world). Simpler: standard 2D rotation in xz.
-    const rX = fwdX * c - fwdZ * s;
-    const rZ = fwdX * s + fwdZ * c;
-    fwdX = rX; fwdZ = rZ;
+  const t = 1 - (player.pushTimer / PUSH_ANIM_MS);
+  const [rest, windup, strike] = resolvePoseKeyframes(player.pushType);
+  // `pushArm` determines the sign of hook's lateral yaw. Left-arm
+  // hooks mirror right-arm hooks across the sagittal plane.
+  const armSign = player.pushArm === 'right' ? 1 : -1;
+
+  if (t < PUSH_WINDUP_FRAC) {
+    blendPose(out, rest, windup, t / PUSH_WINDUP_FRAC, armSign);
+  } else if (t < PUSH_STRIKE_FRAC) {
+    blendPose(out, windup, strike, (t - PUSH_WINDUP_FRAC) / (PUSH_STRIKE_FRAC - PUSH_WINDUP_FRAC), armSign);
+  } else {
+    const recT = (t - PUSH_STRIKE_FRAC) / Math.max(1e-6, 1 - PUSH_STRIKE_FRAC);
+    blendPose(out, strike, rest, recT, armSign);
   }
-  const dx = player.pushTargetX - shoulderWX;
-  const dy = player.pushTargetY - shoulderWY;
-  const dz = player.pushTargetZ - shoulderWZ;
-  const fwd = dx * fwdX + dz * fwdZ;
-  const up  = dy;
-  const armLen = STICKMAN_UPPER_ARM + STICKMAN_LOWER_ARM;
-  const targetFwd = fwd * tEff;
-  const targetUp  = up * tEff + (-armLen) * (1 - tEff);
-  solve2BoneIK(targetFwd, targetUp, STICKMAN_UPPER_ARM, STICKMAN_LOWER_ARM, _scratchPushIK);
-  out.upperAngle = _scratchPushIK.upperAngle;
-  out.lowerAngle = _scratchPushIK.lowerAngle;
   return out;
 }
 

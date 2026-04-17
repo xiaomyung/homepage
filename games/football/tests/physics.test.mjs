@@ -1956,29 +1956,20 @@ test('kick misses when ball moves out of foot reach during windup', () => {
   assert.equal(state.p1.kick.fired, false, 'kick should not have fired');
 });
 
-test('kick foot-contact hip aligns with the rendered right hip', () => {
-  // The physics foot contact test uses the RIGHT hip (perpendicular
-  // offset +STICKMAN_HIP_OFX to heading). A ball placed one HIP_OFX
-  // toward the right-hip side of the player should land right at
-  // the foot — contact must fire. A ball placed the same offset on
-  // the OPPOSITE (left-hip) side is twice as far from the foot's
-  // swing line and should miss the foot-sphere when placed past
-  // the reach margin there. Proves we're not silently using a
-  // centered hip that would symmetrize the response.
-  // Heading = 0 (facing +x). Right-hip offset direction in world
-  // coords: perp = (-sin(h), cos(h)) = (0, +1) in (x, z_world).
-  // So the right hip is at +z_world relative to body axis; in
-  // physics coords that's +y.
-  {
+test('kick foot-contact is symmetric on both hip sides', () => {
+  // The foot collider uses the BODY-AXIS center hip (matches the
+  // reach gate), so a ball offset by HIP_OFX to either the left or
+  // the right of the body axis gets kicked the same way — no
+  // asymmetric kill zone that silently wastes kicks on the
+  // non-dominant side.
+  for (const sign of [-1, +1]) {
     const state = kickBenchState();
-    // Shift ball toward right hip (+y physics) by HIP_OFX / Z_STRETCH
-    // — ball sits roughly on the right-hip's forward swing line.
-    state.ball.y = state.p1.y + (2.64 / Z_STRETCH);
+    state.ball.y = state.p1.y + sign * (2.64 / Z_STRETCH);
     tick(state, kickAction(1, 0, 0, 1), NOOP);
-    assert.ok(state.p1.kick.active, 'right-hip-aligned ball still reachable');
+    assert.ok(state.p1.kick.active, `ball on sign=${sign} side still reachable`);
     const strikeOnsetTicks = Math.ceil(KICK_WINDUP_MS / 16) + 1;
     for (let i = 0; i < strikeOnsetTicks; i++) tick(state, NOOP, NOOP);
-    assert.ok(state.p1.kick.fired, 'foot-sphere should fire for ball on the right-hip swing line');
+    assert.ok(state.p1.kick.fired, `foot-sphere should fire for ball on sign=${sign} side`);
   }
 });
 

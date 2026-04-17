@@ -1342,9 +1342,16 @@ function predictBallAtStrike(ball, ticks, out) {
 const _scratchIKRes = { upperAngle: 0, lowerAngle: 0, footFwd: 0, footUp: 0 };
 function ikFootWorld(p, out) {
   const k = p.kick;
-  // Right hip matches the renderer's kicking-leg draw pivot — test
-  // fires at the same world point the eye sees the foot land.
-  const hip = hipAnchor(p, 'right', _scratchHip);
+  // Center hip matches the reach-gate anchor in `tryStartKick` so
+  // a ball that passes the gate has the same kill zone at strike
+  // time — otherwise balls inside the left-hip arc cleared the
+  // gate but never met the right-hip foot sphere, burning 288 ms
+  // per miss. The renderer still draws the right leg from its
+  // offset hip for visual flavor; the ~2.64 world-unit gap between
+  // the visible foot and the physics foot is well inside
+  // (FOOT_RADIUS + BALL_RADIUS ≈ 5.7), so the eye still reads a
+  // clean foot-ball contact.
+  const hip = hipAnchor(p, 'center', _scratchHip);
   const local = projectHipLocal(hip, p.heading, k.footTargetX, k.footTargetY, k.footTargetZ, _scratchLocal);
   solve2BoneIK(local.fwd, local.up, STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG, _scratchIKRes);
   const fwdX = Math.cos(p.heading);

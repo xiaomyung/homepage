@@ -33,7 +33,7 @@ import {
   ACTION_PUSH_POWER,
   facingToward,
   canKickReach,
-} from './physics.js?v=55';
+} from './physics.js?v=56';
 
 const AI_PREDICT_FRAMES = 20;
 // Conservative margin on the hip-reach gate. Physics accepts kicks

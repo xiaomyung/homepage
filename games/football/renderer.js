@@ -43,7 +43,7 @@ import {
   STICKMAN_LEG_RADIUS,
   STICKMAN_ARM_RADIUS,
   kickLegPose,
-} from './physics.js?v=55';
+} from './physics.js?v=56';
 
 // Physics field depth (42) is ~21× narrower than its width (900); stretch
 // render-space z so the field fills more of the canvas vertically. Re-

@@ -1115,69 +1115,92 @@ test('visual mode still runs the celebrate pause unchanged', () => {
   assert.ok(state.goalScorer !== null, 'visual mode still flags the scorer');
 });
 
-/* ── Player-vs-player collision ──────────────────────────── */
+/* ── Player-vs-player collision (capsule model) ──────────── */
 
-test('two players walking toward each other on x stop at contact', () => {
+/** World-space horizontal distance between the two players' body
+ *  capsule centers — the single number that defines whether two
+ *  players are in contact. Mirrors the collision resolver math. */
+function capsuleDist(p1, p2) {
+  const dx = (p1.x + PLAYER_WIDTH / 2) - (p2.x + PLAYER_WIDTH / 2);
+  const dz = ((p1.y + PLAYER_HEIGHT / 2) - (p2.y + PLAYER_HEIGHT / 2)) * Z_STRETCH;
+  return Math.hypot(dx, dz);
+}
+
+test('two players walking toward each other on x stop at capsule-contact distance', () => {
   const state = freshState();
   state.p1.x = 300; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
   state.p2.x = 350; state.p2.y = state.p1.y;
-  // Drive p1 right, p2 left, for long enough that they'd pass through
-  // each other (32 unit gap, combined speed ~20/tick, ~2 ticks from
-  // contact) if collision weren't enforced.
+  // Drive p1 right, p2 left. Without the swept capsule solver they
+  // would tunnel straight through each other — combined closure is
+  // ~20 u/tick but the contact diameter is only 6.6.
   for (let i = 0; i < 30; i++) tick(state, moveAction(1), moveAction(-1));
-  // p1 right edge must not exceed p2 left edge. Small float slack for
-  // the half-half separation math.
+  const dist = capsuleDist(state.p1, state.p2);
+  const contact = 2 * STICKMAN_TORSO_RADIUS;
   assert.ok(
-    state.p1.x + PLAYER_WIDTH <= state.p2.x + 0.01,
-    `p1 right (${state.p1.x + PLAYER_WIDTH}) overlapped p2 left (${state.p2.x})`,
+    dist >= contact - 0.05,
+    `capsule centers must stay at contact distance ${contact.toFixed(2)}, got ${dist.toFixed(3)}`,
+  );
+  // p1 must still be LEFT of p2 (didn't swap places via tunneling).
+  assert.ok(
+    state.p1.x < state.p2.x,
+    `p1 should stay left of p2, got p1.x=${state.p1.x}, p2.x=${state.p2.x}`,
   );
 });
 
-test('two players walking toward each other on y stop at contact', () => {
+test('two players walking toward each other on y stop at capsule-contact distance', () => {
   const state = freshState();
-  // Stack them x-aligned but y-separated (within PLAYER_HEIGHT so the
-  // y-axis is the tighter overlap axis when they meet).
   state.p1.x = 400; state.p1.y = 10;
-  state.p2.x = 400; state.p2.y = 25;
+  state.p2.x = 400; state.p2.y = 40;
   for (let i = 0; i < 50; i++) tick(state, moveAction(0, 1), moveAction(0, -1));
+  const dist = capsuleDist(state.p1, state.p2);
+  const contact = 2 * STICKMAN_TORSO_RADIUS;
   assert.ok(
-    state.p1.y + PLAYER_HEIGHT <= state.p2.y + 0.01,
-    `p1 bottom (${state.p1.y + PLAYER_HEIGHT}) overlapped p2 top (${state.p2.y})`,
+    dist >= contact - 0.05,
+    `capsule centers must stay at contact distance ${contact.toFixed(2)}, got ${dist.toFixed(3)}`,
+  );
+  assert.ok(
+    state.p1.y < state.p2.y,
+    `p1 should stay below p2 (lower y), got p1.y=${state.p1.y}, p2.y=${state.p2.y}`,
   );
 });
 
-test('overlapping starting positions get separated on the first tick', () => {
+test('overlapping starting positions get separated to capsule-contact distance', () => {
   const state = freshState();
-  // Place them so x is the minimum-penetration axis (1-unit x overlap,
-  // 6-unit y overlap → MPT picks x). PLAYER_WIDTH=18, PLAYER_HEIGHT=6.
-  state.p1.x = 400; state.p1.y = 20;
-  state.p2.x = 417; state.p2.y = 20;
+  // Start at zero separation (capsules fully overlapping).
+  state.p1.x = 400; state.p1.y = 27;
+  state.p2.x = 400; state.p2.y = 27;
   tick(state, NOOP, NOOP);
-  // No AABB overlap after resolution — either axis clearing is enough.
-  const overlapX = Math.min(state.p1.x + PLAYER_WIDTH, state.p2.x + PLAYER_WIDTH)
-                 - Math.max(state.p1.x, state.p2.x);
-  const overlapY = Math.min(state.p1.y + PLAYER_HEIGHT, state.p2.y + PLAYER_HEIGHT)
-                 - Math.max(state.p1.y, state.p2.y);
+  const dist = capsuleDist(state.p1, state.p2);
+  const contact = 2 * STICKMAN_TORSO_RADIUS;
   assert.ok(
-    overlapX <= 0.01 || overlapY <= 0.01,
-    `still overlapping: overlapX=${overlapX}, overlapY=${overlapY}`,
+    dist >= contact - 0.05,
+    `overlapping capsules must separate to ${contact.toFixed(2)}, got ${dist.toFixed(3)}`,
   );
 });
 
 test('a push impulse cannot impale the opponent body', () => {
   const state = freshState();
   // Position the pusher right next to the victim and facing them.
+  // 15-unit gap in physics x is already inside the capsule contact
+  // distance (6.6 world) — but world-depth axis matters too; here
+  // both players are at the same y so it's pure-x.
   state.p1.x = 400; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
   state.p2.x = 415; state.p2.y = state.p1.y;
-  state.p1.heading = 0;  // facing +x, toward p2
-  // p1 pushes with max power.
+  state.p1.heading = 0;
   tick(state, pushAction(1), NOOP);
-  // Step enough ticks for the push impulse to play out fully.
   for (let i = 0; i < 30; i++) tick(state, NOOP, NOOP);
-  // p1 must not have ended up past p2's left edge.
+  // p1 (the pusher) must still be on the LEFT side of p2 at contact
+  // distance — if the impulse had impaled p2, p1 would have crossed
+  // over and ended up on the right.
   assert.ok(
-    state.p1.x + PLAYER_WIDTH <= state.p2.x + 0.01,
-    `pusher pressed through victim: p1.x=${state.p1.x}, p2.x=${state.p2.x}`,
+    state.p1.x < state.p2.x,
+    `pusher crossed through victim: p1.x=${state.p1.x}, p2.x=${state.p2.x}`,
+  );
+  const dist = capsuleDist(state.p1, state.p2);
+  const contact = 2 * STICKMAN_TORSO_RADIUS;
+  assert.ok(
+    dist >= contact - 0.1,
+    `capsules must stay at contact distance, got ${dist.toFixed(3)} (contact=${contact.toFixed(2)})`,
   );
 });
 

@@ -23,6 +23,8 @@ import {
   createField,
   FIELD_HEIGHT,
   FIELD_WIDTH_REF,
+  BALL_RADIUS,
+  GOAL_POST_RADIUS,
   KICK_WINDUP_MS,
   KICK_DURATION_MS,
   AIRKICK_MS,
@@ -38,7 +40,7 @@ import {
   STICKMAN_HEAD_RADIUS,
   STICKMAN_LEG_RADIUS,
   STICKMAN_ARM_RADIUS,
-} from './physics.js?v=50';
+} from './physics.js?v=51';
 
 // Physics field depth (42) is ~21× narrower than its width (900); stretch
 // render-space z so the field fills more of the canvas vertically. Re-
@@ -144,12 +146,9 @@ const AIRKICK_STRIKE_END_T = Math.min(0.95, AIRKICK_PEAK_FRAC + AIRKICK_STRIKE_S
 const AIRKICK_WINDUP_ANGLE = -Math.PI * 0.22;            // smaller windup, more time in the air
 const AIRKICK_STRIKE_ANGLE =  Math.PI * 0.80;            // foot near horizontal-forward (bicycle kick)
 const AIRKICK_BACK_TILT    = 0.55;                        // rad — body leans way back on volley
-// Visual radius of the 3D ball sphere, in world units. Physics
-// BALL_RADIUS is bumped alongside this so the hitbox scales with the
-// visual; visual is still larger than the physics hitbox for
-// readability, same tradeoff as the stickman glyph being bigger
-// than PLAYER_WIDTH.
-const BALL_VISUAL_RADIUS = 4.224;
+// Ball visual radius comes straight from physics.js so the rendered
+// sphere and the collision envelope are the same object — no drift.
+const BALL_VISUAL_RADIUS = BALL_RADIUS;
 
 // Stamina indicator tuning — see the three-mesh breakdown in the
 // torso-pool construction block below for how these values are used.
@@ -181,11 +180,6 @@ const GOAL_BURST_SPEED       = 1.8;
 const GOAL_BURST_LIFT        = 1.6;   // upward kick
 const GOAL_BURST_LIFE_BASE   = 35;
 const GOAL_BURST_LIFE_VAR    = 20;
-
-// Thin cylinder radius (world units) for goal-frame bars so they render
-// as solid poles. three.js line widths are GPU-dependent, so we use
-// actual tube geometry instead.
-const GOAL_BAR_RADIUS = 1.2;
 
 const CAMERA_FOV = 60;
 const CAMERA_TILT_DEG = 55;
@@ -1124,7 +1118,7 @@ export class Renderer {
     const dir = b.clone().sub(a);
     const length = dir.length();
     if (length < 1e-6) return;
-    const geom = new THREE.CylinderGeometry(GOAL_BAR_RADIUS, GOAL_BAR_RADIUS, length, 8, 1);
+    const geom = new THREE.CylinderGeometry(GOAL_POST_RADIUS, GOAL_POST_RADIUS, length, 8, 1);
     // CylinderGeometry is aligned along +y by default; rotate it so +y
     // points along `dir`, then translate to the midpoint of AB.
     const mesh = new THREE.Mesh(geom, material);

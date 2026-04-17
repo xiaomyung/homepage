@@ -34,7 +34,11 @@ const WALL_BOUNCE_DAMP = 0.5;
 const BOUNCE_VZ_MIN = 1.5;
 const BALL_VEL_CUTOFF = 0.1;
 const BALL_VEL_CUTOFF_SQ = BALL_VEL_CUTOFF * BALL_VEL_CUTOFF;
-export const BALL_RADIUS = 1.8711;
+// Single source of truth for the ball's physical + visual radius.
+// Physics collisions (goal, walls, body, ground) and the rendered
+// sphere both use this value so there is no drift between "where
+// physics thinks the ball is touching" and "where you see it touch".
+export const BALL_RADIUS = 4.224;
 const RESPAWN_DROP_Z = 60;
 
 // Player movement
@@ -132,7 +136,7 @@ const GOAL_LINE_INSET = 6; // scoring line sits this far inside the mouth
 // must be fully past the post's inner surface to count as in the
 // mouth. Without this inset a ball clipping the visible post
 // surface would score through it.
-const GOAL_POST_RADIUS = 1.2;
+export const GOAL_POST_RADIUS = 1.2;
 const GOAL_MOUTH_Z = 26;  // crossbar height (unchanged)
 const GOAL_MOUTH_WIDTH = 28.6;  // z-span of the mouth (30% + another 10% wider than the original 20)
 const GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - GOAL_MOUTH_WIDTH) / 2;
@@ -356,7 +360,7 @@ export function tick(state, p1Act, p2Act) {
 
   clampAndCollide(state, state.p1);
   clampAndCollide(state, state.p2);
-  resolvePlayerPairCollision(state.p1, state.p2, state.field.playerWidth);
+  resolvePlayerPairCollision(state.p1, state.p2, pre1x, pre1y, pre2x, pre2y);
   // A wall-pinned pair collision can push one player outside the
   // field box. Re-clamp to recover; any residual overlap converges
   // over a few ticks as both sides pay half the gap each time.
@@ -945,38 +949,135 @@ function tryBodyContact(state, p, collider, wx, wy, wz, wvx, wvy, wvz, colliderR
 }
 
 /**
- * Player-vs-player AABB separation on the ground plane. When the two
- * bodies overlap, split the minimum overlap across both along the
- * axis with the smaller penetration and zero the relevant velocity
- * components on both sides. Prevents players from walking through
- * each other and prevents a push impulse from impaling a stationary
- * opponent. Equal-mass split (each side moves half) — realistic for
- * two stickmen of the same size.
+ * Player-vs-player body-capsule collision with swept circle-circle
+ * solver in the world-horizontal plane. Each player is modelled as a
+ * vertical capsule of radius STICKMAN_TORSO_RADIUS — the same body
+ * column the ball uses. Swept because a player walking at full speed
+ * into another (combined 20 u/tick of closure) can easily cross the
+ * 6.6-unit contact diameter in one tick; without swept detection they
+ * pass straight through.
+ *
+ * Takes pre-tick positions so we can solve for the exact time of
+ * first contact along the linear motion. On contact, we put both
+ * players AT contact distance (not past) and zero the relevant
+ * velocity components.
  */
-function resolvePlayerPairCollision(p1, p2, pw) {
-  const ph = PLAYER_HEIGHT;
-  if (p1.x + pw <= p2.x || p2.x + pw <= p1.x) return;
-  if (p1.y + ph <= p2.y || p2.y + ph <= p1.y) return;
+function resolvePlayerPairCollision(p1, p2, pre1x, pre1y, pre2x, pre2y) {
+  const _DBG = globalThis.__PPDBG;
+  const r = 2 * STICKMAN_TORSO_RADIUS;
+  // Pre-tick centers in world coords.
+  const preC1x = pre1x + PLAYER_WIDTH / 2;
+  const preC1z = (pre1y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const preC2x = pre2x + PLAYER_WIDTH / 2;
+  const preC2z = (pre2y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  // Post-tick centers.
+  const postC1x = p1.x + PLAYER_WIDTH / 2;
+  const postC1z = (p1.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const postC2x = p2.x + PLAYER_WIDTH / 2;
+  const postC2z = (p2.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
 
-  const overlapX = Math.min(p1.x + pw - p2.x, p2.x + pw - p1.x);
-  const overlapY = Math.min(p1.y + ph - p2.y, p2.y + ph - p1.y);
+  const preDx = preC1x - preC2x, preDz = preC1z - preC2z;
+  const postDx = postC1x - postC2x, postDz = postC1z - postC2z;
+  const mdx = postDx - preDx, mdz = postDz - preDz;
+  const preDist2 = preDx * preDx + preDz * preDz;
+  const postDist2 = postDx * postDx + postDz * postDz;
 
-  if (overlapX < overlapY) {
-    const half = overlapX / 2;
-    const p1Left = (p1.x + pw / 2) < (p2.x + pw / 2);
-    const dir = p1Left ? -1 : 1;
-    p1.x += dir * half;
-    p2.x -= dir * half;
-    p1.vx = 0; p2.vx = 0;
-    p1.pushVx = 0; p2.pushVx = 0;
+  // Quick reject: no overlap at start OR end, and no trajectory
+  // crossing in between (swept solve handles the crossing case).
+  // Check sign flip on either axis as a cheap tunneling sentinel.
+  const tunneled = (preDx * postDx < 0) || (preDz * postDz < 0);
+  if (postDist2 >= r * r && preDist2 >= r * r && !tunneled) return;
+
+  // Solve |preD + t * m|² = r² for t in [0, 1]. Quadratic
+  // |m|² t² + 2 (preD · m) t + (|preD|² − r²) = 0.
+  //
+  // t1 is the ENTRY contact time (first root, first moment distance
+  // drops to r). t2 is EXIT (distance rises past r again). We always
+  // want the entry. Floating-point noise on the preDist² − r² term
+  // can make t1 slip slightly negative when the players start AT
+  // contact distance — we clamp to 0 if it's inside a small tolerance
+  // so we don't accidentally take t2 (exit) as the contact time and
+  // teleport the players past each other.
+  let tc = 0;
+  const a = mdx * mdx + mdz * mdz;
+  const TOL = 1e-4;
+  if (a > 1e-9) {
+    const b = 2 * (preDx * mdx + preDz * mdz);
+    const c = preDist2 - r * r;
+    const disc = b * b - 4 * a * c;
+    if (disc >= 0) {
+      const sq = Math.sqrt(disc);
+      const t1 = (-b - sq) / (2 * a);
+      const t2 = (-b + sq) / (2 * a);
+      if (t1 >= -TOL && t1 <= 1 + TOL) {
+        tc = Math.max(0, Math.min(1, t1));
+      } else if (t2 >= -TOL && t2 <= 1 + TOL) {
+        tc = Math.max(0, Math.min(1, t2));
+      }
+      // else: crossing outside the tick window — leave tc at 0 so we
+      // resolve at pre-tick (current overlap already, separate below).
+    }
+  }
+
+  // Rewind to the contact moment along the linear motion.
+  p1.x = pre1x + (p1.x - pre1x) * tc;
+  p1.y = pre1y + (p1.y - pre1y) * tc;
+  p2.x = pre2x + (p2.x - pre2x) * tc;
+  p2.y = pre2y + (p2.y - pre2y) * tc;
+
+  // Compute the contact-time normal. If the players were already
+  // overlapping at tick start, the time-of-contact is 0 and the
+  // positions are still overlapping — push them apart to contact
+  // distance. Otherwise we've landed exactly at contact distance.
+  const c1x = p1.x + PLAYER_WIDTH / 2;
+  const c1z = (p1.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const c2x = p2.x + PLAYER_WIDTH / 2;
+  const c2z = (p2.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const dx = c1x - c2x;
+  const dz = c1z - c2z;
+  const dist2 = dx * dx + dz * dz;
+  const dist = Math.sqrt(dist2);
+  let nxU, nzU;
+  if (dist < 1e-9) {
+    nxU = 1; nzU = 0;
   } else {
-    const half = overlapY / 2;
-    const p1Above = (p1.y + ph / 2) < (p2.y + ph / 2);
-    const dir = p1Above ? -1 : 1;
-    p1.y += dir * half;
-    p2.y -= dir * half;
-    p1.vy = 0; p2.vy = 0;
-    p1.pushVy = 0; p2.pushVy = 0;
+    const inv = 1 / dist;
+    nxU = dx * inv; nzU = dz * inv;
+  }
+  if (dist < r - 1e-6) {
+    const half = (r - dist) / 2;
+    const wx = nxU * half, wz = nzU * half;
+    p1.x += wx;  p1.y += wz / Z_STRETCH;
+    p2.x -= wx;  p2.y -= wz / Z_STRETCH;
+  }
+
+  // Zero each player's velocity component INTO the opponent so they
+  // stop pressing together. Normal points from p2's center toward
+  // p1's center. p1 moving in −normal direction = moving into p2
+  // (v1·n < 0); p2 moving in +normal direction = moving into p1
+  // (v2·n > 0). Velocities in physics space (vx = world x,
+  // vy = world z / Z_STRETCH).
+  const v1DotN = p1.vx * nxU + p1.vy * Z_STRETCH * nzU;
+  if (v1DotN < 0) {
+    p1.vx -= v1DotN * nxU;
+    p1.vy -= v1DotN * nzU / Z_STRETCH;
+  }
+  const v2DotN = p2.vx * nxU + p2.vy * Z_STRETCH * nzU;
+  if (v2DotN > 0) {
+    p2.vx -= v2DotN * nxU;
+    p2.vy -= v2DotN * nzU / Z_STRETCH;
+  }
+  // Push impulses (pushVx/pushVy) are also squashed on the contact
+  // axis so a push into an opponent doesn't impale them.
+  const pv1DotN = p1.pushVx * nxU + p1.pushVy * Z_STRETCH * nzU;
+  if (pv1DotN < 0) {
+    p1.pushVx -= pv1DotN * nxU;
+    p1.pushVy -= pv1DotN * nzU / Z_STRETCH;
+  }
+  const pv2DotN = p2.pushVx * nxU + p2.pushVy * Z_STRETCH * nzU;
+  if (pv2DotN > 0) {
+    p2.pushVx -= pv2DotN * nxU;
+    p2.pushVy -= pv2DotN * nzU / Z_STRETCH;
   }
 }
 

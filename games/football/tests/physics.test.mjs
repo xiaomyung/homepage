@@ -2079,6 +2079,45 @@ test('kickLegPose windup peak = 70% extension toward target', () => {
   assert.ok(Math.abs(footDown - expectedDown) < 1e-3, `foot down expected ${expectedDown}, got ${footDown}`);
 });
 
+test('kickLegPose produces finite, non-hyperextended angles across the full stage', () => {
+  // Sweep `kick.timer` from 0 → KICK_DURATION_MS across a range of
+  // foot targets (reachable and just-out-of-reach). The IK solver
+  // always picks the knee-forward branch; lowerAngle must never be
+  // less than the hip-foot angle (that would put the knee BEHIND
+  // the hip-foot line, i.e. hyperextended / reversed).
+  const hipWX = 0, hipWY = 20, hipWZ = 0;
+  const fwdX = 1, fwdZ = 0;
+  for (const targetFwd of [4, 8, 12, 18, 22]) {
+    for (const targetUp of [-18, -12, -4, 0, 6]) {
+      const k = {
+        active: true, kind: 'ground',
+        footTargetX: hipWX + targetFwd,
+        footTargetY: hipWY + targetUp,
+        footTargetZ: hipWZ,
+        timer: 0,
+      };
+      for (let t = 0; t <= KICK_DURATION_MS; t += 16) {
+        k.timer = t;
+        const out = { upperAngle: 0, lowerAngle: 0 };
+        kickLegPose(k, hipWX, hipWY, hipWZ, fwdX, fwdZ, out);
+        assert.ok(
+          Number.isFinite(out.upperAngle) && Number.isFinite(out.lowerAngle),
+          `NaN at t=${t}, target=(${targetFwd},${targetUp})`,
+        );
+        // Knee-forward branch: upperAngle ≥ lowerAngle for a forward
+        // target (upper sweeps ahead of shin). Not a strict rule —
+        // allow tiny epsilon for the fully-straight-leg edge.
+        if (targetFwd > 0) {
+          assert.ok(
+            out.upperAngle - out.lowerAngle > -1e-6,
+            `knee inverted at t=${t}, target=(${targetFwd},${targetUp}): upper=${out.upperAngle}, lower=${out.lowerAngle}`,
+          );
+        }
+      }
+    }
+  }
+});
+
 test('kickLegPose projects along heading (rotation-invariant)', () => {
   // Same relative target, different headings — the local angles
   // must be identical because IK operates in hip-local (fwd, up).

@@ -520,7 +520,18 @@ export function facingToward(p, worldX, worldZ, tol) {
 
 /* ── Movement ─────────────────────────────────────────────────── */
 
+// Motion input dead zone. Snaps small commanded moves to 0 so
+// imitation-trained NNs emitting ±0.05 noise don't produce 10 sign
+// flips per second of actual motion — each of which burns
+// DIRECTION_CHANGE_DRAIN stamina. Matches `FALLBACK_DEAD_ZONE` in
+// fallback.js so teacher and student share the same effective
+// quantization; the teacher already emits exact 0 below this
+// threshold, so this change is a no-op for fallback behaviour.
+const MOVE_INPUT_DEAD_ZONE = 0.15;
+
 function applyMovement(state, p, moveX, moveY) {
+  if (Math.abs(moveX) < MOVE_INPUT_DEAD_ZONE) moveX = 0;
+  if (Math.abs(moveY) < MOVE_INPUT_DEAD_ZONE) moveY = 0;
   const effSpeed = MAX_PLAYER_SPEED * Math.max(MIN_SPEED_STAMINA, p.stamina);
   let targetVx = clamp(moveX, -1, 1) * effSpeed;
   // Y physics-space is compressed by Z_STRETCH relative to visual

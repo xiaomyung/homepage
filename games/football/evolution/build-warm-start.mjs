@@ -21,6 +21,7 @@ import { createSeededRng } from '../physics.js';
 import {
   collectImitationDataset,
   collectDAggerDataset,
+  oversampleKickPositives,
   trainWarmStartWeights,
   heInit,
   forwardCached,
@@ -30,6 +31,10 @@ import {
 } from './warm-start-lib.js';
 
 const DAGGER_ROUNDS = 2;
+// Target fraction of positive-kick samples in the training set. The
+// teacher fires kick=+1 on ~1.5% of ticks; without oversampling MSE
+// drives the NN to predict a constant "don't kick" minimum.
+const KICK_OVERSAMPLE_FRAC = 0.25;
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT_PATH = join(HERE, '..', 'warm_start_weights.json');
@@ -75,7 +80,9 @@ async function main() {
   const bc = collectImitationDataset(matches, ticksPerMatch, baseSeed);
   let inputs  = bc.inputs;
   let actions = bc.actions;
-  console.log(`  dataset size: ${inputs.length} samples`);
+  console.log(`  raw dataset: ${inputs.length} samples`);
+  ({ inputs, actions } = oversampleKickPositives(inputs, actions, { targetFrac: KICK_OVERSAMPLE_FRAC }));
+  console.log(`  after kick oversample: ${inputs.length} samples`);
 
   let trained = await trainWarmStartWeights(inputs, actions, {
     epochs, batchSize, lr, seed: baseSeed,
@@ -90,9 +97,13 @@ async function main() {
     console.log(`Round ${r}: DAgger — student-visited states + teacher corrections...`);
     const dagSeed = baseSeed + 10000 * r;
     const extra = collectDAggerDataset(weights, matches, ticksPerMatch, dagSeed);
-    inputs  = inputs.concat(extra.inputs);
-    actions = actions.concat(extra.actions);
-    console.log(`  aggregated dataset size: ${inputs.length} samples (+${extra.inputs.length})`);
+    const combined = {
+      inputs:  inputs.concat(extra.inputs),
+      actions: actions.concat(extra.actions),
+    };
+    console.log(`  raw aggregated: ${combined.inputs.length} samples (+${extra.inputs.length})`);
+    ({ inputs, actions } = oversampleKickPositives(combined.inputs, combined.actions, { targetFrac: KICK_OVERSAMPLE_FRAC }));
+    console.log(`  after kick oversample: ${inputs.length} samples`);
 
     trained = await trainWarmStartWeights(inputs, actions, {
       epochs, batchSize, lr, seed: baseSeed + r,

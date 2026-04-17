@@ -341,4 +341,35 @@ export async function trainWarmStartWeights(inputs, actions, { epochs, batchSize
   return { weights: state.weights, history: state.history };
 }
 
+/**
+ * Rebalance a classified-action dataset so positive kick-gate frames
+ * are a target fraction of the sample stream. The teacher fires kick=+1
+ * on ~1-2% of ticks; with plain MSE the NN minimises loss by predicting
+ * a constant "always don't kick" and never commits to a strike.
+ * Duplicating positive frames lifts their effective weight in the
+ * gradient so the NN actually learns to emit +1 when appropriate.
+ *
+ * Pure — returns new arrays. Leaves the original inputs/actions alone.
+ */
+export function oversampleKickPositives(inputs, actions, { targetFrac = 0.25 } = {}) {
+  const posIdx = [];
+  for (let i = 0; i < actions.length; i++) {
+    if (actions[i][2] > 0) posIdx.push(i);
+  }
+  if (posIdx.length === 0) return { inputs, actions };
+  const negCount = actions.length - posIdx.length;
+  // Required positive count so that pos / (pos + neg) >= targetFrac.
+  // → pos >= negCount * targetFrac / (1 - targetFrac).
+  const wantPos = Math.ceil((negCount * targetFrac) / (1 - targetFrac));
+  if (wantPos <= posIdx.length) return { inputs, actions };
+  const out_in  = inputs.slice();
+  const out_act = actions.slice();
+  for (let k = posIdx.length; k < wantPos; k++) {
+    const src = posIdx[k % posIdx.length];
+    out_in.push(inputs[src]);
+    out_act.push(actions[src]);
+  }
+  return { inputs: out_in, actions: out_act };
+}
+
 export { LAYER_COUNT, OUTPUT_SIZE };

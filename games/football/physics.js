@@ -2104,11 +2104,20 @@ function scoreGoal(state, side) {
   }
 
   if (state.headless) {
-    // Instant reset, no celebrate/matchend pause — the match budget
-    // is a wall-clock tick cap, so letting the game run to the full
-    // budget and recording whatever final score emerges beats any
-    // WIN_SCORE early-stop.
-    resetToKickoff(state);
+    // Training matches follow the same "first to WIN_SCORE wins"
+    // rule as the visual match. Capping training (rather than
+    // running the full tick budget and racking up 30-0 blowouts)
+    // makes training and visual statistics identical, bounds
+    // goal-diff naturally to ±WIN_SCORE, and lets dominant brains
+    // finish a match in seconds — more matches per wall-clock hour
+    // means faster selection. Workers terminate their loop on
+    // `state.matchOver`; physics just sets the flag.
+    if (state.scoreL >= WIN_SCORE || state.scoreR >= WIN_SCORE) {
+      state.matchOver = true;
+      state.winner = state.scoreL >= WIN_SCORE ? 'left' : 'right';
+    } else {
+      resetToKickoff(state);
+    }
     return;
   }
 

@@ -1064,10 +1064,10 @@ test('headless scoreGoal resets pitch instantly, no pause', () => {
   assert.equal(state.pauseState, null, 'still no pause after advancing');
 });
 
-test('headless does not end match on WIN_SCORE', () => {
+test('headless ends match at WIN_SCORE (capped like visual)', () => {
   const state = freshState();
   state.headless = true;
-  state.scoreL = 4; // one goal short of default WIN_SCORE=5
+  state.scoreL = 2; // one goal short of WIN_SCORE=3
   const f = state.field;
 
   state.ball.x = f.width - 120;
@@ -1076,10 +1076,29 @@ test('headless does not end match on WIN_SCORE', () => {
   state.ball.vx = 5; state.ball.vy = 0; state.ball.vz = 0;
   state.ball.frozen = false;
 
-  for (let i = 0; i < 40 && state.scoreL < 5; i++) tick(state, NOOP, NOOP);
-  assert.equal(state.scoreL, 5, 'fifth goal should have scored');
-  assert.equal(state.matchOver, false, 'headless must not set matchOver');
-  assert.equal(state.pauseState, null, 'headless must not set matchend pause');
+  for (let i = 0; i < 40 && state.scoreL < 3; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.scoreL, 3, 'third goal should have scored');
+  assert.equal(state.matchOver, true, 'headless should set matchOver at WIN_SCORE');
+  // Winner recorded but no pause-state (headless skips the celebrate).
+  assert.equal(state.pauseState, null);
+  assert.equal(state.winner, 'left');
+});
+
+test('headless instant-resets below WIN_SCORE (keeps playing)', () => {
+  const state = freshState();
+  state.headless = true;
+  state.scoreL = 0; // plenty of room before WIN_SCORE
+  const f = state.field;
+
+  state.ball.x = f.width - 120;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = 5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  for (let i = 0; i < 40 && state.scoreL < 1; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.scoreL, 1, 'first goal should have scored');
+  assert.equal(state.matchOver, false, 'non-winning goal must not end match');
   assert.equal(state.winner, null);
 });
 

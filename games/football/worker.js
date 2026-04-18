@@ -110,14 +110,19 @@ function runMatch(matchup) {
 
   // Decision-outer / physics-inner stride loop. See physics.js
   // NN_ACTION_STRIDE comment for the training/visual parity rules.
+  // Loop exits early when physics sets `state.matchOver` (hit at
+  // WIN_SCORE under the new cap). Without this check the worker
+  // kept running buildInputs + two forward passes for every stride
+  // after matchOver fired — physics.tick returns early but the
+  // ~500 wasted NN evaluations per early-ending match were real.
   let ticksDone = 0;
-  while (ticksDone < matchTicks) {
+  while (ticksDone < matchTicks && !state.matchOver) {
     const p1Action = p1Brain.forward(buildInputs(state, 'p1', p1InputBuf));
     const p2Action = p2IsFallback
       ? fallbackAction(state, 'p2')
       : p2Brain.forward(buildInputs(state, 'p2', p2InputBuf));
     const chunkEnd = Math.min(ticksDone + NN_ACTION_STRIDE, matchTicks);
-    while (ticksDone < chunkEnd) {
+    while (ticksDone < chunkEnd && !state.matchOver) {
       physicsTick(state, p1Action, p2Action);
       ticksDone++;
     }

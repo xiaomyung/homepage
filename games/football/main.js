@@ -87,7 +87,12 @@ async function main() {
   scoreboard = createScoreboard();
   orchestrator = createTrainingOrchestrator({
     apiBase: API_BASE,
-    workerUrl: new URL('./worker.js', import.meta.url),
+    // Cache-bust: browsers aggressively reuse web-worker URLs across
+    // reloads; a hard refresh re-fetches the main page but can serve
+    // worker.js stale. Bump the query string when the worker protocol
+    // changes (e.g., this edit added `seed` to the result payload and
+    // the broker expects it).
+    workerUrl: new URL('./worker.js?v=2', import.meta.url),
     onStats: ({ simsPerSec }) => statsPanel?.setSimsPerSec(simsPerSec),
   });
   // Runtime is broker-authoritative and comes back in the /stats

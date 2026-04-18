@@ -582,10 +582,12 @@ function tryBreed() {
   // reflects CURRENT training quality (like `cur top` / `cur avg`),
   // not a lifetime-since-reset average dominated by early bad gens.
   state.matchCounts = { total: 0, zeroZero: 0, nonzeroDraw: 0, decisive: 0, blowout: 0 };
-  // Old matches reference retired brain ids — drop them so the
-  // showcase doesn't try to replay a pairing whose weights moved
-  // out from under it.
-  state.interestingMatches = [];
+  // interestingMatches intentionally NOT cleared here — entries are
+  // tagged with their generation and pickInterestingReplay filters
+  // on current gen. That lets the showcase keep replaying last-gen
+  // matches for the first ~1 s of the new gen while the new
+  // generation's matches fill in (otherwise we got a visible
+  // "no seed → fallback to blind picker" blackout every breed).
   schedulePersist();
   return true;
 }
@@ -685,54 +687,39 @@ function pickShowcase() {
 
 /** Pick a recent match with ≥1 goal from the ring buffer. Rotate
  *  between fallback-mode and brain-vs-brain so both showcase styles
- *  surface. Returns `null` if no suitable match is available. */
+ *  surface. Only current-generation entries are eligible — stale
+ *  pre-breed entries are ignored (brain ids got new weights at the
+ *  breed, so replaying the old seed against the new weights would
+ *  be non-deterministic). Returns `null` if no suitable match. */
 function pickInterestingReplay() {
   const buf = state.interestingMatches;
   if (buf.length === 0) return null;
   const byId = state.populationById;
+  const curGen = state.generation;
   const wantFallback = state.showcaseCounter % SHOWCASE_FALLBACK_EVERY_N === 0;
 
-  // Walk the buffer newest-first so the showcase feels "live".
-  for (let i = buf.length - 1; i >= 0; i--) {
-    const m = buf[i];
-    const p1 = byId[m.p1_id];
-    if (!p1) continue;                 // brain retired since the match
-    if (m.p2_id == null) {
-      if (!wantFallback) continue;
-      return {
-        mode: 'vs_fallback',
-        p1: brainView(p1),
-        p2: null,
-        seed: m.seed,
-        preview_score: [m.goals_p1, m.goals_p2],
-      };
-    }
-    if (wantFallback) continue;
-    const p2 = byId[m.p2_id];
-    if (!p2) continue;
-    return {
-      mode: 'recent',
-      p1: brainView(p1),
-      p2: brainView(p2),
-      seed: m.seed,
-      preview_score: [m.goals_p1, m.goals_p2],
-    };
-  }
-  // If we couldn't find the requested mode, relax and take whatever.
-  for (let i = buf.length - 1; i >= 0; i--) {
-    const m = buf[i];
-    const p1 = byId[m.p1_id];
-    if (!p1) continue;
-    if (m.p2_id == null) {
-      return { mode: 'vs_fallback', p1: brainView(p1), p2: null,
+  const tryPick = (requireMode) => {
+    for (let i = buf.length - 1; i >= 0; i--) {
+      const m = buf[i];
+      if (m.generation !== curGen) continue;   // stale — belongs to a prior gen
+      const p1 = byId[m.p1_id];
+      if (!p1) continue;
+      const isFb = m.p2_id == null;
+      if (requireMode === 'fallback' && !isFb) continue;
+      if (requireMode === 'recent' && isFb) continue;
+      if (isFb) {
+        return { mode: 'vs_fallback', p1: brainView(p1), p2: null,
+                 seed: m.seed, preview_score: [m.goals_p1, m.goals_p2] };
+      }
+      const p2 = byId[m.p2_id];
+      if (!p2) continue;
+      return { mode: 'recent', p1: brainView(p1), p2: brainView(p2),
                seed: m.seed, preview_score: [m.goals_p1, m.goals_p2] };
     }
-    const p2 = byId[m.p2_id];
-    if (!p2) continue;
-    return { mode: 'recent', p1: brainView(p1), p2: brainView(p2),
-             seed: m.seed, preview_score: [m.goals_p1, m.goals_p2] };
-  }
-  return null;
+    return null;
+  };
+
+  return tryPick(wantFallback ? 'fallback' : 'recent') ?? tryPick(null);
 }
 
 // ── Result recording ──────────────────────────────────────────
@@ -771,11 +758,15 @@ function recordResult(result) {
   else                                          state.matchCounts.decisive += 1;
 
   // Remember non-stalemate matches with their seeds so /showcase
-  // can replay a known-interesting match visually instead of picking
-  // a brain pair blind. Bounded ring buffer — newest wins when full.
+  // can replay a known-interesting match visually. Tag each entry
+  // with the generation so a post-breed pick can ignore obsolete
+  // pairings without needing to drop the whole buffer (draining it
+  // at every breed left the first ~1 s of every generation falling
+  // back to the blind brain-pair picker).
   const seed = Number.isFinite(result.seed) ? result.seed >>> 0 : null;
   if (seed !== null && (goalsP1 + goalsP2) > 0) {
     state.interestingMatches.push({
+      generation: state.generation,
       p1_id: result.p1_id,
       p2_id: result.p2_id ?? null,  // null = vs fallback
       seed,

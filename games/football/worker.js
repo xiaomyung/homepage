@@ -133,5 +133,9 @@ function runMatch(matchup) {
     p2_id: p2IsFallback ? null : matchup.p2,
     goals_p1: state.scoreL,
     goals_p2: state.scoreR,
+    // Seed reported back so the broker can replay a known-decisive
+    // match visually — same weights + same seed = bit-identical
+    // physics, so the showcase doesn't have to pre-simulate.
+    seed,
   };
 }

@@ -54,14 +54,6 @@ const SHOWCASE_MATCH_MS = 30000;
 // Hard safety limit — a stalled match still times out even if the
 // physics state is wedged for some reason.
 const MAX_SHOWCASE_TICKS = 4000;
-// Max seeds to pre-simulate per matchup before giving up and
-// showing whatever we got. Each headless preview is a handful of ms
-// (≤ SHOWCASE_MATCH_MS ticks, no rendering), so cycling through a
-// few is imperceptible. The goal is to skip pure 0-0 stalemates —
-// the commonest "this looks broken" failure mode — by replaying the
-// preview's seed visually whenever the preview produced at least
-// one goal.
-const SHOWCASE_PREVIEW_ATTEMPTS = 4;
 
 /* ── Bootstrap ────────────────────────────────────────── */
 
@@ -177,39 +169,6 @@ async function main() {
 
 /* ── Showcase loop ────────────────────────────────────── */
 
-/**
- * Headless preview match. Runs the same logic the visual loop would
- * but without any rendering, returning the final score. Lets the
- * showcase skip 0-0 stalemates before spending a 30-second visual
- * budget on a dead match.
- */
-function previewMatch(seed, p1Brain, p2Brain, p2IsFallback) {
-  const state = createState(createField(), createSeededRng(seed));
-  state.headless = true;
-  state.graceFrames = 0;
-  const maxTicks = Math.ceil(SHOWCASE_MATCH_MS / TICK_MS);
-  let a1 = null;
-  let a2 = null;
-  for (let t = 0; t < maxTicks && !state.matchOver; t++) {
-    if (t % NN_ACTION_STRIDE === 0) {
-      if (p1Brain) {
-        a1 = Array.from(p1Brain.forward(buildInputs(state, 'p1', p1InputBuf)));
-      } else {
-        a1 = fallbackAction(state, 'p1');
-      }
-      if (p2IsFallback) {
-        a2 = fallbackAction(state, 'p2');
-      } else if (p2Brain) {
-        a2 = Array.from(p2Brain.forward(buildInputs(state, 'p2', p2InputBuf)));
-      } else {
-        a2 = fallbackAction(state, 'p2');
-      }
-    }
-    physicsTick(state, a1, a2);
-  }
-  return { scoreL: state.scoreL, scoreR: state.scoreR };
-}
-
 async function nextShowcase() {
   let matchup = null;
   try {
@@ -219,16 +178,16 @@ async function nextShowcase() {
     /* API unreachable — fall through to fallback-vs-fallback */
   }
 
-  // Initial seed — may be replaced by a preview-chosen seed below.
-  let seed = (Math.random() * 2 ** 31) >>> 0;
-  const state0Factory = (s) => {
-    const st = createState(createField(), createSeededRng(s));
-    st.graceFrames = 0;
-    // Let the renderer consume ball-bounce events for splash particles.
-    st.recordEvents = true;
-    return st;
-  };
-  let state = state0Factory(seed);
+  // Prefer the seed the broker supplies (deterministic replay of a
+  // known-decisive training match); otherwise pick a fresh random
+  // seed for a live simulation.
+  const seed = Number.isFinite(matchup?.seed)
+    ? (matchup.seed >>> 0)
+    : (Math.random() * 2 ** 31) >>> 0;
+  const state = createState(createField(), createSeededRng(seed));
+  state.graceFrames = 0;
+  // Let the renderer consume ball-bounce events for splash particles.
+  state.recordEvents = true;
 
   let p1Brain = null;
   let p2Brain = null;
@@ -260,23 +219,6 @@ async function nextShowcase() {
     p1Source = { type: 'fallback', name: 'fallback' };
     p2Source = { type: 'fallback', name: 'fallback' };
   }
-
-  // Preview up to N seeds headlessly and pick the first decisive or
-  // draw match (any match with ≥1 goal). If all previews end 0-0,
-  // accept the last seed — some match must play. Previews are fast:
-  // headless tick × ~1500 ticks × ~5 μs ≈ 10 ms per attempt.
-  const p2IsFallback = p2Source?.type === 'fallback';
-  for (let attempt = 0; attempt < SHOWCASE_PREVIEW_ATTEMPTS; attempt++) {
-    const trySeed = (Math.random() * 2 ** 31) >>> 0;
-    const pv = previewMatch(trySeed, p1Brain, p2Brain, p2IsFallback);
-    if (pv.scoreL + pv.scoreR > 0) {
-      seed = trySeed;
-      break;
-    }
-    // Last attempt: keep whatever seed we tried so we don't dead-loop.
-    if (attempt === SHOWCASE_PREVIEW_ATTEMPTS - 1) seed = trySeed;
-  }
-  state = state0Factory(seed);
 
   scoreboard.setMatchup(p1Source, p2Source);
   scoreboard.setScore(0, 0);

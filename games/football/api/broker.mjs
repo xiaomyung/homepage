@@ -180,6 +180,12 @@ const state = {
     decisive: 0,      // winner, |diff| < BLOWOUT_THRESHOLD
     blowout: 0,       // |diff| >= BLOWOUT_THRESHOLD
   },
+  // Ring buffer of recently-reported non-stalemate matches (≥1 goal),
+  // tagged with the worker's seed so the client can replay any of
+  // them deterministically. `/showcase` picks from this buffer so
+  // the visible match is a REAL training match we already know ends
+  // with a goal — no pre-simulation needed in the browser.
+  interestingMatches: [],
 };
 
 // Goal-diff threshold for classifying a match as a blowout. Training
@@ -187,6 +193,12 @@ const state = {
 // reach the 20s in an evolved-vs-weak pairing — 10 is a sane "the
 // losing side never contested" cutoff.
 const BLOWOUT_THRESHOLD = 10;
+
+// Cap on the recent-interesting-match ring buffer. 200 entries × ~32
+// bytes = ~6 KB. Enough for good showcase variety without holding
+// stale pairings forever. Cleared on breed because brain ids are
+// reused with new weights across generations.
+const INTERESTING_CAP = 200;
 
 // Gap between consecutive /results POSTs beyond which the broker
 // treats the training window as closed. Under normal load POSTs
@@ -570,6 +582,10 @@ function tryBreed() {
   // reflects CURRENT training quality (like `cur top` / `cur avg`),
   // not a lifetime-since-reset average dominated by early bad gens.
   state.matchCounts = { total: 0, zeroZero: 0, nonzeroDraw: 0, decisive: 0, blowout: 0 };
+  // Old matches reference retired brain ids — drop them so the
+  // showcase doesn't try to replay a pairing whose weights moved
+  // out from under it.
+  state.interestingMatches = [];
   schedulePersist();
   return true;
 }
@@ -642,21 +658,21 @@ function pickShowcase() {
   state.showcaseCounter += 1;
   ensureFitnessFresh();
 
+  // Prefer replaying a real non-stalemate match the trainer just ran
+  // — the seed makes the visual a bit-identical deterministic replay,
+  // so we show only matches we KNOW produced at least one goal. This
+  // gets rid of the "players run to walls and do nothing" showcase
+  // failure the old random-pair picker was prone to.
+  const replay = pickInterestingReplay();
+  if (replay) return replay;
+
+  // Fallback (buffer empty — fresh broker / right after breed): pick
+  // top brain vs fallback, or two top brains against each other.
   if (pop.length < 2 || state.showcaseCounter % SHOWCASE_FALLBACK_EVERY_N === 0) {
     let best = pop[0];
     for (const b of pop) if (b.fitness > best.fitness) best = b;
-    return {
-      mode: 'vs_fallback',
-      p1: brainView(best),
-      p2: null,
-    };
+    return { mode: 'vs_fallback', p1: brainView(best), p2: null };
   }
-
-  // Top-K sample for brain-vs-brain. Random-from-all-50 pulled in
-  // bottom-tier brains ~80% of the time, producing either 0-0
-  // stalemates or lopsided 30-0 blowouts — neither looks like
-  // football. Top 10 are consistent winners against fallback so at
-  // least both sides play competently.
   const k = Math.min(SHOWCASE_TOP_POOL_SIZE, pop.length);
   const top = pop.slice().sort((x, y) => y.fitness - x.fitness).slice(0, k);
   const a = pickRandom(top);
@@ -664,11 +680,59 @@ function pickShowcase() {
   for (let attempts = 0; b.id === a.id && attempts < 5; attempts++) {
     b = pickRandom(top);
   }
-  return {
-    mode: 'recent',
-    p1: brainView(a),
-    p2: brainView(b),
-  };
+  return { mode: 'recent', p1: brainView(a), p2: brainView(b) };
+}
+
+/** Pick a recent match with ≥1 goal from the ring buffer. Rotate
+ *  between fallback-mode and brain-vs-brain so both showcase styles
+ *  surface. Returns `null` if no suitable match is available. */
+function pickInterestingReplay() {
+  const buf = state.interestingMatches;
+  if (buf.length === 0) return null;
+  const byId = state.populationById;
+  const wantFallback = state.showcaseCounter % SHOWCASE_FALLBACK_EVERY_N === 0;
+
+  // Walk the buffer newest-first so the showcase feels "live".
+  for (let i = buf.length - 1; i >= 0; i--) {
+    const m = buf[i];
+    const p1 = byId[m.p1_id];
+    if (!p1) continue;                 // brain retired since the match
+    if (m.p2_id == null) {
+      if (!wantFallback) continue;
+      return {
+        mode: 'vs_fallback',
+        p1: brainView(p1),
+        p2: null,
+        seed: m.seed,
+        preview_score: [m.goals_p1, m.goals_p2],
+      };
+    }
+    if (wantFallback) continue;
+    const p2 = byId[m.p2_id];
+    if (!p2) continue;
+    return {
+      mode: 'recent',
+      p1: brainView(p1),
+      p2: brainView(p2),
+      seed: m.seed,
+      preview_score: [m.goals_p1, m.goals_p2],
+    };
+  }
+  // If we couldn't find the requested mode, relax and take whatever.
+  for (let i = buf.length - 1; i >= 0; i--) {
+    const m = buf[i];
+    const p1 = byId[m.p1_id];
+    if (!p1) continue;
+    if (m.p2_id == null) {
+      return { mode: 'vs_fallback', p1: brainView(p1), p2: null,
+               seed: m.seed, preview_score: [m.goals_p1, m.goals_p2] };
+    }
+    const p2 = byId[m.p2_id];
+    if (!p2) continue;
+    return { mode: 'recent', p1: brainView(p1), p2: brainView(p2),
+             seed: m.seed, preview_score: [m.goals_p1, m.goals_p2] };
+  }
+  return null;
 }
 
 // ── Result recording ──────────────────────────────────────────
@@ -705,6 +769,23 @@ function recordResult(result) {
   else if (goalsP1 === goalsP2)                 state.matchCounts.nonzeroDraw += 1;
   else if (Math.abs(diff) >= BLOWOUT_THRESHOLD) state.matchCounts.blowout += 1;
   else                                          state.matchCounts.decisive += 1;
+
+  // Remember non-stalemate matches with their seeds so /showcase
+  // can replay a known-interesting match visually instead of picking
+  // a brain pair blind. Bounded ring buffer — newest wins when full.
+  const seed = Number.isFinite(result.seed) ? result.seed >>> 0 : null;
+  if (seed !== null && (goalsP1 + goalsP2) > 0) {
+    state.interestingMatches.push({
+      p1_id: result.p1_id,
+      p2_id: result.p2_id ?? null,  // null = vs fallback
+      seed,
+      goals_p1: goalsP1,
+      goals_p2: goalsP2,
+    });
+    if (state.interestingMatches.length > INTERESTING_CAP) {
+      state.interestingMatches.shift();
+    }
+  }
 
   state.totalMatches += 1;
   state.fitnessDirty = true;
@@ -969,6 +1050,7 @@ function seedPopulationFromWeights(seedWeights) {
   state.runtimeActiveStart = null;
   state.runtimeLastPostAt = null;
   state.matchCounts = { total: 0, zeroZero: 0, nonzeroDraw: 0, decisive: 0, blowout: 0 };
+  state.interestingMatches = [];
   refreshPopulationIndex();
 }
 

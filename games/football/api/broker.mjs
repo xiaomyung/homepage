@@ -566,6 +566,10 @@ function tryBreed() {
   state.generation += 1;
   refreshPopulationIndex();
   state.fitnessDirty = true;
+  // Reset match-distribution counters per generation so the panel
+  // reflects CURRENT training quality (like `cur top` / `cur avg`),
+  // not a lifetime-since-reset average dominated by early bad gens.
+  state.matchCounts = { total: 0, zeroZero: 0, nonzeroDraw: 0, decisive: 0, blowout: 0 };
   schedulePersist();
   return true;
 }

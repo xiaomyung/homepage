@@ -77,6 +77,8 @@ CREATE TABLE IF NOT EXISTS brains (
     weights         TEXT    NOT NULL,
     pop_matches     INTEGER NOT NULL DEFAULT 0,
     pop_goal_diff   REAL    NOT NULL DEFAULT 0,
+    pop_wins        INTEGER NOT NULL DEFAULT 0,
+    pop_draws       INTEGER NOT NULL DEFAULT 0,
     fallback_matches INTEGER NOT NULL DEFAULT 0,
     fallback_wins   INTEGER NOT NULL DEFAULT 0,
     fallback_draws  INTEGER NOT NULL DEFAULT 0,
@@ -168,7 +170,23 @@ const state = {
   runtimeMsTotal: 0,
   runtimeActiveStart: null,
   runtimeLastPostAt: null,
+  // Session-wide match-outcome counters since last reset. Cheap O(1)
+  // per match so we can show the user "how does training look right
+  // now" as percentages in the stats panel.
+  matchCounts: {
+    total: 0,
+    zeroZero: 0,      // final 0-0
+    nonzeroDraw: 0,   // 1-1, 2-2, ...
+    decisive: 0,      // winner, |diff| < BLOWOUT_THRESHOLD
+    blowout: 0,       // |diff| >= BLOWOUT_THRESHOLD
+  },
 };
+
+// Goal-diff threshold for classifying a match as a blowout. Training
+// matches are headless (no WIN_SCORE cap) so goal_diff can realistically
+// reach the 20s in an evolved-vs-weak pairing — 10 is a sane "the
+// losing side never contested" cutoff.
+const BLOWOUT_THRESHOLD = 10;
 
 // Gap between consecutive /results POSTs beyond which the broker
 // treats the training window as closed. Under normal load POSTs
@@ -193,6 +211,24 @@ let db = null;
 function openDb() {
   db = new DatabaseSync(DB_PATH);
   db.exec(SCHEMA_SQL);
+  migrateSchema();
+}
+
+/** Forward-only migrations for live deployments whose DB was created
+ *  by an older schema. ALTER TABLE ... ADD COLUMN is idempotent under
+ *  a try/catch because SQLite has no IF NOT EXISTS for columns. */
+function migrateSchema() {
+  const alters = [
+    'ALTER TABLE brains ADD COLUMN pop_wins  INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE brains ADD COLUMN pop_draws INTEGER NOT NULL DEFAULT 0',
+  ];
+  for (const sql of alters) {
+    try { db.exec(sql); }
+    catch (err) {
+      // "duplicate column" means the column already exists — fine.
+      if (!/duplicate column/i.test(String(err?.message || err))) throw err;
+    }
+  }
 }
 
 function loadConfig() {
@@ -266,6 +302,7 @@ function loadPopulation() {
   if (maxGen === 0) return [];
   const rows = db.prepare(
     `SELECT id, name, weights, pop_matches, pop_goal_diff,
+            pop_wins, pop_draws,
             fallback_matches, fallback_wins, fallback_draws,
             fitness, is_frozen_seed
      FROM brains
@@ -284,6 +321,8 @@ function loadPopulation() {
       _weightsJson: weightsJson,
       popMatches: r.pop_matches,
       popGoalDiff: r.pop_goal_diff,
+      popWins: r.pop_wins,
+      popDraws: r.pop_draws,
       fallbackMatches: r.fallback_matches,
       fallbackWins: r.fallback_wins,
       fallbackDraws: r.fallback_draws,
@@ -297,10 +336,10 @@ function savePopulation(generation) {
   const ins = db.prepare(
     `INSERT INTO brains (
         id, generation, name, weights,
-        pop_matches, pop_goal_diff,
+        pop_matches, pop_goal_diff, pop_wins, pop_draws,
         fallback_matches, fallback_wins, fallback_draws,
         fitness, is_frozen_seed
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   db.exec('BEGIN');
   try {
@@ -308,7 +347,7 @@ function savePopulation(generation) {
     for (const b of state.population) {
       ins.run(
         b.id, generation, b.name, getWeightsJson(b),
-        b.popMatches, b.popGoalDiff,
+        b.popMatches, b.popGoalDiff, b.popWins ?? 0, b.popDraws ?? 0,
         b.fallbackMatches, b.fallbackWins, b.fallbackDraws,
         b.fitness, b.isFrozenSeed ? 1 : 0,
       );
@@ -341,6 +380,8 @@ function newBrain(id, weights, isFrozenSeed = false) {
     _weightsJson: null,
     popMatches: base.popMatches ?? 0,
     popGoalDiff: base.popGoalDiff ?? 0,
+    popWins: base.popWins ?? 0,
+    popDraws: base.popDraws ?? 0,
     fallbackMatches: base.fallbackMatches ?? 0,
     fallbackWins: base.fallbackWins ?? 0,
     fallbackDraws: base.fallbackDraws ?? 0,
@@ -453,7 +494,6 @@ function fitnessWeightsFromConfig(cfg) {
   return makeFitnessWeights({
     wPop: cfg.fitness_w_pop,
     wFallback: cfg.fitness_w_fallback,
-    maxGoalDiff: cfg.fitness_max_goal_diff,
   });
 }
 
@@ -650,7 +690,17 @@ function recordResult(result) {
     p1.popGoalDiff += diff;
     p2.popMatches += 1;
     p2.popGoalDiff -= diff;
+    if (goalsP1 > goalsP2)      { p1.popWins += 1; }
+    else if (goalsP1 < goalsP2) { p2.popWins += 1; }
+    else                        { p1.popDraws += 1; p2.popDraws += 1; }
   }
+
+  // Session-wide match-ending distribution counters. Per-match O(1).
+  state.matchCounts.total += 1;
+  if (goalsP1 === 0 && goalsP2 === 0)           state.matchCounts.zeroZero += 1;
+  else if (goalsP1 === goalsP2)                 state.matchCounts.nonzeroDraw += 1;
+  else if (Math.abs(diff) >= BLOWOUT_THRESHOLD) state.matchCounts.blowout += 1;
+  else                                          state.matchCounts.decisive += 1;
 
   state.totalMatches += 1;
   state.fitnessDirty = true;
@@ -791,6 +841,9 @@ function handleStats(req, res) {
   }
   const avg = pop.length > 0 ? sum / pop.length : 0;
   if (!isFinite(top)) top = 0;
+  const mc = state.matchCounts;
+  const mcTotal = mc.total;
+  const pct = (n) => mcTotal > 0 ? n / mcTotal : 0;
   json(res, 200, {
     generation: state.generation,
     population: pop.length,
@@ -799,6 +852,13 @@ function handleStats(req, res) {
     total_matches: state.totalMatches,
     fallback_win_rate: fbMatches > 0 ? fbWins / fbMatches : 0,
     runtime_ms: runtimeNowMs(),
+    match_distribution: {
+      total:           mcTotal,
+      zero_zero_rate:  pct(mc.zeroZero),
+      nonzero_draw_rate: pct(mc.nonzeroDraw),
+      decisive_rate:   pct(mc.decisive),
+      blowout_rate:    pct(mc.blowout),
+    },
   });
 }
 
@@ -904,6 +964,7 @@ function seedPopulationFromWeights(seedWeights) {
   state.runtimeMsTotal = 0;
   state.runtimeActiveStart = null;
   state.runtimeLastPostAt = null;
+  state.matchCounts = { total: 0, zeroZero: 0, nonzeroDraw: 0, decisive: 0, blowout: 0 };
   refreshPopulationIndex();
 }
 

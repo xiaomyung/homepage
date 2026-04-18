@@ -182,6 +182,10 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
     pop: document.getElementById('stat-pop'),
     mut: document.getElementById('stat-mut'),
     fbwr: document.getElementById('stat-fbwr'),
+    zerozero: document.getElementById('stat-zerozero'),
+    draws: document.getElementById('stat-draws'),
+    decisive: document.getElementById('stat-decisive'),
+    blowout: document.getElementById('stat-blowout'),
   };
 
   let simsPerSec = 0;
@@ -213,6 +217,12 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
       el.matches.textContent = stats.total_matches;
       el.pop.textContent = stats.population;
       el.fbwr.textContent = `${(stats.fallback_win_rate * 100).toFixed(1)}%`;
+      const md = stats.match_distribution;
+      const pctTxt = (r) => md && md.total > 0 ? `${(r * 100).toFixed(1)}%` : '—';
+      if (el.zerozero) el.zerozero.textContent = pctTxt(md?.zero_zero_rate);
+      if (el.draws)    el.draws.textContent    = pctTxt(md?.nonzero_draw_rate);
+      if (el.decisive) el.decisive.textContent = pctTxt(md?.decisive_rate);
+      if (el.blowout)  el.blowout.textContent  = pctTxt(md?.blowout_rate);
       // `runtime_ms` is the broker-authoritative cumulative active
       // training time since the last reset — shared across tabs and
       // devices, persisted across broker restarts and page reloads.

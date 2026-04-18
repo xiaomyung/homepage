@@ -1,8 +1,9 @@
 /**
- * Unit tests for the tanh-normalised fitness on the pop axis.
- * Replaced the hard-clamped `avgDiff / maxGoalDiff` with
- * `tanh(avgDiff / k)` so nil-nil draws don't divide by zero and
- * blowouts saturate smoothly.
+ * Fitness is now a plain weighted win-rate blend:
+ *   pop_win_rate = (pop_wins + 0.5 * pop_draws) / pop_matches
+ *   fb_win_rate  = (fb_wins  + 0.5 * fb_draws)  / fb_matches
+ *   fitness      = wPop * pop_win_rate + wFallback * fb_win_rate
+ * No tanh, no goal-diff normalisation.
  */
 
 import { test } from 'node:test';
@@ -15,6 +16,8 @@ import {
 function brain(overrides = {}) {
   return {
     popMatches: 0,
+    popWins: 0,
+    popDraws: 0,
     popGoalDiff: 0,
     fallbackMatches: 0,
     fallbackWins: 0,
@@ -23,59 +26,64 @@ function brain(overrides = {}) {
   };
 }
 
-const W = makeFitnessWeights({ wPop: 0.5, wFallback: 0.5, goalDiffScale: 2 });
+const W = makeFitnessWeights({ wPop: 0.5, wFallback: 0.5 });
 
 test('no matches played → fitness 0', () => {
   assert.equal(computeFitness(brain(), W), 0);
 });
 
-test('zero goal diff (draw) → pop axis 0.5 (not NaN)', () => {
-  const b = brain({ popMatches: 10, popGoalDiff: 0 });
+test('pop wins and draws count on the pop axis', () => {
+  const b = brain({ popMatches: 10, popWins: 7, popDraws: 2 });
+  // pop_win_rate = (7 + 0.5*2) / 10 = 0.8. fb axis missing → neutral 0.5.
   const f = computeFitness(b, W);
-  // Only pop axis has data; fb axis falls back to 0.5. Both 0.5 → total 0.5.
-  assert.equal(f, 0.5 * 0.5 + 0.5 * 0.5);
-  assert.ok(Number.isFinite(f));
+  assert.equal(f, 0.5 * 0.8 + 0.5 * 0.5);
 });
 
-test('narrow positive lead produces positive signal', () => {
-  const b = brain({ popMatches: 10, popGoalDiff: 5 });  // avg 0.5 per match
-  const f = computeFitness(b, W);
-  // tanh(0.5/2) ≈ 0.245 → popScore ≈ 0.622. Total = 0.5*0.622 + 0.5*0.5 ≈ 0.561.
-  assert.ok(f > 0.55 && f < 0.58, `expected ~0.56, got ${f}`);
+test('pop stalemate (all draws) lands at 0.5 on pop axis', () => {
+  const b = brain({ popMatches: 10, popDraws: 10 });
+  const popOnlyW = makeFitnessWeights({ wPop: 1, wFallback: 0 });
+  assert.equal(computeFitness(b, popOnlyW), 0.5);
 });
 
-test('symmetric negative lead lands below 0.5', () => {
-  const b = brain({ popMatches: 10, popGoalDiff: -5 });
-  const f = computeFitness(b, W);
-  assert.ok(f < 0.45 && f > 0.42, `expected ~0.44, got ${f}`);
+test('pop all losses lands at 0 on pop axis', () => {
+  const b = brain({ popMatches: 10 });
+  const popOnlyW = makeFitnessWeights({ wPop: 1, wFallback: 0 });
+  assert.equal(computeFitness(b, popOnlyW), 0);
 });
 
-test('blowout saturates toward 1 on pop axis without clipping artifacts', () => {
-  const big = computeFitness(brain({ popMatches: 10, popGoalDiff: 100 }), W);
-  const huge = computeFitness(brain({ popMatches: 10, popGoalDiff: 1000 }), W);
-  // Both should be within ε of the same value because tanh saturates.
-  // tanh(5) vs tanh(50) is a ~4e-5 gap in popScore; wPop=0.5 halves it.
-  assert.ok(Math.abs(big - huge) < 1e-4, `blowout mismatch: big=${big} huge=${huge}`);
+test('pop all wins lands at 1 on pop axis', () => {
+  const b = brain({ popMatches: 10, popWins: 10 });
+  const popOnlyW = makeFitnessWeights({ wPop: 1, wFallback: 0 });
+  assert.equal(computeFitness(b, popOnlyW), 1);
 });
 
-test('k=2 scaling: one-goal lead maps to tanh(0.5)-range signal', () => {
-  // popGoalDiff of 1 per match → avg 1 → tanh(0.5) ≈ 0.462 → popScore ≈ 0.731.
-  const b = brain({ popMatches: 10, popGoalDiff: 10 });
-  const popOnlyW = makeFitnessWeights({ wPop: 1, wFallback: 0, goalDiffScale: 2 });
-  const f = computeFitness(b, popOnlyW);
-  assert.ok(Math.abs(f - ((Math.tanh(0.5) + 1) / 2)) < 1e-10);
+test('fallback axis independent of pop axis', () => {
+  const b = brain({ fallbackMatches: 10, fallbackWins: 8, fallbackDraws: 1 });
+  const fbOnlyW = makeFitnessWeights({ wPop: 0, wFallback: 1 });
+  // (8 + 0.5*1) / 10 = 0.85
+  assert.equal(computeFitness(b, fbOnlyW), 0.85);
 });
 
-test('legacy maxGoalDiff keyword is accepted as the scale', () => {
-  const wLegacy = makeFitnessWeights({ wPop: 1, wFallback: 0, maxGoalDiff: 2 });
-  const wNew    = makeFitnessWeights({ wPop: 1, wFallback: 0, goalDiffScale: 2 });
-  const b = brain({ popMatches: 10, popGoalDiff: 10 });
-  assert.equal(computeFitness(b, wLegacy), computeFitness(b, wNew));
+test('mixed data: blended axes', () => {
+  const b = brain({
+    popMatches: 10, popWins: 4, popDraws: 2,                  // 0.5
+    fallbackMatches: 10, fallbackWins: 10, fallbackDraws: 0,  // 1.0
+  });
+  assert.equal(computeFitness(b, W), 0.5 * 0.5 + 0.5 * 1.0);
 });
 
-test('fallback axis alone maps wins to score', () => {
-  const b = brain({ fallbackMatches: 10, fallbackWins: 7, fallbackDraws: 2 });
-  const fbOnlyW = makeFitnessWeights({ wPop: 0, wFallback: 1, goalDiffScale: 2 });
-  // (7 + 0.5*2) / 10 = 0.8
-  assert.equal(computeFitness(b, fbOnlyW), 0.8);
+test('absent axis uses 0.5 neutral', () => {
+  // fallback only
+  const b = brain({ fallbackMatches: 10, fallbackWins: 10 });
+  assert.equal(computeFitness(b, W), 0.5 * 0.5 + 0.5 * 1.0);
+});
+
+test('fitness bounded in [0, 1]', () => {
+  const worst = computeFitness(brain({ popMatches: 10, fallbackMatches: 10 }), W);
+  const best = computeFitness(brain({
+    popMatches: 10, popWins: 10,
+    fallbackMatches: 10, fallbackWins: 10,
+  }), W);
+  assert.equal(worst, 0);
+  assert.equal(best, 1);
 });

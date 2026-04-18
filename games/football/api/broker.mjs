@@ -685,36 +685,35 @@ function pickShowcase() {
   return { mode: 'recent', p1: brainView(a), p2: brainView(b) };
 }
 
-/** Pick a recent match with ≥1 goal from the ring buffer. Rotate
- *  between fallback-mode and brain-vs-brain so both showcase styles
- *  surface. Only current-generation entries are eligible — stale
- *  pre-breed entries are ignored (brain ids got new weights at the
- *  breed, so replaying the old seed against the new weights would
- *  be non-deterministic). Returns `null` if no suitable match. */
+/** Pick a recent match with ≥1 goal from the ring buffer. Each
+ *  entry carries its own weights snapshot so the replay works even
+ *  after breeds have rotated the population's brain ids. Rotates
+ *  between fallback-mode and brain-vs-brain so both styles surface.
+ *  Returns `null` only when the buffer is empty. */
 function pickInterestingReplay() {
   const buf = state.interestingMatches;
   if (buf.length === 0) return null;
-  const byId = state.populationById;
-  const curGen = state.generation;
   const wantFallback = state.showcaseCounter % SHOWCASE_FALLBACK_EVERY_N === 0;
+
+  const snapView = (snap) => ({
+    id: snap.id,
+    name: snap.name,
+    weights: JSON.parse(snap.weights),  // weights stored as JSON string
+  });
 
   const tryPick = (requireMode) => {
     for (let i = buf.length - 1; i >= 0; i--) {
       const m = buf[i];
-      if (m.generation !== curGen) continue;   // stale — belongs to a prior gen
-      const p1 = byId[m.p1_id];
-      if (!p1) continue;
-      const isFb = m.p2_id == null;
+      const isFb = m.p2 == null;
       if (requireMode === 'fallback' && !isFb) continue;
       if (requireMode === 'recent' && isFb) continue;
-      if (isFb) {
-        return { mode: 'vs_fallback', p1: brainView(p1), p2: null,
-                 seed: m.seed, preview_score: [m.goals_p1, m.goals_p2] };
-      }
-      const p2 = byId[m.p2_id];
-      if (!p2) continue;
-      return { mode: 'recent', p1: brainView(p1), p2: brainView(p2),
-               seed: m.seed, preview_score: [m.goals_p1, m.goals_p2] };
+      return {
+        mode: isFb ? 'vs_fallback' : 'recent',
+        p1: snapView(m.p1),
+        p2: isFb ? null : snapView(m.p2),
+        seed: m.seed,
+        preview_score: [m.goals_p1, m.goals_p2],
+      };
     }
     return null;
   };
@@ -758,23 +757,25 @@ function recordResult(result) {
   else                                          state.matchCounts.decisive += 1;
 
   // Remember non-stalemate matches with their seeds so /showcase
-  // can replay a known-interesting match visually. Tag each entry
-  // with the generation so a post-breed pick can ignore obsolete
-  // pairings without needing to drop the whole buffer (draining it
-  // at every breed left the first ~1 s of every generation falling
-  // back to the blind brain-pair picker).
+  // can replay a known-interesting match visually. Snapshot the
+  // weights and names AT THE TIME OF THE MATCH so replay survives
+  // breeding — brain ids get new weights at every breed, so a bare
+  // (id, seed) pair would decouple from the exact policy that
+  // produced the goals.
   const seed = Number.isFinite(result.seed) ? result.seed >>> 0 : null;
   if (seed !== null && (goalsP1 + goalsP2) > 0) {
-    state.interestingMatches.push({
-      generation: state.generation,
-      p1_id: result.p1_id,
-      p2_id: result.p2_id ?? null,  // null = vs fallback
-      seed,
-      goals_p1: goalsP1,
-      goals_p2: goalsP2,
-    });
-    if (state.interestingMatches.length > INTERESTING_CAP) {
-      state.interestingMatches.shift();
+    const p2 = result.p2_id != null ? byId[result.p2_id] : null;
+    if (!result.p2_id || p2) {
+      state.interestingMatches.push({
+        p1: { id: p1.id, name: p1.name, weights: getWeightsJson(p1) },
+        p2: p2 ? { id: p2.id, name: p2.name, weights: getWeightsJson(p2) } : null,
+        seed,
+        goals_p1: goalsP1,
+        goals_p2: goalsP2,
+      });
+      if (state.interestingMatches.length > INTERESTING_CAP) {
+        state.interestingMatches.shift();
+      }
     }
   }
 

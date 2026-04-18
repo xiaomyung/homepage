@@ -206,28 +206,44 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
     return `${m}:${ss}`;
   }
 
+  // Sticky-text setter: update only if we actually have a value.
+  // Leaves the DOM untouched (i.e., shows the last-good number) when
+  // `value` is null/undefined. Previous logic collapsed "no data yet
+  // this gen" into a '—' placeholder that flickered every time the
+  // generation rolled over.
+  function setIf(node, value) {
+    if (!node) return;
+    if (value != null) node.textContent = value;
+  }
+
   async function pollStats() {
     try {
       const res = await fetch(`${apiBase}/stats`);
       if (!res.ok) return;
       const stats = await res.json();
-      el.gen.textContent = stats.generation;
-      el.avg.textContent = stats.avg_fitness.toFixed(3);
-      el.top.textContent = stats.top_fitness.toFixed(3);
-      el.matches.textContent = stats.total_matches;
-      el.pop.textContent = stats.population;
-      el.fbwr.textContent = `${(stats.fallback_win_rate * 100).toFixed(1)}%`;
+      setIf(el.gen, stats.generation);
+      setIf(el.avg, Number.isFinite(stats.avg_fitness) ? stats.avg_fitness.toFixed(3) : null);
+      setIf(el.top, Number.isFinite(stats.top_fitness) ? stats.top_fitness.toFixed(3) : null);
+      setIf(el.matches, stats.total_matches);
+      setIf(el.pop, stats.population);
+      setIf(el.fbwr, Number.isFinite(stats.fallback_win_rate)
+        ? `${(stats.fallback_win_rate * 100).toFixed(1)}%`
+        : null);
       const md = stats.match_distribution;
-      const pctTxt = (r) => md && md.total > 0 ? `${(r * 100).toFixed(1)}%` : '—';
-      if (el.zerozero) el.zerozero.textContent = pctTxt(md?.zero_zero_rate);
-      if (el.draws)    el.draws.textContent    = pctTxt(md?.nonzero_draw_rate);
-      if (el.decisive) el.decisive.textContent = pctTxt(md?.decisive_rate);
-      if (el.blowout)  el.blowout.textContent  = pctTxt(md?.blowout_rate);
-      // `runtime_ms` is the broker-authoritative cumulative active
-      // training time since the last reset — shared across tabs and
-      // devices, persisted across broker restarts and page reloads.
-      if (typeof stats.runtime_ms === 'number' && el.runtime) {
-        el.runtime.textContent = formatRuntime(stats.runtime_ms);
+      // Only update match-distribution cells when we actually have a
+      // match this generation. During the brief window between a
+      // breed and the first new-gen /results POST, `md.total` is 0;
+      // we leave the previous percentages visible instead of blanking
+      // to '—'.
+      if (md && md.total > 0) {
+        const pctTxt = (r) => `${(r * 100).toFixed(1)}%`;
+        setIf(el.zerozero, pctTxt(md.zero_zero_rate));
+        setIf(el.draws,    pctTxt(md.nonzero_draw_rate));
+        setIf(el.decisive, pctTxt(md.decisive_rate));
+        setIf(el.blowout,  pctTxt(md.blowout_rate));
+      }
+      if (typeof stats.runtime_ms === 'number') {
+        setIf(el.runtime, formatRuntime(stats.runtime_ms));
       }
     } catch {
       /* ignore network blips */
@@ -239,7 +255,7 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
       const res = await fetch(`${apiBase}/config`);
       if (!res.ok) return;
       const cfg = await res.json();
-      el.mut.textContent = cfg.mutation_rate.toFixed(2);
+      setIf(el.mut, Number.isFinite(cfg.mutation_rate) ? cfg.mutation_rate.toFixed(2) : null);
     } catch {
       /* ignore */
     }

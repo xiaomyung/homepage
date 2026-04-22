@@ -15,7 +15,6 @@
 
 import * as THREE from 'https://unpkg.com/three@0.164.0/build/three.module.js';
 import {
-  STAMINA_FLOOR,
   staminaDiscRadius,
   updateStaminaClipPlane,
 } from './renderer-math.js';
@@ -23,26 +22,39 @@ import {
   createField,
   FIELD_HEIGHT,
   FIELD_WIDTH_REF,
+  BALL_RADIUS,
+  GOAL_POST_RADIUS,
   KICK_WINDUP_MS,
   KICK_DURATION_MS,
   AIRKICK_MS,
   AIRKICK_PEAK_FRAC,
-  Z_STRETCH as PHYSICS_Z_STRETCH,
-} from './physics.js?v=46';
-
-// Physics field depth (42) is ~21× narrower than its width (900); stretch
-// render-space z so the field fills more of the canvas vertically. Re-
-// exported from physics.js as PHYSICS_Z_STRETCH; assertion below guards
-// against accidental drift between the two copies.
-const Z_STRETCH = 4.7;
-if (PHYSICS_Z_STRETCH !== Z_STRETCH) {
-  throw new Error(`Z_STRETCH drift: renderer ${Z_STRETCH} vs physics ${PHYSICS_Z_STRETCH}`);
-}
+  PLAYER_WIDTH,
+  Z_STRETCH,
+  STICKMAN_GLYPH_SIZE,
+  STICKMAN_SHOULDER_OFX,
+  STICKMAN_SHOULDER_OFY,
+  STICKMAN_HIP_OFX,
+  STICKMAN_HEAD_GAP_Y,
+  STICKMAN_LIMB_FULL_H,
+  STICKMAN_UPPER_LEG,
+  STICKMAN_LOWER_LEG,
+  STICKMAN_UPPER_ARM,
+  STICKMAN_LOWER_ARM,
+  STICKMAN_TORSO_RADIUS,
+  STICKMAN_HEAD_RADIUS,
+  STICKMAN_LEG_RADIUS,
+  STICKMAN_UPPER_ARM_RADIUS,
+  STICKMAN_LOWER_ARM_RADIUS,
+  kickLegPose,
+  pushArmPose,
+} from './physics.js';
 
 // Small margin so field edges don't touch the canvas boundary.
 const HORIZONTAL_MARGIN = 1.15;
 
-const STICKMAN_GLYPH_SIZE = 22;
+// Rig proportions (STICKMAN_GLYPH_SIZE, SHOULDER/HIP offsets, LIMB_FULL_H,
+// TORSO/HEAD/LEG/ARM radii) come from physics.js so the ball-body
+// collider and the rendered silhouette can't drift apart.
 // Per-frame LPF coefficient for smoothing animation state (tilt, amplitude).
 // ~0.15 → time constant ≈ 100ms at 60 fps.
 const STICKMAN_SMOOTH = 0.15;
@@ -51,47 +63,68 @@ const STICKMAN_SMOOTH = 0.15;
 const STICKMAN_RUN_THRESHOLD = 1.2;
 const STICKMAN_TILT_PER_SPEED = 0.09;
 const STICKMAN_TILT_MAX = 0.45;
-// Body-local glyph offsets, pre-multiplied by STICKMAN_GLYPH_SIZE so the
-// hot path does zero multiplies to materialise them. All measured from
-// the hip center, which is itself placed at hipBaseY = 0.10 * s + bob.
-const STICKMAN_SHOULDER_OFX = 0.216 * STICKMAN_GLYPH_SIZE;
-const STICKMAN_SHOULDER_OFY = 0.92 * STICKMAN_GLYPH_SIZE;
-const STICKMAN_HIP_OFX      = 0.12 * STICKMAN_GLYPH_SIZE;
-const STICKMAN_HEAD_GAP_Y   = 0.13041 * STICKMAN_GLYPH_SIZE;
-const STICKMAN_LIMB_HALF_H  = 0.45 * STICKMAN_GLYPH_SIZE;
-const STICKMAN_LIMB_FULL_H  = STICKMAN_LIMB_HALF_H * 2;
-// Thickness of the stickman's 3D pipe parts, in world units.
-const STICKMAN_LEG_RADIUS   = 2.2;
-// Arms are thinner than legs — 20% reduction from the leg radius.
-const STICKMAN_ARM_RADIUS   = STICKMAN_LEG_RADIUS * 0.8;
-const STICKMAN_TORSO_RADIUS = 3.3;
 // Stamina fill capsule is inset inside the outline shell, creating a
 // visible "shell wall" (the outline appears thicker inward while the
 // outer silhouette is unchanged). Delta is in world units.
 const STICKMAN_TORSO_SHELL_THICKNESS = 1.0;
 const STICKMAN_TORSO_FILL_RADIUS = STICKMAN_TORSO_RADIUS - STICKMAN_TORSO_SHELL_THICKNESS;
-const STICKMAN_HEAD_RADIUS  = 4.0;
-const STICKMAN_FIST_RADIUS  = 3.0;
-// Sphere pool for heads + push fists: 1 head + up to 2 fists per
-// stickman × 2 stickmen + spare. (Torso and limb pools are sized
-// inline alongside their geometries.)
-const STICKMAN_SPH_POOL     = 8;
+// Joint spheres — a small bump at each hinge. Slightly under the
+// shaft radius so they read as joint detail, not a growth.
+const STICKMAN_KNEE_RADIUS  = STICKMAN_LEG_RADIUS * 0.92;
+const STICKMAN_ELBOW_RADIUS = STICKMAN_LOWER_ARM_RADIUS * 0.92;
+// Sphere pool: 1 head + 2 elbows + 2 knees per stickman × 2 stickmen = 10
+// for upper-body, plus 2 knees per stickman × 2 stickmen = 4 for
+// knees, plus a spare. (Torso and limb pools are sized inline
+// alongside their geometries.)
+const STICKMAN_SPH_POOL     = 12;
 const TWO_PI = Math.PI * 2;
+
+// Shin's world-space swing angle given the thigh's. Mild "follow-
+// through" curve: shin tracks 1 − `flex` of the thigh's angle where
+// `flex` grows with the thigh's swing magnitude, capped at 0.5. So
+// a straight-down thigh gives a straight-down shin (no bend at rest),
+// a forward-swinging thigh gets a knee that bends +forward, and a
+// backward-swinging push-off thigh also bends the knee +forward —
+// knees only hinge one way, just like real ones. Applies to walk,
+// idle, and celebrate poses; the kicking leg's shin comes from real
+// 2-bone IK in `kickLegPose` instead.
+const STICKMAN_KNEE_FLEX_MAX   = 0.5;
+const STICKMAN_KNEE_FLEX_SLOPE = 0.4;
+function shinAngleFor(thighAngle) {
+  const flex = Math.min(STICKMAN_KNEE_FLEX_MAX, STICKMAN_KNEE_FLEX_SLOPE * Math.abs(thighAngle));
+  return thighAngle * (1 - flex);
+}
+
+// Elbow flex for the forearm during cosmetic (non-IK) arm swings.
+// Peaks at `|angle| = π/2` (arms horizontal — mid-swing or punching
+// forward) and smoothly tapers to zero at both `0` (neutral, arms
+// at rest) and `±π` (celebrate — arms straight overhead). The walk
+// anim uses small angles in the linear zone; celebrate reaches the
+// other zero so arms read as fully extended, not crumpled.
+// The punch pose is scripted per-variant in `pushArmPose`, not this curve.
+const STICKMAN_ELBOW_FLEX_MAX = 0.45;
+function forearmAngleFor(upperArmAngle) {
+  const mag = Math.min(Math.abs(upperArmAngle), Math.PI);
+  const flex = STICKMAN_ELBOW_FLEX_MAX * Math.sin(mag);
+  return upperArmAngle * (1 - flex);
+}
 
 // Celebration pose — jumping-jack with arms straight up.
 const CELEB_PHASE_RATE = 0.25;           // rad per tick; ~25 ticks per hop
 const CELEB_JUMP_PEAK  = 0.55 * STICKMAN_GLYPH_SIZE;
 const CELEB_LEG_SPREAD = 0.55;           // leg outward angle at jump apex (rad)
-// Push pose — a spring-loaded boxing-glove jab. Animation is driven
-// directly by `anim.pushProgress` (ticks since pushTimer went positive);
-// the scripted curves return both arm angle and pivot shift per phase.
+// Push pose — a one-armed boxing punch (jab / hook / uppercut).
+// The striking arm follows a variant-specific keyframe trajectory
+// in `pushArmPose` (physics.js). These scripted curves drive the
+// SUPPORTING body english (crouch / tilt / hop / pivot) — they
+// animate the non-striking side of the rig only.
 // Phases over normalized progress t ∈ [0, 1]:
-//   [0,        RAISE_T]     raise:   arms rotate 0 → π/2, pivot 0
-//   [RAISE_T,  WINDUP_T]    windup:  arms horizontal, pivot slides 0 → -WINDUP_DIST
-//   [WINDUP_T, STRIKE_T]    strike:  arms horizontal, pivot snaps -WINDUP → +STRIKE (explosive)
-//   [STRIKE_T, SETTLE_T]    settle:  arms horizontal, pivot +STRIKE → 0
-//   [SETTLE_T, LOWER_T]     hold:    arms horizontal, pivot 0
-//   [LOWER_T,  1]           lower:   arms rotate π/2 → 0, pivot 0
+//   [0,        RAISE_T]     raise:   body inits, pivot 0
+//   [RAISE_T,  WINDUP_T]    windup:  pivot slides 0 → -WINDUP_DIST
+//   [WINDUP_T, STRIKE_T]    strike:  pivot snaps -WINDUP → +STRIKE (explosive hop)
+//   [STRIKE_T, SETTLE_T]    settle:  pivot +STRIKE → 0
+//   [SETTLE_T, LOWER_T]     hold:    pivot 0
+//   [LOWER_T,  1]           lower:   body returns to neutral
 const PUSH_TOTAL_TICKS    = 18;             // matches physics PUSH_ANIM_MS (300ms / TICK_MS)
 const PUSH_RAISE_T        = 0.15;
 const PUSH_WINDUP_T       = 0.35;
@@ -99,57 +132,45 @@ const PUSH_STRIKE_T       = 0.50;
 const PUSH_SETTLE_T       = 0.70;
 const PUSH_LOWER_T        = 0.85;
 const PUSH_WINDUP_DIST    = 0.70 * STICKMAN_GLYPH_SIZE;  // pivot pull-back
-const PUSH_STRIKE_DIST    = 0.55 * STICKMAN_GLYPH_SIZE;  // pivot launch past shoulder
 const PUSH_CROUCH_DEPTH   = 0.30 * STICKMAN_GLYPH_SIZE;  // upper body dip during windup
 const PUSH_HOP_DIST       = 0.40 * STICKMAN_GLYPH_SIZE;  // whole body hop on strike
-const PUSH_FIST_PULSE     = 0.35;                        // fist grows to (1 + pulse)× at strike peak
-const PUSH_EXTEND_ANGLE   = Math.PI * 0.5;
-const PUSH_FIST_SIZE      = 0.65 * STICKMAN_GLYPH_SIZE;
 const PUSH_BACK_TILT      = 0.28;                        // rad — body leans back during windup
 const PUSH_FWD_TILT       = 0.42;                        // rad — body leans forward on strike
 
-// Kick pose — a windup → whip-through → follow-through curve on the
-// kicking leg, with a counter-balance arm swing and a small body
-// dip/lean. Animation is driven by `player.kick.timer` read directly
-// from the physics state.
-//
-// Phases over normalized progress t ∈ [0, 1] for a ground kick:
-//   [0,         KICK_FIRE_T]    windup:   kicking leg rotates 0 → KICK_WINDUP_ANGLE
-//                                         (behind the player, loading the swing)
-//   [KICK_FIRE_T, KICK_STRIKE_END_T]  strike: leg whips through
-//                                         KICK_WINDUP_ANGLE → KICK_STRIKE_ANGLE
-//                                         (explosive, short window)
-//   [KICK_STRIKE_END_T, 1]      recovery: leg eases back to 0
-//
-// KICK_FIRE_T is the physics fire fraction — impact is applied at
-// this exact point in the animation so ball launch and foot contact
-// are visually synchronised.
+// Kick body-english cosmetics. The leg pose itself is IK'd by
+// `kickLegPose` from physics.js (target = ball); what's here are
+// the counter-balance arm swing, body dip, and back/forward tilt
+// that sell the weight transfer. `KICK_FIRE_T` / `KICK_STRIKE_END_T`
+// gate the arm / dip / tilt curves on normalized t ∈ [0, 1].
 const KICK_FIRE_T         = KICK_WINDUP_MS / KICK_DURATION_MS;
 const KICK_STRIKE_SPAN_T  = 0.15;
 const KICK_STRIKE_END_T   = Math.min(0.95, KICK_FIRE_T + KICK_STRIKE_SPAN_T);
-const KICK_WINDUP_ANGLE   = -Math.PI * 0.28;             // rad — leg rotated behind body
-const KICK_STRIKE_ANGLE   =  Math.PI * 0.55;             // rad — foot past vertical forward
 const KICK_ARM_SWING      =  Math.PI * 0.45;             // rad — counter-arm forward throw
 const KICK_ARM_OPP_FRAC   = 0.35;                        // same-side arm small back-swing
 const KICK_BACK_TILT      = 0.12;                        // rad — body lean back during windup
 const KICK_FWD_TILT       = 0.22;                        // rad — body lean forward on strike
 const KICK_CROUCH_DEPTH   = 0.12 * STICKMAN_GLYPH_SIZE;  // body dip during windup
 
-// Airkick: the player leaps (player.airZ supplies the world-y lift)
-// and the leg swings through a steeper arc. Fire point comes from
-// physics.AIRKICK_PEAK_FRAC so the visual strike syncs with the
-// moment the physics applies force to the ball.
+// Airkick body cosmetics. The leap lifts the figure via
+// `player.airZ`; the leg itself comes from IK. Tilt is a long back-
+// lean that holds through the strike window.
 const AIRKICK_STRIKE_SPAN_T = 0.20;
 const AIRKICK_STRIKE_END_T = Math.min(0.95, AIRKICK_PEAK_FRAC + AIRKICK_STRIKE_SPAN_T);
-const AIRKICK_WINDUP_ANGLE = -Math.PI * 0.22;            // smaller windup, more time in the air
-const AIRKICK_STRIKE_ANGLE =  Math.PI * 0.80;            // foot near horizontal-forward (bicycle kick)
-const AIRKICK_BACK_TILT    = 0.55;                        // rad — body leans way back on volley
-// Visual radius of the 3D ball sphere, in world units. Physics
-// BALL_RADIUS is bumped alongside this so the hitbox scales with the
-// visual; visual is still larger than the physics hitbox for
-// readability, same tradeoff as the stickman glyph being bigger
-// than PLAYER_WIDTH.
-const BALL_VISUAL_RADIUS = 4.224;
+const AIRKICK_BACK_TILT    = 0.55;                       // rad — body leans way back on volley
+
+// Whole-body kick motion: pelvis twists around the vertical axis
+// (right hip pulls back through windup, snaps forward on strike);
+// the planted (support) leg bends slightly during strike to absorb
+// the reaction force.
+const KICK_HIP_TWIST_MAX  = Math.PI * 0.11;              // ~20° at windup peak
+const KICK_SUPPORT_CROUCH = 0.2;                          // rad — upper-leg forward on support
+// Shin/thigh ratio for the knee-out crouch: with `lowerAngle = -N·upperAngle`
+// (for U=L legs) the foot lands directly under the hip when N=2. Keeps the
+// foot planted while the knee pokes forward.
+const KICK_SUPPORT_SHIN_RATIO = 2;
+// Ball visual radius comes straight from physics.js so the rendered
+// sphere and the collision envelope are the same object — no drift.
+const BALL_VISUAL_RADIUS = BALL_RADIUS;
 
 // Stamina indicator tuning — see the three-mesh breakdown in the
 // torso-pool construction block below for how these values are used.
@@ -181,11 +202,6 @@ const GOAL_BURST_SPEED       = 1.8;
 const GOAL_BURST_LIFT        = 1.6;   // upward kick
 const GOAL_BURST_LIFE_BASE   = 35;
 const GOAL_BURST_LIFE_VAR    = 20;
-
-// Thin cylinder radius (world units) for goal-frame bars so they render
-// as solid poles. three.js line widths are GPU-dependent, so we use
-// actual tube geometry instead.
-const GOAL_BAR_RADIUS = 1.2;
 
 const CAMERA_FOV = 60;
 const CAMERA_TILT_DEG = 55;
@@ -365,13 +381,23 @@ export class Renderer {
     // than the outline's, so `_placeTorso` insets the clipping range
     // accordingly (otherwise stamina=0/1 would map outside the fill).
     const torsoFillBodyLen = torsoBodyLen;
-    const armBodyLen = STICKMAN_LIMB_FULL_H - 2 * STICKMAN_ARM_RADIUS;
-    const legBodyLen = STICKMAN_LIMB_FULL_H - 2 * STICKMAN_LEG_RADIUS;
-    const stickmanTorsoGeom     = new THREE.CapsuleGeometry(STICKMAN_TORSO_RADIUS,      torsoBodyLen,     4, 12);
-    const stickmanTorsoFillGeom = new THREE.CapsuleGeometry(STICKMAN_TORSO_FILL_RADIUS, torsoFillBodyLen, 4, 12);
-    const stickmanArmGeom       = new THREE.CapsuleGeometry(STICKMAN_ARM_RADIUS,        armBodyLen,       4, 10);
-    const stickmanLegGeom       = new THREE.CapsuleGeometry(STICKMAN_LEG_RADIUS,        legBodyLen,       4, 10);
-    this._staticGeometries.push(stickmanTorsoGeom, stickmanTorsoFillGeom, stickmanArmGeom, stickmanLegGeom);
+    // Arms split at the elbow — upper arm is 15% thicker than the
+    // forearm. Both halves have body_len = UPPER_ARM − 2·radius so
+    // the overlapping caps at the elbow line up with the (larger)
+    // elbow sphere the joint draws at that point.
+    const upperArmBodyLen = STICKMAN_UPPER_ARM - 2 * STICKMAN_UPPER_ARM_RADIUS;
+    const lowerArmBodyLen = STICKMAN_LOWER_ARM - 2 * STICKMAN_LOWER_ARM_RADIUS;
+    // Leg is drawn as TWO half-length capsules meeting at the knee,
+    // so the mesh geometry's span is UPPER_LEG (= LOWER_LEG), not the
+    // full limb height. Overlapping hemispherical caps at the knee
+    // read as a natural joint without a separate knee sphere.
+    const halfLegBodyLen = STICKMAN_UPPER_LEG - 2 * STICKMAN_LEG_RADIUS;
+    const stickmanTorsoGeom      = new THREE.CapsuleGeometry(STICKMAN_TORSO_RADIUS,      torsoBodyLen,     4, 12);
+    const stickmanTorsoFillGeom  = new THREE.CapsuleGeometry(STICKMAN_TORSO_FILL_RADIUS, torsoFillBodyLen, 4, 12);
+    const stickmanUpperArmGeom   = new THREE.CapsuleGeometry(STICKMAN_UPPER_ARM_RADIUS,  upperArmBodyLen,  4, 10);
+    const stickmanLowerArmGeom   = new THREE.CapsuleGeometry(STICKMAN_LOWER_ARM_RADIUS,  lowerArmBodyLen,  4, 10);
+    const stickmanLegGeom        = new THREE.CapsuleGeometry(STICKMAN_LEG_RADIUS,        halfLegBodyLen,   4, 10);
+    this._staticGeometries.push(stickmanTorsoGeom, stickmanTorsoFillGeom, stickmanUpperArmGeom, stickmanLowerArmGeom, stickmanLegGeom);
 
     // Fill-capsule dimensions drive the disc scaling math in _placeTorso
     // (the disc caps the FILL, not the outline).
@@ -385,7 +411,8 @@ export class Renderer {
     this._stickmanTorsoFill = [];
     this._stickmanTorsoDisc = [];
     this._stickmanTorsoFillPlanes = [];
-    this._stickmanArm = [];
+    this._stickmanUpperArm = [];
+    this._stickmanLowerArm = [];
     this._stickmanLeg = [];
 
     // Water-surface disc geometry — circle in the XZ plane, sized to
@@ -396,14 +423,23 @@ export class Renderer {
     discGeom.rotateX(-Math.PI / 2);
     this._staticGeometries.push(discGeom);
 
-    const makeArmMesh = () => {
+    const makeUpperArmMesh = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-      const mesh = new THREE.Mesh(stickmanArmGeom, mat);
+      const mesh = new THREE.Mesh(stickmanUpperArmGeom, mat);
       mesh.visible = false;
       mesh.frustumCulled = false;
       this._staticMaterials.push(mat);
       this.scene.add(mesh);
-      this._stickmanArm.push(mesh);
+      this._stickmanUpperArm.push(mesh);
+    };
+    const makeLowerArmMesh = () => {
+      const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+      const mesh = new THREE.Mesh(stickmanLowerArmGeom, mat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      this._staticMaterials.push(mat);
+      this.scene.add(mesh);
+      this._stickmanLowerArm.push(mesh);
     };
     const makeLegMesh = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
@@ -467,12 +503,15 @@ export class Renderer {
       makeTorsoFillMesh();
       makeTorsoDiscMesh();
     }
-    // Two players × 2 arms/legs = 4 of each on screen. Pool of 8
-    // leaves headroom for future multi-stickman scenes.
-    for (let i = 0; i < 8; i++) makeArmMesh();
-    for (let i = 0; i < 8; i++) makeLegMesh();
+    // Arms and legs both split at a joint: 2 players × 2 limbs ×
+    // 2 halves = 8 segments of each kind. Pools of 8 with no slack
+    // are fine (meshes are static and the draw order is
+    // deterministic); bump if future anims add extra draws.
+    for (let i = 0; i < 8; i++) { makeUpperArmMesh(); makeLowerArmMesh(); }
+    for (let i = 0; i < 16; i++) makeLegMesh();
     this._stickmanTorsoCursor = 0;
-    this._stickmanArmCursor = 0;
+    this._stickmanUpperArmCursor = 0;
+    this._stickmanLowerArmCursor = 0;
     this._stickmanLegCursor = 0;
 
     // Stickman sphere pool — used for heads and fists. One shared
@@ -491,13 +530,17 @@ export class Renderer {
     }
     this._stickmanSphCursor = 0;
 
-
     // Smoothed animation state per player (tilt, amplitude, phase, lastTick).
     // Keyed by the player state object so every stickman on this renderer
     // evolves its own pose without cross-talk. Tilt and amplitude are
     // low-pass filtered toward their speed-derived targets; phase is
     // accumulated with the current swing rate so rate changes never snap.
     this._animByPlayer = new WeakMap();
+
+    // Scratch buffers for per-frame IK solves; reused across both
+    // players so the hot draw path never allocates.
+    this._scratchKickPose = { upperAngle: 0, lowerAngle: 0 };
+    this._scratchPushPose = { upperAngle: 0, lowerAngle: 0, upperYaw: 0, lowerYaw: 0 };
 
     // Splash particle pool — ring-buffer allocation, `life === 0` means
     // free. Fields are all numbers so there's zero GC churn per frame.
@@ -592,14 +635,16 @@ export class Renderer {
     const celebrating = state.pauseState === 'celebrate';
     const p1Celebrating = celebrating && state.goalScorer === state.p1;
     const p2Celebrating = celebrating && state.goalScorer === state.p2;
-    const prevTorsoCursor = this._stickmanTorsoCursor;
-    const prevArmCursor   = this._stickmanArmCursor;
-    const prevLegCursor   = this._stickmanLegCursor;
-    const prevSphCursor   = this._stickmanSphCursor;
-    this._stickmanTorsoCursor = 0;
-    this._stickmanArmCursor   = 0;
-    this._stickmanLegCursor   = 0;
-    this._stickmanSphCursor   = 0;
+    const prevTorsoCursor    = this._stickmanTorsoCursor;
+    const prevUpperArmCursor = this._stickmanUpperArmCursor;
+    const prevLowerArmCursor = this._stickmanLowerArmCursor;
+    const prevLegCursor      = this._stickmanLegCursor;
+    const prevSphCursor      = this._stickmanSphCursor;
+    this._stickmanTorsoCursor    = 0;
+    this._stickmanUpperArmCursor = 0;
+    this._stickmanLowerArmCursor = 0;
+    this._stickmanLegCursor      = 0;
+    this._stickmanSphCursor      = 0;
     this._addStickman(state.p1, COLOR_TEXT, tick, p1Celebrating);
     this._addStickman(state.p2, COLOR_TEXT, tick, p2Celebrating);
     for (let i = this._stickmanTorsoCursor; i < prevTorsoCursor; i++) {
@@ -607,15 +652,10 @@ export class Renderer {
       this._stickmanTorsoFill[i].visible = false;
       this._stickmanTorsoDisc[i].visible = false;
     }
-    for (let i = this._stickmanArmCursor; i < prevArmCursor; i++) {
-      this._stickmanArm[i].visible = false;
-    }
-    for (let i = this._stickmanLegCursor; i < prevLegCursor; i++) {
-      this._stickmanLeg[i].visible = false;
-    }
-    for (let i = this._stickmanSphCursor; i < prevSphCursor; i++) {
-      this._stickmanSph[i].visible = false;
-    }
+    for (let i = this._stickmanUpperArmCursor; i < prevUpperArmCursor; i++) this._stickmanUpperArm[i].visible = false;
+    for (let i = this._stickmanLowerArmCursor; i < prevLowerArmCursor; i++) this._stickmanLowerArm[i].visible = false;
+    for (let i = this._stickmanLegCursor; i < prevLegCursor; i++) this._stickmanLeg[i].visible = false;
+    for (let i = this._stickmanSphCursor; i < prevSphCursor; i++) this._stickmanSph[i].visible = false;
 
     // Ball — real 3D sphere in world space. Altitude comes straight
     // from physics ball.z; gravity, bounce, and all collisions live
@@ -649,9 +689,9 @@ export class Renderer {
     // stays put on the ground as the sphere rises on ball.z; radius
     // grows slightly and alpha fades with altitude, reading as height.
     const SHADOW_Y = 0.2;   // tiny offset above ground to avoid z-fight
-    this._p1Shadow.position.set(state.p1.x + 9, SHADOW_Y, state.p1.y * Z_STRETCH);
+    this._p1Shadow.position.set(state.p1.x + PLAYER_WIDTH / 2, SHADOW_Y, state.p1.y * Z_STRETCH);
     this._p1Shadow.scale.set(PLAYER_SHADOW_RADIUS * 2, PLAYER_SHADOW_RADIUS * 2, 1);
-    this._p2Shadow.position.set(state.p2.x + 9, SHADOW_Y, state.p2.y * Z_STRETCH);
+    this._p2Shadow.position.set(state.p2.x + PLAYER_WIDTH / 2, SHADOW_Y, state.p2.y * Z_STRETCH);
     this._p2Shadow.scale.set(PLAYER_SHADOW_RADIUS * 2, PLAYER_SHADOW_RADIUS * 2, 1);
     const airH = Math.max(0, state.ball.z || 0);
     const ballShadowR = BALL_VISUAL_RADIUS * (1 + airH * 0.04);
@@ -662,12 +702,10 @@ export class Renderer {
 
     // Consume per-frame physics events. `state.events` is cleared at
     // the top of each tick, so anything here is brand-new this frame.
-    if (state.events) {
-      for (let i = 0; i < state.events.length; i++) {
-        const ev = state.events[i];
-        if (ev.type === 'ball_bounce') this._spawnBounceParticles(ev);
-        else if (ev.type === 'goal') this._spawnGoalBurst(ev.scorer);
-      }
+    for (let i = 0; i < state.events.length; i++) {
+      const ev = state.events[i];
+      if (ev.type === 'ball_bounce') this._spawnBounceParticles(ev);
+      else if (ev.type === 'goal') this._spawnGoalBurst(ev.scorer);
     }
     this._stepParticles();
     this._drawParticles();
@@ -919,7 +957,7 @@ export class Renderer {
     // springs back to the live action target.
     const deadBall = state.matchOver
       || state.pauseState !== null
-      || (state.graceFrames | 0) > 0;
+      || state.graceFrames > 0;
     const zoomTarget   = deadBall ? FOLLOW_ZOOM_DEAD : FOLLOW_ZOOM_LIVE;
     const posTarget    = deadBall ? midX : actionX;
     const lookTarget   = deadBall ? midX : actionX;
@@ -1124,13 +1162,14 @@ export class Renderer {
     const dir = b.clone().sub(a);
     const length = dir.length();
     if (length < 1e-6) return;
-    const geom = new THREE.CylinderGeometry(GOAL_BAR_RADIUS, GOAL_BAR_RADIUS, length, 8, 1);
+    const geom = new THREE.CylinderGeometry(GOAL_POST_RADIUS, GOAL_POST_RADIUS, length, 8, 1);
     // CylinderGeometry is aligned along +y by default; rotate it so +y
     // points along `dir`, then translate to the midpoint of AB.
     const mesh = new THREE.Mesh(geom, material);
     const up = new THREE.Vector3(0, 1, 0);
-    const axis = up.clone().cross(dir.clone().normalize());
-    const angle = Math.acos(Math.max(-1, Math.min(1, up.dot(dir.clone().normalize()))));
+    const dirUnit = dir.clone().normalize();
+    const axis = up.clone().cross(dirUnit);
+    const angle = Math.acos(Math.max(-1, Math.min(1, up.dot(dirUnit))));
     if (axis.length() > 1e-6) {
       mesh.setRotationFromAxisAngle(axis.normalize(), angle);
     }
@@ -1289,7 +1328,7 @@ export class Renderer {
     // Player world position — x along the field, z across the depth.
     // Both are mutable because push-hop shifts the whole figure in
     // the heading direction (which has both x and z components).
-    let baseX = player.x + 9;
+    let baseX = player.x + PLAYER_WIDTH / 2;
     let baseZ = player.y * Z_STRETCH;
     const s = STICKMAN_GLYPH_SIZE;
 
@@ -1357,7 +1396,7 @@ export class Renderer {
     // already computed by the physics tick for the airkick phase.
     const kick = player.kick;
     const isKicking = !!(kick && kick.active);
-    const isAirkick = isKicking && kick.phase === 'airkick';
+    const isAirkick = isKicking && kick.kind === 'air';
     const airLift   = player.airZ || 0;
 
     anim.tilt      += (targetTilt      - anim.tilt)      * STICKMAN_SMOOTH;
@@ -1376,45 +1415,39 @@ export class Renderer {
     const jumpY = Math.max(0, Math.sin(anim.celebratePhase)) * CELEB_JUMP_PEAK * celeb;
     const bob = Math.abs(swing) * 0.08 * amplitude * celebInv;
 
-    // Push scripted state — in the local (forward, up) frame. The
-    // forward transform (forwardX, forwardZ) applies when mixing
-    // into world space.
-    let pushArmAngle   = 0;
+    // Push body cosmetics — dip / tilt / hop stay scripted; the
+    // striking arm itself gets real 2-bone IK to the opponent's
+    // body (see `pushArmPose` call below, after shoulderY is known).
     let pushBodyDip    = 0;
-    let pushFistScale  = 1;
     let pushTiltOffset = 0;
-    let strikeActive   = false;
     if (pushing > 0) {
       const pushT = Math.min(anim.pushProgress / PUSH_TOTAL_TICKS, 1);
-      pushArmAngle   =  pushArmAngleAt(pushT);
       pushBodyDip    =  pushBodyDipAt(pushT);
-      pushFistScale  =  pushFistScaleAt(pushT);
       pushTiltOffset =  pushBodyTiltAt(pushT);
       const hop       =  pushHopAt(pushT);
       baseX          +=  forwardX * hop;
       baseZ          +=  forwardZ * hop;
-      strikeActive   =  pushT >= PUSH_WINDUP_T && pushT <= PUSH_LOWER_T;
     }
 
-    // Kick scripted state — the kicking leg (right leg by convention)
-    // and the contralateral arm (left arm) drive the swing, with a
-    // body dip + tilt to sell the weight transfer.
-    let kickLegAngle   = 0;
-    let kickArmAngle   = 0;
-    let kickBodyDip    = 0;
-    let kickTiltOffset = 0;
+    // Kick scripted state — the contralateral arm (left arm) drives
+    // the counter-swing; body dip + tilt sell the weight transfer;
+    // pelvis twists toward the kick direction and snaps through;
+    // the support (left) leg crouches a little during strike. The
+    // kicking leg itself is no longer scripted: it's IK'd to
+    // `kick.footTarget` below, after the leg-angle block.
+    let kickArmAngle       = 0;
+    let kickBodyDip        = 0;
+    let kickTiltOffset     = 0;
+    let kickHipTwist       = 0;
+    let kickSupportCrouch  = 0;
     if (isKicking) {
       const totalMs = isAirkick ? AIRKICK_MS : KICK_DURATION_MS;
       const kickT   = Math.min(kick.timer / totalMs, 1);
-      if (isAirkick) {
-        kickLegAngle   = airkickLegAngleAt(kickT);
-        kickTiltOffset = airkickTiltAt(kickT);
-      } else {
-        kickLegAngle   = kickLegAngleAt(kickT);
-        kickTiltOffset = kickTiltAt(kickT);
-      }
-      kickArmAngle = kickArmAngleAt(kickT);
-      kickBodyDip  = kickDipAt(kickT);
+      kickTiltOffset    = isAirkick ? airkickTiltAt(kickT) : kickTiltAt(kickT);
+      kickArmAngle      = kickArmAngleAt(kickT);
+      kickBodyDip       = kickDipAt(kickT);
+      kickHipTwist      = kickHipTwistAt(kickT);
+      kickSupportCrouch = kickSupportCrouchAt(kickT);
     }
 
     const walkTilt  = anim.tilt;
@@ -1458,10 +1491,19 @@ export class Renderer {
 
     // Hips: lateral to hip center along the same lateral vector.
     const hipHalfWidth = STICKMAN_HIP_OFX;
-    const lHipX = baseX - lateralX * hipHalfWidth;
-    const lHipZ = baseZ - lateralZ * hipHalfWidth;
-    const rHipX = baseX + lateralX * hipHalfWidth;
-    const rHipZ = baseZ + lateralZ * hipHalfWidth;
+    // Pelvis twist: rotate the right-hip lateral direction around the
+    // up axis by `kickHipTwist` so both hips describe the arc a real
+    // pelvis would during a right-footed kick. Left hip mirrors the
+    // right; when no kick is active, twist is 0 and we land back on
+    // the plain ±lateral offsets.
+    const twistSin = Math.sin(kickHipTwist);
+    const twistCos = Math.cos(kickHipTwist);
+    const twistedRightX = lateralX * twistCos - forwardX * twistSin;
+    const twistedRightZ = lateralZ * twistCos - forwardZ * twistSin;
+    const rHipX = baseX + twistedRightX * hipHalfWidth;
+    const rHipZ = baseZ + twistedRightZ * hipHalfWidth;
+    const lHipX = baseX - twistedRightX * hipHalfWidth;
+    const lHipZ = baseZ - twistedRightZ * hipHalfWidth;
 
     // Limb angles — contralateral walk swing + celebration override
     // (arms sweep to π = straight up, legs spread forward-back) +
@@ -1481,50 +1523,73 @@ export class Renderer {
       rightLegAngle = rightLegAngle * celebInv +  legSpread * celeb;
     }
 
-    if (pushing > 0) {
-      leftArmAngle  = pushArmAngle;
-      rightArmAngle = pushArmAngle;
-    }
+    // Push arm override is applied AFTER the per-arm (upper, lower)
+    // split below — IK to the opponent's body needs the striking
+    // shoulder's world anchor, which we don't have yet. See the
+    // `if (pushing > 0 && celeb < 0.001)` block after `_placeArm`
+    // setup.
+
+    // Per-leg (upper, lower) angles for the 2-bone draw. Walk /
+    // celebrate use a cosmetic follow-through shin derived from the
+    // thigh via `shinAngleFor`; the kicking leg (right by convention)
+    // overrides with real 2-bone IK to `kick.footTarget` below.
+    let leftUpperAngle  = leftLegAngle;
+    let leftLowerAngle  = shinAngleFor(leftLegAngle);
+    let rightUpperAngle = rightLegAngle;
+    let rightLowerAngle = shinAngleFor(rightLegAngle);
 
     // Kick takes precedence over walk swing (but not push — physics
-    // guarantees the two never overlap). The right leg is the kicking
-    // leg; the left arm counter-swings forward; the right arm pulls
-    // slightly back. Celebration still overrides everything.
+    // guarantees the two never overlap). Right leg IK's to the foot
+    // target; left (support) leg micro-crouches through strike so the
+    // planted weight reads visually; left arm counter-swings forward;
+    // right arm pulls back. Celebration still overrides everything.
     if (isKicking && celeb < 0.001) {
-      rightLegAngle = kickLegAngle;
+      kickLegPose(kick, rHipX, hipBaseY, rHipZ, forwardX, forwardZ, this._scratchKickPose);
+      rightUpperAngle = this._scratchKickPose.upperAngle;
+      rightLowerAngle = this._scratchKickPose.lowerAngle;
+      // Support leg: upper forward by `kickSupportCrouch`, lower
+      // rotates the opposite way (2× upper) so the foot stays close
+      // to the ground while the knee pokes forward.
+      leftUpperAngle = leftLegAngle + kickSupportCrouch;
+      leftLowerAngle = shinAngleFor(leftLegAngle) - KICK_SUPPORT_SHIN_RATIO * kickSupportCrouch;
       leftArmAngle  = kickArmAngle;
       rightArmAngle = -kickArmAngle * KICK_ARM_OPP_FRAC;
     }
 
-    // Draw the four limbs — each is a fixed-length capsule pivoted
-    // at its joint and rotated by the swing angle in the (forward,
-    // up) plane. The forward unit vector is the heading-based
-    // (forwardX, forwardZ), so at angle=0 the limb hangs straight
-    // down and at angle=π/2 it points along +forward.
-    const shoulderY = upperHipY + torsoH * tiltC;
-    this._placeArm(lShX, shoulderY, lShZ, leftArmAngle,  forwardX, forwardZ, color);
-    this._placeArm(rShX, shoulderY, rShZ, rightArmAngle, forwardX, forwardZ, color);
-    this._placeLeg(lHipX, hipBaseY, lHipZ, leftLegAngle,  forwardX, forwardZ, color);
-    this._placeLeg(rHipX, hipBaseY, rHipZ, rightLegAngle, forwardX, forwardZ, color);
+    // Per-arm (upper, lower) angles. Walk / celebrate / kick-
+    // counter-swing use the same cosmetic forearm follow-through as
+    // the knee — `forearmAngleFor` bends the forearm in the direction
+    // of the upper-arm swing. A punch (when player.pushTimer > 0)
+    // overrides ONLY the striking arm via the variant-specific
+    // scripted trajectory in `pushArmPose`; the non-striking arm
+    // keeps its cosmetic swing.
+    let leftUpperArmAngle  = leftArmAngle;
+    let leftLowerArmAngle  = forearmAngleFor(leftArmAngle);
+    let rightUpperArmAngle = rightArmAngle;
+    let rightLowerArmAngle = forearmAngleFor(rightArmAngle);
+    let leftUpperYaw = 0, leftLowerYaw = 0;
+    let rightUpperYaw = 0, rightLowerYaw = 0;
 
-    // Push fists — spheres at the end of each extended arm during the
-    // strike window. Size pulses larger at strike peak via pushFistScale.
-    if (strikeActive && pushing > 0) {
-      const fistR = STICKMAN_FIST_RADIUS * pushFistScale;
-      const L = STICKMAN_LIMB_FULL_H;
-      const lSin = Math.sin(leftArmAngle);
-      const lCos = Math.cos(leftArmAngle);
-      const rSin = Math.sin(rightArmAngle);
-      const rCos = Math.cos(rightArmAngle);
-      this._placeSph(
-        lShX + forwardX * L * lSin, shoulderY - L * lCos, lShZ + forwardZ * L * lSin,
-        fistR, color,
-      );
-      this._placeSph(
-        rShX + forwardX * L * rSin, shoulderY - L * rCos, rShZ + forwardZ * L * rSin,
-        fistR, color,
-      );
+    const shoulderY = upperHipY + torsoH * tiltC;
+    if (player.pushTimer > 0 && celeb < 0.001) {
+      pushArmPose(player, this._scratchPushPose);
+      if (player.pushArm === 'right') {
+        rightUpperArmAngle = this._scratchPushPose.upperAngle;
+        rightLowerArmAngle = this._scratchPushPose.lowerAngle;
+        rightUpperYaw      = this._scratchPushPose.upperYaw;
+        rightLowerYaw      = this._scratchPushPose.lowerYaw;
+      } else {
+        leftUpperArmAngle = this._scratchPushPose.upperAngle;
+        leftLowerArmAngle = this._scratchPushPose.lowerAngle;
+        leftUpperYaw      = this._scratchPushPose.upperYaw;
+        leftLowerYaw      = this._scratchPushPose.lowerYaw;
+      }
     }
+
+    this._placeArm(lShX, shoulderY, lShZ, leftUpperArmAngle,  leftLowerArmAngle,  forwardX, forwardZ, color, leftUpperYaw,  leftLowerYaw);
+    this._placeArm(rShX, shoulderY, rShZ, rightUpperArmAngle, rightLowerArmAngle, forwardX, forwardZ, color, rightUpperYaw, rightLowerYaw);
+    this._placeLeg(lHipX, hipBaseY, lHipZ, leftUpperAngle,  leftLowerAngle,  forwardX, forwardZ, color);
+    this._placeLeg(rHipX, hipBaseY, rHipZ, rightUpperAngle, rightLowerAngle, forwardX, forwardZ, color);
   }
 
   /** Orient `mesh` so its local +y axis points from A toward B and
@@ -1621,12 +1686,85 @@ export class Renderer {
     this._orientBetween(mesh, px, py, pz, ex, ey, ez, color);
   }
 
-  _placeArm(px, py, pz, angle, forwardX, forwardZ, color) {
-    this._placeLimbFromPool(this._stickmanArm, '_stickmanArmCursor', px, py, pz, angle, forwardX, forwardZ, color);
+  /** Two-segment arm with an elbow. `upperAngle` is the shoulder
+   *  swing angle (same convention as the old single-capsule arm:
+   *  0 = straight down, +π/2 = forward, +π = straight up).
+   *  `lowerAngle` is the forearm's world-space swing angle (not
+   *  relative to the upper arm). Both capsules meet at the elbow,
+   *  where the slightly-oversized `STICKMAN_ELBOW_RADIUS` sphere is
+   *  drawn. Upper arm is 15 % thicker than the forearm, matching
+   *  rough human proportions. */
+  _placeArm(px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color, upperYaw = 0, lowerYaw = 0) {
+    const U = STICKMAN_UPPER_ARM;
+    const L = STICKMAN_LOWER_ARM;
+    // `upperYaw` / `lowerYaw` rotate the per-segment forward direction
+    // around the vertical axis independently, so a hook (horizontal arc)
+    // and uppercut (vertical arc) can both be expressed in the same rig.
+    const uyc = Math.cos(upperYaw), uys = Math.sin(upperYaw);
+    const uFwdX = forwardX * uyc - forwardZ * uys;
+    const uFwdZ = forwardX * uys + forwardZ * uyc;
+    const lyc = Math.cos(lowerYaw), lys = Math.sin(lowerYaw);
+    const lFwdX = forwardX * lyc - forwardZ * lys;
+    const lFwdZ = forwardX * lys + forwardZ * lyc;
+
+    const upperSin = Math.sin(upperAngle);
+    const elbowX = px + uFwdX * U * upperSin;
+    const elbowY = py - U * Math.cos(upperAngle);
+    const elbowZ = pz + uFwdZ * U * upperSin;
+    const lowerSin = Math.sin(lowerAngle);
+    const handX = elbowX + lFwdX * L * lowerSin;
+    const handY = elbowY - L * Math.cos(lowerAngle);
+    const handZ = elbowZ + lFwdZ * L * lowerSin;
+
+    // Upper segment (thicker): shoulder → elbow.
+    if (this._stickmanUpperArmCursor < this._stickmanUpperArm.length) {
+      const upperMesh = this._stickmanUpperArm[this._stickmanUpperArmCursor++];
+      this._orientBetween(upperMesh, px, py, pz, elbowX, elbowY, elbowZ, color);
+    }
+    // Lower segment (thinner): elbow → hand.
+    if (this._stickmanLowerArmCursor < this._stickmanLowerArm.length) {
+      const lowerMesh = this._stickmanLowerArm[this._stickmanLowerArmCursor++];
+      this._orientBetween(lowerMesh, elbowX, elbowY, elbowZ, handX, handY, handZ, color);
+    }
+    // Elbow sphere — reads as a joint bump even when the arm is
+    // straight and the two capsules are collinear.
+    this._placeSph(elbowX, elbowY, elbowZ, STICKMAN_ELBOW_RADIUS, color);
   }
 
-  _placeLeg(px, py, pz, angle, forwardX, forwardZ, color) {
-    this._placeLimbFromPool(this._stickmanLeg, '_stickmanLegCursor', px, py, pz, angle, forwardX, forwardZ, color);
+  /** Two-segment leg with a knee. `upperAngle` is the hip-swing
+   *  angle (same convention as the old single-capsule leg: 0 =
+   *  straight down, +π/2 = forward, +π = straight up). `lowerAngle`
+   *  is the shin's world-space swing angle (not relative to the
+   *  upper leg). Both capsules meet at the knee; the overlapping
+   *  hemispherical caps at that point read visually as the joint,
+   *  so no separate kneecap sphere is needed. Passing
+   *  `lowerAngle === upperAngle` reproduces the old straight leg. */
+  _placeLeg(px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color) {
+    const U = STICKMAN_UPPER_LEG;
+    const L = STICKMAN_LOWER_LEG;
+    const upperSin = Math.sin(upperAngle);
+    const kneeX = px + forwardX * U * upperSin;
+    const kneeY = py - U * Math.cos(upperAngle);
+    const kneeZ = pz + forwardZ * U * upperSin;
+    const lowerSin = Math.sin(lowerAngle);
+    const footX = kneeX + forwardX * L * lowerSin;
+    const footY = kneeY - L * Math.cos(lowerAngle);
+    const footZ = kneeZ + forwardZ * L * lowerSin;
+
+    // Upper segment: hip → knee.
+    if (this._stickmanLegCursor >= this._stickmanLeg.length) return;
+    const upperMesh = this._stickmanLeg[this._stickmanLegCursor++];
+    this._orientBetween(upperMesh, px, py, pz, kneeX, kneeY, kneeZ, color);
+
+    // Lower segment: knee → foot.
+    if (this._stickmanLegCursor >= this._stickmanLeg.length) return;
+    const lowerMesh = this._stickmanLeg[this._stickmanLegCursor++];
+    this._orientBetween(lowerMesh, kneeX, kneeY, kneeZ, footX, footY, footZ, color);
+
+    // Kneecap sphere at the joint — slightly larger than the leg
+    // shaft so it reads as an actual joint bump even when the leg
+    // is straight and the two capsules are collinear.
+    this._placeSph(kneeX, kneeY, kneeZ, STICKMAN_KNEE_RADIUS, color);
   }
 
   /** Pull a sphere from the pool and place it at a world point with
@@ -1703,7 +1841,7 @@ export class Renderer {
     const mouthYMin = f.goalMouthYMin;
     const mouthYMax = f.goalMouthYMax;
     const mouthYSpan = mouthYMax - mouthYMin;
-    const mouthZMax = f.goalMouthZMax || 26;
+    const mouthZMax = f.goalMouthZMax;
 
     for (let i = 0; i < GOAL_BURST_COUNT; i++) {
       const p = this._particles[this._particleNext];
@@ -1784,26 +1922,9 @@ export class Renderer {
       this._particleColorAttr.needsUpdate = true;
     }
   }
-
 }
 
 /* ── Helpers ───────────────────────────────────────────────── */
-
-/**
- * Arm angle curve for the spring-loaded push. Arms rotate from down
- * to horizontal during RAISE, hold horizontal through WINDUP/STRIKE/
- * SETTLE/hold, then rotate back to down during LOWER. Magnitude only —
- * multiply by pushDir outside.
- */
-function pushArmAngleAt(t) {
-  if (t < PUSH_RAISE_T) {
-    const p = t / PUSH_RAISE_T;
-    return PUSH_EXTEND_ANGLE * easeInOut(p);
-  }
-  if (t < PUSH_LOWER_T) return PUSH_EXTEND_ANGLE;
-  const p = (t - PUSH_LOWER_T) / (1 - PUSH_LOWER_T);
-  return PUSH_EXTEND_ANGLE * (1 - easeInOut(p));
-}
 
 /**
  * Upper-body crouch depth during push. Body drops while the pivot
@@ -1843,23 +1964,6 @@ function pushHopAt(t) {
 }
 
 /**
- * Fist glyph scale multiplier. 1.0 baseline, pulses to (1 + PUSH_FIST_PULSE)
- * linearly through the strike phase, decays back to 1 during settle.
- */
-function pushFistScaleAt(t) {
-  if (t < PUSH_WINDUP_T) return 1;
-  if (t < PUSH_STRIKE_T) {
-    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
-    return 1 + PUSH_FIST_PULSE * p;
-  }
-  if (t < PUSH_SETTLE_T) {
-    const p = (t - PUSH_STRIKE_T) / (PUSH_SETTLE_T - PUSH_STRIKE_T);
-    return 1 + PUSH_FIST_PULSE * (1 - easeInOut(p));
-  }
-  return 1;
-}
-
-/**
  * Body lean along the player's heading as a signed "forward amount":
  * negative = lean back (windup loading), positive = lean forward
  * (strike release). Added directly to the walk-tilt term because
@@ -1882,34 +1986,7 @@ function pushBodyTiltAt(t) {
   return 0;
 }
 
-/* ── Kick curves ───────────────────────────────────────────── */
-
-/**
- * Three-phase swing curve: windup eases the leg from 0 back to
- * startAngle, strike whips it through to endAngle at the physics fire
- * point, recovery eases it back to 0. Shared by ground kick and
- * airkick with different angle magnitudes / phase boundaries.
- */
-function swingCurve(t, fireT, strikeEndT, startAngle, endAngle) {
-  if (t < fireT) {
-    const p = t / fireT;
-    return startAngle * easeInOut(p);
-  }
-  if (t < strikeEndT) {
-    const p = (t - fireT) / (strikeEndT - fireT);
-    return startAngle + (endAngle - startAngle) * easeInOut(p);
-  }
-  const p = (t - strikeEndT) / (1 - strikeEndT);
-  return endAngle * (1 - easeInOut(p));
-}
-
-function kickLegAngleAt(t) {
-  return swingCurve(t, KICK_FIRE_T, KICK_STRIKE_END_T, KICK_WINDUP_ANGLE, KICK_STRIKE_ANGLE);
-}
-
-function airkickLegAngleAt(t) {
-  return swingCurve(t, AIRKICK_PEAK_FRAC, AIRKICK_STRIKE_END_T, AIRKICK_WINDUP_ANGLE, AIRKICK_STRIKE_ANGLE);
-}
+/* ── Kick body-english curves ─────────────────────────────── */
 
 /**
  * Counter-balance arm swing: forward during windup + strike, returns
@@ -1975,19 +2052,40 @@ function airkickTiltAt(t) {
 }
 
 /**
- * Cross-section radius of the torso capsule at a given local-y
- * offset from its center. Returns:
- *   - `capRadius` throughout the cylindrical middle (|y| <= bodyHalf)
- *   - shrinks to 0 at the tips inside the hemispherical caps
- *   - 0 if the offset is outside the capsule entirely
- *
- * Used by `_placeTorso` to size the fill-surface disc so it never
- * pokes out of the capsule silhouette. Exported for unit tests so
- * the cap region math can be validated without instantiating a
- * Renderer.
+ * Pelvis twist around the vertical axis. +angle rotates the right
+ * hip back (and left hip forward) — the wind-up position for a
+ * right-footed kick. Strike snaps the hip through to −MAX (right
+ * hip forward, follow-through); recovery eases back to 0. Shared
+ * between ground and airkick.
  */
-// staminaDiscRadius and updateStaminaClipPlane imported from renderer-math.js
-export { staminaDiscRadius, updateStaminaClipPlane };
+function kickHipTwistAt(t) {
+  if (t < KICK_FIRE_T) {
+    const p = t / KICK_FIRE_T;
+    return KICK_HIP_TWIST_MAX * easeInOut(p);
+  }
+  if (t < KICK_STRIKE_END_T) {
+    const p = (t - KICK_FIRE_T) / (KICK_STRIKE_END_T - KICK_FIRE_T);
+    return KICK_HIP_TWIST_MAX * (1 - 2 * easeInOut(p));
+  }
+  const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
+  return -KICK_HIP_TWIST_MAX * (1 - easeInOut(p));
+}
+
+/**
+ * Support-leg (planted, non-kicking) micro-crouch. Kicks in at the
+ * strike phase and fades through recovery. Used as the upper-leg
+ * forward angle; the shin rotates the opposite way to keep the foot
+ * roughly planted under the hip (knee-out crouch).
+ */
+function kickSupportCrouchAt(t) {
+  if (t < KICK_FIRE_T) return 0;
+  if (t < KICK_STRIKE_END_T) {
+    const p = (t - KICK_FIRE_T) / (KICK_STRIKE_END_T - KICK_FIRE_T);
+    return KICK_SUPPORT_CROUCH * easeInOut(p);
+  }
+  const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
+  return KICK_SUPPORT_CROUCH * (1 - easeInOut(p));
+}
 
 function easeInOut(p) {
   return p < 0.5 ? 2 * p * p : 1 - (2 * (1 - p)) * (1 - p);

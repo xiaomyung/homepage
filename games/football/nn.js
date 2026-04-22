@@ -4,11 +4,15 @@
  * Architecture (LeakyReLU+tanh combo fixes saturation; see memory
  * feedback_nn_saturation_fix):
  *
- *   Inputs (20) → Hidden 1 (20, LeakyReLU) → Hidden 2 (16, LeakyReLU)
- *               → Hidden 3 (18, LeakyReLU) → Output (9, tanh)
+ *   Inputs (25) → Hidden (16, LeakyReLU) → Output (9, tanh)
  *
- * Total 1233 weights (420 + 336 + 306 + 171). Inputs 18 and 19 are
- * cos/sin of the player's heading — see physics.js:buildInputs().
+ * Total 569 weights (400 + 16 + 144 + 9). Inputs 20–24 are derived
+ * (possession / ball threat / goal distances) — see
+ * physics.js:buildInputs(). Shrinking from the previous 3-layer
+ * 1233-weight net is a NEAT-style "start small" choice: the new
+ * derived inputs carry most of the decision signal, so the NN
+ * just needs enough capacity to route them into the 9-dim action
+ * rather than rediscovering them from raw state.
  *
  * Forward-pass only. Initial weights come from offline imitation
  * training (see evolution/build-warm-start.mjs), serialized as a
@@ -17,7 +21,7 @@
  */
 
 /** Layer sizes. Changing this invalidates committed warm_start_weights.json. */
-export const ARCH = [20, 20, 16, 18, 9];
+export const ARCH = [25, 16, 9];
 
 /** LeakyReLU slope on the negative side. */
 const LEAKY_SLOPE = 0.01;

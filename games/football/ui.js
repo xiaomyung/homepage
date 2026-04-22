@@ -5,8 +5,7 @@
  * Covers:
  *   - Scoreboard (tags, names, score, timer)
  *   - Start/Stop button
- *   - Options button + panel toggle (panel contents wired in ui_options.js
- *     in phase 4d2/4d3)
+ *   - Options button + panel contents (stats, fitness graph, config, cam toggles)
  *   - Auto-pause via visibilitychange + pagehide + pageshow
  *
  * Design: pure functions + small handle objects. No single god-class.
@@ -46,9 +45,22 @@ export function createScoreboard() {
         el.p2Tag.textContent = '[nn]';
         el.p2Name.textContent = (p2Source?.name ?? '—').toLowerCase();
       }
+      // Remember names so setWinner can look them up by 'left'/'right'.
+      el._p1Name = (p1?.name ?? '—').toLowerCase();
+      el._p2Name = p2Source && p2Source.type === 'fallback'
+        ? 'fallback'
+        : (p2Source?.name ?? '—').toLowerCase();
     },
     setScore(scoreL, scoreR) {
       el.score.textContent = `${scoreL} — ${scoreR}`;
+    },
+    /** Show "Winner: <name>" in place of the live score during the
+     *  matchend pause. Pass `null` (or omit) to clear and fall back
+     *  to normal score rendering. */
+    setWinner(side) {
+      if (!side) return;
+      const name = side === 'left' ? el._p1Name : el._p2Name;
+      el.score.textContent = `Winner: ${name}`;
     },
     setTimer(seconds, totalSeconds) {
       const fmt = (t) => {
@@ -182,6 +194,12 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
     pop: document.getElementById('stat-pop'),
     mut: document.getElementById('stat-mut'),
     fbwr: document.getElementById('stat-fbwr'),
+    zerozero: document.getElementById('stat-zerozero'),
+    draws: document.getElementById('stat-draws'),
+    decisive: document.getElementById('stat-decisive'),
+    cleanDecisive: document.getElementById('stat-clean-decisive'),
+    stalled: document.getElementById('stat-stalled'),
+    blowout: document.getElementById('stat-blowout'),
   };
 
   let simsPerSec = 0;
@@ -202,22 +220,49 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
     return `${m}:${ss}`;
   }
 
+  // Sticky-text setter: update only if we actually have a value.
+  // Leaves the DOM untouched (i.e., shows the last-good number) when
+  // `value` is null/undefined. Previous logic collapsed "no data yet
+  // this gen" into a '—' placeholder that flickered every time the
+  // generation rolled over.
+  function setIf(node, value) {
+    if (!node) return;
+    if (value != null) node.textContent = value;
+  }
+
   async function pollStats() {
     try {
       const res = await fetch(`${apiBase}/stats`);
       if (!res.ok) return;
       const stats = await res.json();
-      el.gen.textContent = stats.generation;
-      el.avg.textContent = stats.avg_fitness.toFixed(3);
-      el.top.textContent = stats.top_fitness.toFixed(3);
-      el.matches.textContent = stats.total_matches;
-      el.pop.textContent = stats.population;
-      el.fbwr.textContent = `${(stats.fallback_win_rate * 100).toFixed(1)}%`;
-      // `runtime_ms` is the broker-authoritative cumulative active
-      // training time since the last reset — shared across tabs and
-      // devices, persisted across broker restarts and page reloads.
-      if (typeof stats.runtime_ms === 'number' && el.runtime) {
-        el.runtime.textContent = formatRuntime(stats.runtime_ms);
+      setIf(el.gen, stats.generation);
+      setIf(el.avg, Number.isFinite(stats.avg_fitness) ? stats.avg_fitness.toFixed(3) : null);
+      setIf(el.top, Number.isFinite(stats.top_fitness) ? stats.top_fitness.toFixed(3) : null);
+      setIf(el.matches, stats.total_matches);
+      setIf(el.pop, stats.population);
+      setIf(el.fbwr, Number.isFinite(stats.fallback_win_rate)
+        ? `${(stats.fallback_win_rate * 100).toFixed(1)}%`
+        : null);
+      const md = stats.match_distribution;
+      // Only update match-distribution cells when we actually have a
+      // match this generation. During the brief window between a
+      // breed and the first new-gen /results POST, `md.total` is 0;
+      // we leave the previous percentages visible instead of blanking
+      // to '—'.
+      if (md && md.total > 0) {
+        // Missing fields (e.g., stall_rate from a broker on the old
+        // build) must NOT render as 'NaN%' — we pass nothing to
+        // setIf, which leaves the last-good value in place.
+        const pctTxt = (r) => (Number.isFinite(r) ? `${(r * 100).toFixed(1)}%` : null);
+        setIf(el.zerozero,      pctTxt(md.zero_zero_rate));
+        setIf(el.draws,         pctTxt(md.nonzero_draw_rate));
+        setIf(el.decisive,      pctTxt(md.decisive_rate));
+        setIf(el.cleanDecisive, pctTxt(md.decisive_no_stall_rate));
+        setIf(el.stalled,       pctTxt(md.stall_rate));
+        setIf(el.blowout,       pctTxt(md.blowout_rate));
+      }
+      if (typeof stats.runtime_ms === 'number') {
+        setIf(el.runtime, formatRuntime(stats.runtime_ms));
       }
     } catch {
       /* ignore network blips */
@@ -229,7 +274,7 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
       const res = await fetch(`${apiBase}/config`);
       if (!res.ok) return;
       const cfg = await res.json();
-      el.mut.textContent = cfg.mutation_rate.toFixed(2);
+      setIf(el.mut, Number.isFinite(cfg.mutation_rate) ? cfg.mutation_rate.toFixed(2) : null);
     } catch {
       /* ignore */
     }

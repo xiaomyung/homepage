@@ -16,20 +16,20 @@
  * the user clicks [start].
  */
 
-import { Renderer } from './renderer.js?v=98';
+import { Renderer } from './renderer.js';
 import {
   createField,
   createState,
-  createSeededRng,
+  resetStateInPlace,
   tick as physicsTick,
   buildInputs,
   TICK_MS,
   NN_INPUT_SIZE,
   NN_ACTION_STRIDE,
-} from './physics.js?v=46';
-import { NeuralNet } from './nn.js';
+} from './physics.js';
+import { NeuralNet, WEIGHT_COUNT } from './nn.js';
 import { fallbackAction } from './fallback.js';
-import { createTrainingOrchestrator } from './training-orchestrator.js?v=2';
+import { createTrainingOrchestrator } from './training-orchestrator.js';
 import { computeTicks } from './frame-loop.js';
 import { renderStageLabel } from './api/reset-pipeline.js';
 import {
@@ -43,7 +43,7 @@ import {
   createFreeCamToggle,
   createFollowCamToggle,
   installAutoPause,
-} from './ui.js?v=10';
+} from './ui.js';
 
 const API_BASE = '/api/football';
 // Showcase match length, in milliseconds. Fixed — no longer surfaced in
@@ -77,6 +77,22 @@ const MAX_TICKS_PER_FRAME = 5;
 const p1InputBuf = new Array(NN_INPUT_SIZE);
 const p2InputBuf = new Array(NN_INPUT_SIZE);
 
+// Persistent showcase state + field + rng + NN pair. One allocation
+// per page lifetime — every showcase match reuses them via
+// resetStateInPlace + loadWeights. Prevents a steady allocation drip
+// on the main thread (~once per 30s) compounding over long sessions;
+// more importantly, keeps the showcase path symmetric with the
+// per-worker reuse pattern in worker.js.
+let showcaseRngSeed = 1;
+function showcaseRngFn() {
+  showcaseRngSeed = (Math.imul(showcaseRngSeed, 1664525) + 1013904223) >>> 0;
+  return showcaseRngSeed / 4294967296;
+}
+const showcaseField = createField();
+const showcaseState = createState(showcaseField, showcaseRngFn);
+const showcaseP1Brain = new NeuralNet(new Float64Array(WEIGHT_COUNT));
+const showcaseP2Brain = new NeuralNet(new Float64Array(WEIGHT_COUNT));
+
 async function main() {
   const canvas = document.getElementById('game-canvas');
   renderer = new Renderer(canvas);
@@ -87,7 +103,12 @@ async function main() {
   scoreboard = createScoreboard();
   orchestrator = createTrainingOrchestrator({
     apiBase: API_BASE,
-    workerUrl: new URL('./worker.js?v=10', import.meta.url),
+    // Cache-bust: browsers aggressively reuse web-worker URLs across
+    // reloads; a hard refresh re-fetches the main page but can serve
+    // worker.js stale. Bump the query string when the worker protocol
+    // changes (e.g., this edit added `seed` to the result payload and
+    // the broker expects it).
+    workerUrl: new URL('./worker.js?v=5', import.meta.url),
     onStats: ({ simsPerSec }) => statsPanel?.setSimsPerSec(simsPerSec),
   });
   // Runtime is broker-authoritative and comes back in the /stats
@@ -162,9 +183,38 @@ async function main() {
     }
   });
 
+  // Heap watchdog — belt-and-braces for runaway memory. The main fix
+  // is the per-match state/NN reuse above; this catches any residual
+  // drift (three.js internals, worker protocol queues, module
+  // registrations from devtools, etc.) before the tab crashes with
+  // SIGILL (V8 FatalProcessOutOfMemory). Non-Chromium browsers don't
+  // expose performance.memory, so we silently no-op there.
+  installHeapWatchdog();
+
   // Kick off the showcase loop
   nextShowcase();
   requestAnimationFrame(frame);
+}
+
+function installHeapWatchdog() {
+  const mem = performance.memory;
+  if (!mem || !Number.isFinite(mem.jsHeapSizeLimit)) return;
+  const RELOAD_FRAC = 0.75;
+  // Grace period after load — a large initial heap (module graph,
+  // three.js, warm-start fetch) is normal; we want to catch the
+  // monotonic drift that appears after training has been running
+  // for a while, not a tall first read.
+  const GRACE_MS = 60000;
+  const startedAt = Date.now();
+  setInterval(() => {
+    if (Date.now() - startedAt < GRACE_MS) return;
+    const used = mem.usedJSHeapSize;
+    const limit = mem.jsHeapSizeLimit;
+    if (!Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) return;
+    if (used / limit < RELOAD_FRAC) return;
+    try { console.warn(`[football] heap ${Math.round(used / 1048576)}MB / ${Math.round(limit / 1048576)}MB — reloading to avoid OOM`); } catch { /* ignore */ }
+    location.reload();
+  }, 10000);
 }
 
 /* ── Showcase loop ────────────────────────────────────── */
@@ -178,10 +228,27 @@ async function nextShowcase() {
     /* API unreachable — fall through to fallback-vs-fallback */
   }
 
-  const state = createState(createField(), createSeededRng((Math.random() * 2 ** 31) >>> 0));
+  // Prefer the seed the broker supplies (deterministic replay of a
+  // known-decisive training match); otherwise pick a fresh random
+  // seed for a live simulation.
+  const isReplay = Number.isFinite(matchup?.seed);
+  const seed = isReplay
+    ? (matchup.seed >>> 0)
+    : (Math.random() * 2 ** 31) >>> 0;
+  showcaseRngSeed = seed || 1;
+  const state = resetStateInPlace(showcaseState, showcaseField, showcaseRngFn);
   state.graceFrames = 0;
   // Let the renderer consume ball-bounce events for splash particles.
   state.recordEvents = true;
+  // Zero ball.z on replays — createState spawns the ball at
+  // RESPAWN_DROP_Z=60 for a visual drop on live matches, but the
+  // worker resets it to 0 before running, so replays need to match
+  // or the initial physics diverges. Post-goal kickoffs now go
+  // through the same resetToKickoff (via advancePause's waiting
+  // branch) in BOTH paths, so the visual can run the celebrate/
+  // reposition pauses and still end up bit-identical to the worker
+  // by the time play resumes.
+  if (isReplay) state.ball.z = 0;
 
   let p1Brain = null;
   let p2Brain = null;
@@ -191,7 +258,8 @@ async function nextShowcase() {
   if (matchup && matchup.p1) {
     p1Source = matchup.p1;
     try {
-      p1Brain = new NeuralNet(matchup.p1.weights);
+      showcaseP1Brain.loadWeights(matchup.p1.weights);
+      p1Brain = showcaseP1Brain;
     } catch {
       p1Brain = null;
     }
@@ -201,7 +269,8 @@ async function nextShowcase() {
     } else if (matchup.p2) {
       p2Source = matchup.p2;
       try {
-        p2Brain = new NeuralNet(matchup.p2.weights);
+        showcaseP2Brain.loadWeights(matchup.p2.weights);
+        p2Brain = showcaseP2Brain;
       } catch {
         p2Brain = null;
       }
@@ -268,7 +337,11 @@ function frame(now) {
     physicsTick(state, currentMatch.p1Action, currentMatch.p2Action);
   }
 
-  scoreboard.setScore(state.scoreL, state.scoreR);
+  if (state.pauseState === 'matchend' && state.winner) {
+    scoreboard.setWinner(state.winner);
+  } else {
+    scoreboard.setScore(state.scoreL, state.scoreR);
+  }
   scoreboard.setTimer(
     (state.tick * TICK_MS) / 1000,
     SHOWCASE_MATCH_MS / 1000,

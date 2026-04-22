@@ -13,7 +13,7 @@
 
 /* ── NN architecture (must match games/football/nn.js) ─────────── */
 
-export const ARCH = [20, 20, 16, 18, 9];
+export const ARCH = [25, 16, 9];
 
 const LAYER_COUNT = ARCH.length - 1;
 
@@ -33,19 +33,30 @@ export const WEIGHT_COUNT = LAYER_OFFSETS[LAYER_OFFSETS.length - 1];
 /* ── Fitness ───────────────────────────────────────────────────── */
 
 /**
- * Build a FitnessWeights record. `wPop` and `wFallback` should sum to 1 so
- * fitness stays in [0, 1]; `maxGoalDiff` is the avg-goal-diff that saturates
- * the pop-score axis to 1.0.
+ * Build a FitnessWeights record. `wPop` and `wFallback` should sum to 1
+ * so fitness stays in [0, 1]. No other tuning knobs.
  */
-export function makeFitnessWeights({ wPop, wFallback, maxGoalDiff }) {
-  return { wPop, wFallback, maxGoalDiff };
+export function makeFitnessWeights({ wPop, wFallback }) {
+  return { wPop, wFallback };
 }
 
 /**
- * Normalized hybrid fitness in [0, 1]. A brain with zero data on both
- * axes scores 0.0; one
- * axis of data yields neutral 0.5 on the missing axis so partial data is
- * still meaningful.
+ * Hybrid fitness in [0, 1], built entirely from win rates.
+ *
+ *   pop_win_rate      = (pop_wins      + 0.5 * pop_draws)      / pop_matches
+ *   fallback_win_rate = (fallback_wins + 0.5 * fallback_draws) / fallback_matches
+ *   fitness           = wPop * pop_win_rate + wFallback * fallback_win_rate
+ *
+ * Axes default to 0.5 (neutral) when that axis has no data, so partial
+ * observations are still usable.
+ *
+ * Why pure win rate instead of tanh(goal_diff): a brain that spams
+ * kicks against a weak opponent for 30-0 scores identically to one
+ * that wins 3-0 methodically — both won. Training matches are uncapped
+ * so goal_diff can balloon to 30, wrecking any fixed-scale
+ * normalisation. Win rate is bounded by construction, matches the
+ * question "does this brain win?" directly, and removes every
+ * normalisation-constant debate.
  */
 export function computeFitness(brain, w) {
   const popMatches = brain.popMatches || 0;
@@ -53,23 +64,12 @@ export function computeFitness(brain, w) {
 
   if (popMatches === 0 && fbMatches === 0) return 0.0;
 
-  let popScore;
-  if (popMatches > 0) {
-    const avgDiff = (brain.popGoalDiff || 0) / popMatches;
-    const normalized = Math.max(-1.0, Math.min(1.0, avgDiff / w.maxGoalDiff));
-    popScore = (normalized + 1) / 2;
-  } else {
-    popScore = 0.5;
-  }
-
-  let fbScore;
-  if (fbMatches > 0) {
-    const raw =
-      ((brain.fallbackWins || 0) + 0.5 * (brain.fallbackDraws || 0)) / fbMatches;
-    fbScore = Math.max(0.0, Math.min(1.0, raw));
-  } else {
-    fbScore = 0.5;
-  }
+  const popScore = popMatches > 0
+    ? ((brain.popWins || 0) + 0.5 * (brain.popDraws || 0)) / popMatches
+    : 0.5;
+  const fbScore = fbMatches > 0
+    ? ((brain.fallbackWins || 0) + 0.5 * (brain.fallbackDraws || 0)) / fbMatches
+    : 0.5;
 
   return w.wPop * popScore + w.wFallback * fbScore;
 }
@@ -214,6 +214,8 @@ export function freshBrain(weights) {
     fitness: 0,
     popMatches: 0,
     popGoalDiff: 0,
+    popWins: 0,
+    popDraws: 0,
     fallbackMatches: 0,
     fallbackWins: 0,
     fallbackDraws: 0,

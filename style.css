@@ -37,9 +37,7 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 /* Iosevka Term thins out at very small sizes — bump small text to medium weight for legibility */
-.card-url,
-.game-label,
-.game-placeholder {
+.card-url {
   font-weight: 500;
 }
 
@@ -70,7 +68,9 @@ body {
   color: var(--text-dim);
 }
 
-.banner-label {
+.banner-label,
+.section-label,
+.game-label {
   position: absolute;
   top: -0.55em;
   left: 0.85rem;
@@ -135,19 +135,6 @@ body {
 @media (max-width: 720px) {
   .sections { row-gap: 3.5rem; }
   .section { flex: 0 0 100%; }
-}
-
-.section-label {
-  position: absolute;
-  top: -0.55em;
-  left: 0.85rem;
-  padding: 0 0.5em;
-  background: var(--bg);
-  font-size: 0.6rem;
-  color: var(--text-dim);
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  font-weight: 500;
 }
 
 .grid {
@@ -261,7 +248,6 @@ body {
   }
 }
 
-
 /* ── Background black hole ── */
 
 #bh-bg {
@@ -301,18 +287,6 @@ body {
   margin-top: 2.5rem;
   color: var(--text-dim);
   font-family: var(--mono);
-}
-
-.game-label {
-  position: absolute;
-  top: -0.55em;
-  left: 0.85rem;
-  padding: 0 0.5em;
-  background: var(--bg);
-  font-size: 0.6rem;
-  color: var(--text-dim);
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
 }
 
 .game-scoreboard {
@@ -419,15 +393,37 @@ body {
   padding-top: 0.6rem;
 }
 
+.game-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.3rem 1.2rem;
+  margin-bottom: 0.6rem;
+}
+
+.game-stats-group {
+  min-width: 0;
+}
+
+.game-stats-group h4 {
+  font-size: 0.62rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 500;
+  margin: 0 0 0.25rem 0;
+  padding-bottom: 0.15rem;
+  border-bottom: 1px solid var(--rule);
+}
+
 .game-stats {
   display: grid;
-  grid-template-columns: auto 1fr auto 1fr auto 1fr;
-  column-gap: 0.9rem;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.7rem;
   row-gap: 0.05rem;
   font-size: 0.7rem;
   line-height: 1.35;
   color: var(--text-dim);
-  margin-bottom: 0.6rem;
+  margin: 0;
 }
 
 .game-stats dt {
@@ -438,6 +434,8 @@ body {
 .game-stats dd {
   color: var(--text);
   font-weight: 500;
+  margin: 0;
+  text-align: right;
 }
 
 .game-fitness-graph {
@@ -514,6 +512,6 @@ body {
 }
 
 @media (max-width: 720px) {
-  .game-stats { grid-template-columns: auto 1fr; }
+  .game-stats-grid { grid-template-columns: 1fr; gap: 0.6rem 0; }
 }
 

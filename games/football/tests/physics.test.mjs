@@ -10,30 +10,64 @@ import {
   createField,
   createState,
   createSeededRng,
+  resetStateInPlace,
   tick,
   buildInputs,
   FIELD_HEIGHT,
   PLAYER_HEIGHT,
+  PLAYER_WIDTH,
   BALL_RADIUS,
   MAX_PLAYER_SPEED,
   Z_STRETCH,
+  TICK_MS,
+  GRAVITY,
   KICK_WINDUP_MS,
   KICK_DURATION_MS,
+  STICKMAN_TORSO_RADIUS,
+  STICKMAN_UPPER_LEG,
+  STICKMAN_LOWER_LEG,
+  solve2BoneIK,
+  KICK_STRIKE_WINDOW_MS,
+  kickLegExtension,
+  kickLegPose,
+  canKickReach,
+  AIRKICK_MS,
+  AIRKICK_PEAK_FRAC,
+  ACTION_MOVE_X,
+  ACTION_MOVE_Y,
+  ACTION_KICK_GATE,
+  ACTION_KICK_DX,
+  ACTION_KICK_DY,
+  ACTION_KICK_DZ,
+  ACTION_KICK_POWER,
+  ACTION_PUSH_GATE,
+  ACTION_PUSH_POWER,
+  NN_OUTPUT_SIZE,
+  NN_INPUT_SIZE,
 } from '../physics.js';
 
-const NOOP = [0, 0, -1, 0, 0, 0, 0, -1, 0];
-
-function moveAction(mx, my = 0) {
-  return [mx, my, -1, 0, 0, 0, 0, -1, 0];
+/** Build a 9-float action vector by action-slot name rather than
+ *  magic index. All fields default to the neutral "do nothing" value
+ *  (gates at -1, power/direction at 0). */
+function action({ moveX = 0, moveY = 0, kickGate = -1, kickDx = 0, kickDy = 0, kickDz = 0, kickPower = 0, pushGate = -1, pushPower = 0 } = {}) {
+  const a = new Array(NN_OUTPUT_SIZE);
+  a[ACTION_MOVE_X]     = moveX;
+  a[ACTION_MOVE_Y]     = moveY;
+  a[ACTION_KICK_GATE]  = kickGate;
+  a[ACTION_KICK_DX]    = kickDx;
+  a[ACTION_KICK_DY]    = kickDy;
+  a[ACTION_KICK_DZ]    = kickDz;
+  a[ACTION_KICK_POWER] = kickPower;
+  a[ACTION_PUSH_GATE]  = pushGate;
+  a[ACTION_PUSH_POWER] = pushPower;
+  return a;
 }
 
-function pushAction(power = 1) {
-  return [0, 0, -1, 0, 0, 0, 0, 1, power];
-}
-
-function kickAction(dx = 1, dy = 0, dz = 0, power = 1) {
-  return [0, 0, 1, dx, dy, dz, power, -1, 0];
-}
+const NOOP = action();
+const moveAction = (mx, my = 0) => action({ moveX: mx, moveY: my });
+const pushAction = (power = 1) => action({ pushGate: 1, pushPower: power });
+const kickAction = (dx = 1, dy = 0, dz = 0, power = 1) =>
+  action({ kickGate: 1, kickDx: dx, kickDy: dy, kickDz: dz, kickPower: power });
 
 /** Fresh state with seeded RNG, grace frames zeroed, and events enabled. */
 function freshState(seed = 42) {
@@ -246,7 +280,10 @@ test('ball past the OOB margin triggers out, not goal', () => {
 
   tick(state, NOOP, NOOP);
 
-  assert.ok(state.ball.frozen, 'ball must be frozen after OOB');
+  // Ball is no longer frozen on OOB — it keeps moving (and falls)
+  // while the reposition pause plays out.
+  assert.equal(state.pauseState, 'reposition',
+    'reposition pause should fire on OOB');
   assert.ok(
     state.events.some(e => e.type === 'out'),
     'out event expected'
@@ -345,9 +382,11 @@ test('ball in mouth, below crossbar, fully past goal line scores for the other s
     state.events.some(e => e.type === 'goal' && e.scorer === 'p1'),
     `goal event missing: ${JSON.stringify(state.events)}`
   );
-  // Ball must be frozen post-goal
-  assert.ok(state.ball.frozen, 'ball must freeze after goal');
-  // Pause state must be celebrate
+  // Ball is no longer frozen on goal — it keeps moving through the
+  // celebrate pause so a scored shot visibly settles into the net.
+  // inGoal routes wall contact through the absorbing inner-net
+  // resolver; graceFrames blocks a re-score.
+  assert.ok(state.ball.inGoal, 'inGoal flag should be set on goal');
   assert.equal(state.pauseState, 'celebrate');
 });
 
@@ -429,16 +468,30 @@ test('different seeds produce different trajectories', () => {
 
 /* ── Bonus: buildInputs shape ───────────────────────────────── */
 
-test('buildInputs produces 20 floats in [-1, 1]', () => {
+test('buildInputs produces NN_INPUT_SIZE floats in [-1, 1]', () => {
   const state = freshState();
   state.p1.x = 100;
   state.ball.vx = 5;
   const inputs = buildInputs(state, 'p1');
-  assert.equal(inputs.length, 20);
+  assert.equal(inputs.length, NN_INPUT_SIZE);
   for (const v of inputs) {
     assert.ok(v >= -1 && v <= 1, `input out of range: ${v}`);
     assert.ok(Number.isFinite(v), `non-finite input: ${v}`);
   }
+});
+
+test('buildInputs derived signals expose possession and goal distances', () => {
+  const state = freshState();
+  // Put ball right next to p1, far from p2 → possession > 0.
+  state.p1.x = 100; state.ball.x = 110; state.ball.y = state.p1.y;
+  state.p2.x = 800;
+  const inP1 = buildInputs(state, 'p1');
+  const inP2 = buildInputs(state, 'p2');
+  assert.ok(inP1[20] > 0, `p1 should own possession, got ${inP1[20]}`);
+  assert.ok(inP2[20] < 0, `p2 should sense p1 has possession, got ${inP2[20]}`);
+  // Self distances: p1 near left end → close to own goal, far from opp.
+  assert.ok(inP1[23] < inP1[24], 'p1 should be closer to own goal than opp');
+  assert.ok(inP2[23] < inP2[24], 'p2 should be closer to own goal than opp');
 });
 
 test('buildInputs heading outputs track cos/sin(heading)', () => {
@@ -708,14 +761,16 @@ test('push lands when players overlap in depth (touching)', () => {
   assert.ok(state.events.some(e => e.type === 'push'), 'push event expected on touch');
 });
 
-test('kick activates when ball is within new lateral reach', () => {
+test('kick activates when ball is within hip reach', () => {
   const state = freshState();
-  // Place p1 and park the ball just in front of him (forward in x)
-  // at the same mid-Y. Ball should be kickable.
+  // Ball parked directly in front of p1 on his depth-line. The hip
+  // anchor sits at HIP_BASE_Z (20) above the pitch; the ball at
+  // ground level is ~16 world-y below, leaving ~12 world-xz of
+  // horizontal reach — 5 units forward is well inside that.
   state.p1.x = 300;
   state.p1.y = 20;
   state.ball.x = state.p1.x + state.field.playerWidth / 2 + 5;
-  state.ball.y = state.p1.y + PLAYER_HEIGHT / 2;
+  state.ball.y = state.p1.y;
   state.ball.z = 0;
   state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
   state.ball.frozen = false;
@@ -777,6 +832,10 @@ test('player reaches full speed after the full ramp and keeps it there', () => {
 test('releasing input decelerates over multiple ticks, not instantly', () => {
   const state = freshState();
   state.p1.x = 300;
+  // Keep p2 clear of p1's run so the test isolates deceleration —
+  // without this the pair-collision zeros vx exactly as the NOOP
+  // tick under test would otherwise decay it.
+  state.p2.x = state.field.width - 100;
   for (let i = 0; i < 25; i++) tick(state, moveAction(1), NOOP);
   const topVx = state.p1.vx;
   tick(state, NOOP, NOOP);
@@ -884,7 +943,7 @@ test('kick state machine fires impact at windup end and clears at duration end',
   state.p1.x = 300;
   state.p1.y = 20;
   state.ball.x = state.p1.x + state.field.playerWidth / 2 + 5;
-  state.ball.y = state.p1.y + PLAYER_HEIGHT / 2;
+  state.ball.y = state.p1.y;
   state.ball.z = 0;
   state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
   state.ball.frozen = false;
@@ -896,7 +955,7 @@ test('kick state machine fires impact at windup end and clears at duration end',
 
   // Drive the state machine up to just after the windup — impact
   // should fire (ball.vx becomes non-zero).
-  const windupTicks = Math.ceil(KICK_WINDUP_MS / 16);
+  const windupTicks = Math.ceil(KICK_WINDUP_MS / TICK_MS);
   for (let i = 0; i < windupTicks + 1; i++) tick(state, NOOP, NOOP);
   assert.ok(
     state.p1.kick.fired,
@@ -908,7 +967,7 @@ test('kick state machine fires impact at windup end and clears at duration end',
   );
 
   // Drive to the end of KICK_DURATION_MS — active must go false.
-  const totalTicks = Math.ceil(KICK_DURATION_MS / 16);
+  const totalTicks = Math.ceil(KICK_DURATION_MS / TICK_MS);
   for (let i = 0; i < totalTicks; i++) tick(state, NOOP, NOOP);
   assert.equal(state.p1.kick.active, false, 'kick should deactivate after KICK_DURATION_MS');
 });
@@ -1005,10 +1064,10 @@ test('headless scoreGoal resets pitch instantly, no pause', () => {
   assert.equal(state.pauseState, null, 'still no pause after advancing');
 });
 
-test('headless does not end match on WIN_SCORE', () => {
+test('headless ends match at WIN_SCORE (capped like visual)', () => {
   const state = freshState();
   state.headless = true;
-  state.scoreL = 4; // one goal short of default WIN_SCORE=5
+  state.scoreL = 2; // one goal short of WIN_SCORE=3
   const f = state.field;
 
   state.ball.x = f.width - 120;
@@ -1017,10 +1076,29 @@ test('headless does not end match on WIN_SCORE', () => {
   state.ball.vx = 5; state.ball.vy = 0; state.ball.vz = 0;
   state.ball.frozen = false;
 
-  for (let i = 0; i < 40 && state.scoreL < 5; i++) tick(state, NOOP, NOOP);
-  assert.equal(state.scoreL, 5, 'fifth goal should have scored');
-  assert.equal(state.matchOver, false, 'headless must not set matchOver');
-  assert.equal(state.pauseState, null, 'headless must not set matchend pause');
+  for (let i = 0; i < 40 && state.scoreL < 3; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.scoreL, 3, 'third goal should have scored');
+  assert.equal(state.matchOver, true, 'headless should set matchOver at WIN_SCORE');
+  // Winner recorded but no pause-state (headless skips the celebrate).
+  assert.equal(state.pauseState, null);
+  assert.equal(state.winner, 'left');
+});
+
+test('headless instant-resets below WIN_SCORE (keeps playing)', () => {
+  const state = freshState();
+  state.headless = true;
+  state.scoreL = 0; // plenty of room before WIN_SCORE
+  const f = state.field;
+
+  state.ball.x = f.width - 120;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = 5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  for (let i = 0; i < 40 && state.scoreL < 1; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.scoreL, 1, 'first goal should have scored');
+  assert.equal(state.matchOver, false, 'non-winning goal must not end match');
   assert.equal(state.winner, null);
 });
 
@@ -1046,43 +1124,44 @@ test('headless ballOut also resets instantly', () => {
   assert.equal(state.ball.vx, 0);
 });
 
-test('headless auto-resets a stale match after ~3 wall-clock seconds of no kicks', () => {
-  const state = freshState();
-  state.headless = true;
-  const f = state.field;
-  // Push the ball off-center so we can detect the reset.
-  state.ball.x = f.midX + 200;
-  state.ball.y = 10;
-  // Park p2 off-center too.
-  state.p2.x = 700;
-  state.p2.y = 5;
+test('stall reset fires after 10 wall-clock seconds of no kicks (headless + visual)', () => {
+  // The stall timeout was unified at 10 s for both modes so showcase
+  // replays (which run with state.headless=true for scoreGoal
+  // determinism) reset on the same schedule as the worker that
+  // produced the recording. Before the visual never saw a reset
+  // before tick 625, the worker at tick 187 — the mismatch showed up
+  // as jarring mid-replay teleports every 3 s.
+  const stallTicks = Math.ceil(10000 / TICK_MS);
 
-  // 3000ms / 16ms per tick = ~188 ticks. Pin stall trigger just past.
-  const stallTicks = Math.ceil(3000 / 16);
-  for (let i = 0; i <= stallTicks + 1; i++) tick(state, NOOP, NOOP);
+  for (const headless of [true, false]) {
+    const state = freshState();
+    state.headless = headless;
+    const f = state.field;
+    state.ball.x = f.midX + 200;
+    state.ball.y = 10;
+    state.p2.x = 700;
 
-  // Ball teleported back to midfield.
-  assert.ok(Math.abs(state.ball.x - f.midX) < 1, `ball.x should be ~midX, got ${state.ball.x}`);
-  assert.ok(Math.abs(state.ball.y - FIELD_HEIGHT / 2) < 1);
-  assert.equal(state.ball.vx, 0);
-  // Players teleported back to kickoff.
-  assert.ok(Math.abs(state.p1.y - FIELD_HEIGHT / 2) < 1);
-  assert.ok(Math.abs(state.p2.y - FIELD_HEIGHT / 2) < 1);
-});
+    // Just before the timeout: no reset yet.
+    for (let i = 0; i <= stallTicks - 2; i++) tick(state, NOOP, NOOP);
+    assert.ok(
+      Math.abs(state.ball.x - (f.midX + 200)) < 5,
+      `${headless ? 'headless' : 'visual'}: stall fired too early; ball.x=${state.ball.x}`,
+    );
 
-test('visual mode uses the 10-second stall timeout (NOT the 3s headless one)', () => {
-  const state = freshState();
-  // default headless=false
-  const f = state.field;
-  state.ball.x = f.midX + 200;
-  state.ball.y = 10;
-  // 3000ms / 16ms ≈ 188 ticks. After this many ticks, the ball should
-  // NOT have been reset (visual mode waits 10s = 625 ticks).
-  for (let i = 0; i <= 200; i++) tick(state, NOOP, NOOP);
-  assert.ok(
-    Math.abs(state.ball.x - (f.midX + 200)) < 5,
-    `visual mode must NOT fast-reset; got ball.x=${state.ball.x}`,
-  );
+    // Crossing the threshold: reset fires.
+    for (let i = 0; i < 3; i++) tick(state, NOOP, NOOP);
+    assert.ok(
+      Math.abs(state.ball.x - f.midX) < 1,
+      `${headless ? 'headless' : 'visual'}: ball should reset to midX, got ${state.ball.x}`,
+    );
+    assert.equal(state.ball.vx, 0);
+
+    // Headless also teleports players back; visual leaves them put.
+    if (headless) {
+      assert.ok(Math.abs(state.p1.y - FIELD_HEIGHT / 2) < 1);
+      assert.ok(Math.abs(state.p2.y - FIELD_HEIGHT / 2) < 1);
+    }
+  }
 });
 
 test('visual mode still runs the celebrate pause unchanged', () => {
@@ -1101,4 +1180,1271 @@ test('visual mode still runs the celebrate pause unchanged', () => {
   }
   assert.equal(state.pauseState, 'celebrate', 'visual mode still celebrates');
   assert.ok(state.goalScorer !== null, 'visual mode still flags the scorer');
+});
+
+/* ── Player-vs-player collision (capsule model) ──────────── */
+
+/** World-space horizontal distance between the two players' body
+ *  capsule centers — the single number that defines whether two
+ *  players are in contact. Mirrors the collision resolver math. */
+function capsuleDist(p1, p2) {
+  const dx = (p1.x + PLAYER_WIDTH / 2) - (p2.x + PLAYER_WIDTH / 2);
+  const dz = ((p1.y + PLAYER_HEIGHT / 2) - (p2.y + PLAYER_HEIGHT / 2)) * Z_STRETCH;
+  return Math.hypot(dx, dz);
+}
+
+test('two players walking toward each other on x stop at capsule-contact distance', () => {
+  const state = freshState();
+  state.p1.x = 300; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
+  state.p2.x = 350; state.p2.y = state.p1.y;
+  // Drive p1 right, p2 left. Without the swept capsule solver they
+  // would tunnel straight through each other — combined closure is
+  // ~20 u/tick but the contact diameter is only 6.6.
+  for (let i = 0; i < 30; i++) tick(state, moveAction(1), moveAction(-1));
+  const dist = capsuleDist(state.p1, state.p2);
+  const contact = 2 * STICKMAN_TORSO_RADIUS;
+  assert.ok(
+    dist >= contact - 0.05,
+    `capsule centers must stay at contact distance ${contact.toFixed(2)}, got ${dist.toFixed(3)}`,
+  );
+  // p1 must still be LEFT of p2 (didn't swap places via tunneling).
+  assert.ok(
+    state.p1.x < state.p2.x,
+    `p1 should stay left of p2, got p1.x=${state.p1.x}, p2.x=${state.p2.x}`,
+  );
+});
+
+test('two players walking toward each other on y stop at capsule-contact distance', () => {
+  const state = freshState();
+  state.p1.x = 400; state.p1.y = 10;
+  state.p2.x = 400; state.p2.y = 40;
+  for (let i = 0; i < 50; i++) tick(state, moveAction(0, 1), moveAction(0, -1));
+  const dist = capsuleDist(state.p1, state.p2);
+  const contact = 2 * STICKMAN_TORSO_RADIUS;
+  assert.ok(
+    dist >= contact - 0.05,
+    `capsule centers must stay at contact distance ${contact.toFixed(2)}, got ${dist.toFixed(3)}`,
+  );
+  assert.ok(
+    state.p1.y < state.p2.y,
+    `p1 should stay below p2 (lower y), got p1.y=${state.p1.y}, p2.y=${state.p2.y}`,
+  );
+});
+
+test('overlapping starting positions get separated to capsule-contact distance', () => {
+  const state = freshState();
+  // Start at zero separation (capsules fully overlapping).
+  state.p1.x = 400; state.p1.y = 27;
+  state.p2.x = 400; state.p2.y = 27;
+  tick(state, NOOP, NOOP);
+  const dist = capsuleDist(state.p1, state.p2);
+  const contact = 2 * STICKMAN_TORSO_RADIUS;
+  assert.ok(
+    dist >= contact - 0.05,
+    `overlapping capsules must separate to ${contact.toFixed(2)}, got ${dist.toFixed(3)}`,
+  );
+});
+
+test('far-apart players with tiny perpendicular velocity do NOT stall on false-positive collision', () => {
+  // Regression: the pair-collision guard used a per-axis sign-flip
+  // heuristic on the centre-offset vector. Two players 79 units
+  // apart in x but nearly aligned in y would trigger that heuristic
+  // on any tick where their y-offsets crossed sign. The solver then
+  // rewound positions and zeroed both players' x-velocities along
+  // the (far-away) separation normal — stalling all motion.
+  //
+  // Setup: symmetric x positions (80 units apart), same y, both
+  // moving toward each other in x, with OPPOSITE tiny y moves that
+  // cause their y-offsets to cross zero every few ticks.
+  const state = freshState();
+  state.p1.x = 400; state.p1.y = 27;
+  state.p2.x = 480; state.p2.y = 27;
+  // moveX converging, tiny opposite moveY with sign flips each tick
+  // to reproduce the false-positive trigger.
+  let flip = 1;
+  for (let i = 0; i < 10; i++) {
+    flip = -flip;
+    const a1 = [ 1,  0.01 * flip, -1,  1, 0, 0, 0, -1, 0];
+    const a2 = [-1, -0.01 * flip, -1, -1, 0, 0, 0, -1, 0];
+    tick(state, a1, a2);
+  }
+  // Both players should have accelerated over 10 ticks. With
+  // PLAYER_ACCEL = 0.5 per tick, after ~10 ticks speeds should be
+  // near MAX_PLAYER_SPEED = 10. Asserting > 3 gives plenty of margin
+  // while still catching a stall at ~0.5 that would appear after the
+  // first tick if the bug re-emerged.
+  assert.ok(
+    state.p1.vx > 3,
+    `p1 should have accelerated; stall bug returned? vx=${state.p1.vx}`,
+  );
+  assert.ok(
+    state.p2.vx < -3,
+    `p2 should have accelerated; stall bug returned? vx=${state.p2.vx}`,
+  );
+});
+
+test('a push impulse cannot impale the opponent body', () => {
+  const state = freshState();
+  // Position the pusher right next to the victim and facing them.
+  // 15-unit gap in physics x is already inside the capsule contact
+  // distance (6.6 world) — but world-depth axis matters too; here
+  // both players are at the same y so it's pure-x.
+  state.p1.x = 400; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
+  state.p2.x = 415; state.p2.y = state.p1.y;
+  state.p1.heading = 0;
+  tick(state, pushAction(1), NOOP);
+  for (let i = 0; i < 30; i++) tick(state, NOOP, NOOP);
+  // p1 (the pusher) must still be on the LEFT side of p2 at contact
+  // distance — if the impulse had impaled p2, p1 would have crossed
+  // over and ended up on the right.
+  assert.ok(
+    state.p1.x < state.p2.x,
+    `pusher crossed through victim: p1.x=${state.p1.x}, p2.x=${state.p2.x}`,
+  );
+  const dist = capsuleDist(state.p1, state.p2);
+  const contact = 2 * STICKMAN_TORSO_RADIUS;
+  assert.ok(
+    dist >= contact - 0.1,
+    `capsules must stay at contact distance, got ${dist.toFixed(3)} (contact=${contact.toFixed(2)})`,
+  );
+});
+
+/* ── Goal back-face + swept ball collision ───────────────── */
+
+test('ball arriving from BEHIND the right goal does not tunnel through the back', () => {
+  const state = freshState();
+  state.headless = true;  // skip pause state machine
+  const f = state.field;
+  // Start outside the goal's back wall, moving left (toward midfield).
+  // Without the fix, the "open mouth" exemption fires anywhere inside
+  // the goal AABB and the ball passes straight through.
+  state.ball.x = f.goalRRight + 3;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 5;
+  state.ball.vx = -30; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  const startScore = state.scoreL + state.scoreR;
+
+  tick(state, NOOP, NOOP);
+
+  // Ball from behind must not score for either side.
+  assert.equal(state.scoreL + state.scoreR, startScore,
+    'ball entering from behind must not score');
+  // Ball must still be at or behind the back wall (it bounced off),
+  // not on the field side of the line.
+  assert.ok(
+    state.ball.x >= f.goalRRight - 0.5,
+    `ball crossed back wall: x=${state.ball.x}`,
+  );
+});
+
+test('ball arriving from BEHIND the left goal does not tunnel through the back', () => {
+  const state = freshState();
+  state.headless = true;
+  const f = state.field;
+  state.ball.x = f.goalLLeft - 3;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 5;
+  state.ball.vx = 30; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  const startScore = state.scoreL + state.scoreR;
+
+  tick(state, NOOP, NOOP);
+
+  assert.equal(state.scoreL + state.scoreR, startScore,
+    'ball entering from behind must not score');
+  assert.ok(
+    state.ball.x <= f.goalLLeft + 0.5,
+    `ball crossed back wall: x=${state.ball.x}`,
+  );
+});
+
+test('hard shot at a goal post bounces instead of tunneling through', () => {
+  const state = freshState();
+  state.headless = true;
+  const f = state.field;
+  // Aim a very fast ball at the bottom post (y = mouthYMin). Per-tick
+  // motion = 60 units; post thickness ≈ 2.4 units diameter. Without
+  // the swept integration the ball skips right past the post in a
+  // single step — and since the endpoint is within mouth y/z (ball
+  // has drifted inside), the scoring check fires falsely.
+  state.ball.x = f.goalLineR - 40;
+  state.ball.y = f.goalMouthYMin;  // at the top of the bottom post
+  state.ball.z = 5;
+  state.ball.vx = 60; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  const startScore = state.scoreL + state.scoreR;
+  tick(state, NOOP, NOOP);
+
+  // Ball clipping a post must not produce a score.
+  assert.equal(state.scoreL + state.scoreR, startScore,
+    'ball clipping the post must not score');
+});
+
+test('slow shot directly into the mouth still scores cleanly (regression)', () => {
+  const state = freshState();
+  state.headless = true;  // skip celebrate pause
+  const f = state.field;
+  state.ball.x = f.goalLineR - 5;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 5;
+  state.ball.vx = 12; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  // Ball travels into right goal → scores for LEFT team (p1).
+  for (let i = 0; i < 30 && state.scoreL === 0; i++) {
+    tick(state, NOOP, NOOP);
+  }
+
+  assert.equal(state.scoreL, 1, 'slow shot into right mouth should still score');
+});
+
+/* ── Ball continues after score/out, inner net absorbs ──── */
+
+test('ball continues moving after scoring instead of freezing', () => {
+  const state = freshState();
+  const f = state.field;
+  // Shot clearly into the right mouth on the ground.
+  state.ball.x = f.goalLineR + BALL_RADIUS + 2;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = 10; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  tick(state, NOOP, NOOP);
+
+  // Goal fires, ball NOT frozen, inGoal flag is set.
+  assert.equal(state.scoreL, 1);
+  assert.equal(state.pauseState, 'celebrate');
+  assert.equal(state.ball.frozen, false, 'ball should remain unfrozen');
+  assert.ok(state.ball.inGoal, 'inGoal flag should be set');
+});
+
+test('ball hitting the inner back net comes to rest horizontally', () => {
+  const state = freshState();
+  const f = state.field;
+  // Park the ball inside the right goal just before the back wall,
+  // moving into the back, with inGoal already set (simulating a
+  // scored shot mid-flight).
+  state.ball.x = f.goalRRight - BALL_RADIUS - 1;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 3;
+  state.ball.vx = 20; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.inGoal = true;
+  state.graceFrames = 999;  // block scoring path, we're past that
+  state.ball.frozen = false;
+  state.pauseState = 'celebrate';  // just past the score, physics keeps going
+  state.pauseTimer = 100;
+
+  // One tick should drive the ball into the back and dampen it.
+  tick(state, NOOP, NOOP);
+
+  // Ball should be clamped inside the back wall, with no horizontal
+  // velocity. Vertical motion (gravity) is free to carry on.
+  assert.ok(
+    state.ball.x + BALL_RADIUS <= f.goalRRight + 0.01,
+    `ball clipped the back net: x=${state.ball.x}`,
+  );
+  assert.equal(state.ball.vx, 0, 'inner back net absorbs vx');
+  assert.equal(state.ball.vy, 0, 'inner back net absorbs vy');
+});
+
+test('ball goes out of bounds without freezing', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = f.width + 2;  // past field edge
+  state.ball.y = FIELD_HEIGHT / 2;
+  state.ball.z = 0;
+  state.ball.vx = 5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  tick(state, NOOP, NOOP);
+
+  assert.equal(state.pauseState, 'reposition', 'reposition should fire on OOB');
+  assert.equal(state.ball.frozen, false, 'ball should not freeze on OOB');
+});
+
+test('reset after pause clears inGoal so next play uses outer resolver', () => {
+  const state = freshState();
+  state.ball.inGoal = true;
+  state.pauseState = 'waiting';
+  state.pauseTimer = 1;
+  // Run enough ticks for the waiting pause to elapse and resetBall to fire.
+  for (let i = 0; i < 5; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.ball.inGoal, false,
+    'inGoal should be cleared when the ball is reset for kickoff');
+});
+
+/* ── Body collider: cushion + deflect trap ──────────────── */
+
+// Shared setup for body-trap scenarios. Place p1 in the middle of
+// the field, park p2 out of the way, disable grace/pauses.
+function trapState(seed = 7) {
+  const state = freshState(seed);
+  state.headless = true;  // skip pause state machine
+  // p1 at a clean midfield spot.
+  state.p1.x = 400;
+  state.p1.y = 24;  // center-y = 27
+  state.p1.vx = 0; state.p1.vy = 0;
+  state.p1.heading = 0;
+  // p2 far out of the way.
+  state.p2.x = 800;
+  state.p2.y = 24;
+  state.p2.vx = 0; state.p2.vy = 0;
+  return state;
+}
+
+test('ball straight at torso — trap fires immediately and kills normal velocity', () => {
+  const state = trapState();
+  state.recordEvents = true;
+  const p = state.p1;
+  const initialSpeed = 10;
+  // Ball waist-high, on the body axis y, moving directly at the torso.
+  state.ball.x = p.x + PLAYER_WIDTH / 2 - 10;
+  state.ball.y = p.y;
+  state.ball.z = 12;
+  state.ball.vx = initialSpeed; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  // One tick is enough for the ball to contact the torso
+  // (distance 10, vx=10 → contact this tick).
+  tick(state, NOOP, NOOP);
+
+  // Trap event fired.
+  assert.ok(
+    state.events.some((e) => e.type === 'ball_trap'),
+    'trap event must fire on torso contact',
+  );
+  // Head-on hit: normal is purely -x, tangential velocity is zero, so
+  // the cushion brings ball.vx all the way to 0 (within float noise).
+  assert.ok(
+    Math.abs(state.ball.vx) < 0.01,
+    `head-on trap must zero the normal-component velocity, got vx=${state.ball.vx}`,
+  );
+});
+
+test('ball that was trapped settles on the ground close to the player', () => {
+  const state = trapState();
+  const p = state.p1;
+  state.ball.x = p.x + PLAYER_WIDTH / 2 - 10;
+  state.ball.y = p.y;
+  state.ball.z = 12;
+  state.ball.vx = 10; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  for (let i = 0; i < 60; i++) tick(state, NOOP, NOOP);
+
+  assert.ok(state.ball.z <= BALL_RADIUS + 0.1,
+    `ball should settle on ground, got z=${state.ball.z}`);
+  // Head-on hit zeroes horizontal velocity; ball drops through gravity
+  // to the ground and sits roughly at the clamp point. Bound is the
+  // expected contact distance plus a small margin — any meaningful
+  // roll would exceed this.
+  const contactDist = STICKMAN_TORSO_RADIUS + BALL_RADIUS;
+  const horizontalDist = Math.hypot(
+    state.ball.x - (p.x + PLAYER_WIDTH / 2),
+    state.ball.y - (p.y),
+  );
+  assert.ok(horizontalDist <= contactDist + 1,
+    `trapped ball should stop at ~contact distance (${contactDist.toFixed(2)}), got ${horizontalDist.toFixed(2)}`);
+});
+
+test('ball falling onto head fires a trap event and kills normal velocity', () => {
+  const state = trapState();
+  state.recordEvents = true;
+  const p = state.p1;
+  state.ball.x = p.x + PLAYER_WIDTH / 2 - 1;
+  state.ball.y = p.y;
+  state.ball.z = 60;
+  state.ball.vx = 1; state.ball.vy = 0; state.ball.vz = -8;
+  state.ball.frozen = false;
+
+  // Advance until trap fires. Head-hit is expected ~1 tick after
+  // ball.z crosses head-contact (≈52.87). Gravity + vz=−8 → ~1 tick.
+  let fireTickVz = null;
+  for (let i = 0; i < 20; i++) {
+    tick(state, NOOP, NOOP);
+    if (state.events.some((e) => e.type === 'ball_trap')) {
+      fireTickVz = state.ball.vz;
+      break;
+    }
+  }
+
+  assert.ok(fireTickVz !== null, 'trap event must fire when ball contacts the head');
+  // The cushion kills the normal-component (mostly −y) completely —
+  // the stuck-escape nudge zeroes vz when it kicks in, and even a
+  // small lateral component leaves the surviving vertical tiny. A
+  // full tick of gravity afterwards (−0.3) is the only real residue.
+  assert.ok(
+    fireTickVz > -0.5,
+    `head trap must kill most of downward velocity (was −8), got vz=${fireTickVz}`,
+  );
+});
+
+test('ball that was head-trapped settles on the ground close to the player', () => {
+  const state = trapState();
+  const p = state.p1;
+  state.ball.x = p.x + PLAYER_WIDTH / 2 - 1;
+  state.ball.y = p.y;
+  state.ball.z = 60;
+  state.ball.vx = 1; state.ball.vy = 0; state.ball.vz = -8;
+  state.ball.frozen = false;
+
+  // Stop short of the 188-tick headless stall reset which would
+  // teleport the ball to midfield and hide the real settling point.
+  for (let i = 0; i < 150; i++) tick(state, NOOP, NOOP);
+
+  assert.ok(state.ball.z <= BALL_RADIUS + 0.1,
+    `ball must end up on ground, got z=${state.ball.z}`);
+  // Tight bound: post-trap the ball drops mostly straight down off
+  // the head (tunnel-correction places it ~contact distance to the
+  // player's front), so it should rest within one player-width.
+  const horizontalDist = Math.hypot(
+    state.ball.x - (p.x + PLAYER_WIDTH / 2),
+    state.ball.y - (p.y),
+  );
+  assert.ok(horizontalDist <= PLAYER_WIDTH,
+    `head-trapped ball should settle within one player-width, got ${horizontalDist.toFixed(2)}`);
+});
+
+test('ball passing at shoulder clearance does NOT contact torso', () => {
+  const state = trapState();
+  state.recordEvents = true;
+  const p = state.p1;
+  // Lateral clearance (physics y in world-depth units): translate the
+  // world-space "just past torso+ball radii" into physics y by
+  // dividing by Z_STRETCH.
+  const clearanceWorld = STICKMAN_TORSO_RADIUS + BALL_RADIUS + 1;
+  const clearancePhysY = clearanceWorld / Z_STRETCH;
+  const initialVx = 15;
+  state.ball.x = p.x + PLAYER_WIDTH / 2 - 60;
+  state.ball.y = p.y + clearancePhysY;
+  state.ball.z = 12;
+  state.ball.vx = initialVx; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  // Run just long enough for the ball to cross the player's x range,
+  // staying airborne (no ground friction). Air friction * ~10 ticks
+  // is ~10 %, so we check vx stays >70 % of initial.
+  for (let i = 0; i < 10; i++) tick(state, NOOP, NOOP);
+
+  assert.ok(
+    !state.events.some((e) => e.type === 'ball_trap'),
+    'ball passing at shoulder clearance must not fire trap',
+  );
+  assert.ok(state.ball.x > p.x + PLAYER_WIDTH,
+    `ball should have passed player, x=${state.ball.x}`);
+  assert.ok(state.ball.vx > initialVx * 0.7,
+    `ball vx should retain most of its speed in 10 ticks, got ${state.ball.vx}`);
+});
+
+test('walking into a stationary ball pins it ahead of the player (dribble, stable regime)', () => {
+  // Drive the player at a modest constant speed (5 u/tick) that the
+  // ball can track — GROUND_FRICTION decays ball.vx ~5.6 %/tick, so
+  // the per-contact boost just needs to refill that. Max-speed ramp
+  // is the RUN case and is tested separately below.
+  const state = trapState();
+  const p = state.p1;
+  state.ball.x = p.x + PLAYER_WIDTH / 2 + 30;
+  state.ball.y = p.y;
+  state.ball.z = BALL_RADIUS;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  const walkHalf = [0.5, 0, -1, 0, 0, 0, 0, -1, 0];  // target vx = 5
+
+  // Let the player ramp + catch the ball (takes about 10-15 ticks).
+  for (let i = 0; i < 20; i++) tick(state, walkHalf, NOOP);
+
+  // Now verify that the dribble stays stable for the NEXT 20 ticks:
+  // the gap must stay at contact distance each tick (tight tolerance).
+  const expected = STICKMAN_TORSO_RADIUS + BALL_RADIUS;
+  for (let i = 0; i < 20; i++) {
+    tick(state, walkHalf, NOOP);
+    const gap = state.ball.x - (state.p1.x + PLAYER_WIDTH / 2);
+    assert.ok(
+      Math.abs(gap - expected) < 0.5,
+      `dribble tick ${i}: gap should be ~${expected.toFixed(2)}, got ${gap.toFixed(2)}`,
+    );
+  }
+});
+
+test('dribble survives a full sprint (tunnel-correction keeps ball in front)', () => {
+  // User's choice for this task was "ball stays pinned at feet" even
+  // at sprint speed (arcade feel, not realistic-physics). This test
+  // pins that contract: if the player runs past the ball, the
+  // tunnel-correction teleports the ball back to the front, dribble
+  // continues.
+  const state = trapState();
+  const p = state.p1;
+  state.ball.x = p.x + PLAYER_WIDTH / 2 + 30;
+  state.ball.y = p.y;
+  state.ball.z = BALL_RADIUS;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  const moveRight = [1, 0, -1, 0, 0, 0, 0, -1, 0];
+  // 40 ticks of full sprint gives the player time to ramp to
+  // MAX_PLAYER_SPEED (10 u/tick) and then some.
+  for (let i = 0; i < 40; i++) tick(state, moveRight, NOOP);
+
+  const gap = state.ball.x - (state.p1.x + PLAYER_WIDTH / 2);
+  const expected = STICKMAN_TORSO_RADIUS + BALL_RADIUS;
+  // Ball should be on the player's forward side (+x) at roughly the
+  // contact distance, even after acceleration past the ball.
+  assert.ok(
+    gap > 0 && gap < expected + 1,
+    `ball should still be pinned in front after sprint, got gap=${gap.toFixed(2)}`,
+  );
+});
+
+test('active kick skips body trap — foot contact handles impulse', () => {
+  const state = trapState();
+  const p = state.p1;
+  // Ball aimed directly at torso, same as the first trap test.
+  state.ball.x = p.x + PLAYER_WIDTH / 2 - 30;
+  state.ball.y = p.y;
+  state.ball.z = 12;
+  state.ball.vx = 15; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  // Force an active kick on the player — body collider should be inert.
+  p.kick.active = true;
+  p.kick.kind = 'ground';
+  p.kick.stage = 'windup';
+  p.kick.timer = 0;
+
+  // Run just long enough for the ball to reach the torso region.
+  for (let i = 0; i < 10; i++) tick(state, NOOP, NOOP);
+
+  // Ball should have carried through the torso zone without being trapped —
+  // horizontal speed stays mostly intact (subject to air friction), and it's
+  // past the player's x position.
+  assert.ok(state.ball.x > p.x + PLAYER_WIDTH,
+    `ball should have passed through torso zone, x=${state.ball.x}`);
+  assert.ok(state.ball.vx > 10,
+    `active kick should leave ball vx mostly intact, got ${state.ball.vx}`);
+});
+
+test('adaptive hitbox — contact fires exactly at (torso_radius + ball_radius)', () => {
+  // Instead of mutating the constant, assert that the contact distance
+  // IS the sum of radii, by placing the ball at known distances and
+  // checking whether a trap fires (ball.vx changes).
+  const ASSUMED_RADIUS_SUM = STICKMAN_TORSO_RADIUS + BALL_RADIUS;
+
+  // Just-inside: ball slightly closer than the sum → should contact.
+  {
+    const state = trapState();
+    const p = state.p1;
+    state.ball.x = p.x + PLAYER_WIDTH / 2 + (ASSUMED_RADIUS_SUM - 0.3);
+    state.ball.y = p.y;
+    state.ball.z = 12;
+    state.ball.vx = -3; state.ball.vy = 0; state.ball.vz = 0;  // moving INTO torso
+    state.ball.frozen = false;
+    state.recordEvents = true;
+    tick(state, NOOP, NOOP);
+    assert.ok(
+      state.events.some((e) => e.type === 'ball_trap'),
+      'ball inside contact distance should fire ball_trap event',
+    );
+  }
+  // Just-outside: ball slightly farther than the sum → no contact.
+  {
+    const state = trapState();
+    const p = state.p1;
+    state.ball.x = p.x + PLAYER_WIDTH / 2;
+    state.ball.y = p.y + ASSUMED_RADIUS_SUM + 0.5;
+    state.ball.z = 12;
+    state.ball.vx = 0; state.ball.vy = -2; state.ball.vz = 0;  // moving toward body but not yet in
+    state.ball.frozen = false;
+    state.recordEvents = true;
+    tick(state, NOOP, NOOP);
+    assert.ok(
+      !state.events.some((e) => e.type === 'ball_trap'),
+      'ball outside contact distance should NOT fire ball_trap',
+    );
+  }
+});
+
+/* ── solve2BoneIK — pure solver ──────────────────────────────── */
+
+/** Project through the solver output and verify the foot ends at
+ *  the expected (fwd, up) position. Returns the absolute error. */
+function footError(res, expectedFwd, expectedUp) {
+  return Math.hypot(res.footFwd - expectedFwd, res.footUp - expectedUp);
+}
+
+/** Reconstruct the foot position from the solver's angles + bone
+ *  lengths. Tests that upperAngle/lowerAngle are self-consistent
+ *  with footFwd/footUp (would catch a sign error in the shin
+ *  computation). */
+function reconstructFoot(res, U, L) {
+  const kneeFwd  = U * Math.sin(res.upperAngle);
+  const kneeDown = U * Math.cos(res.upperAngle);
+  const footFwd  = kneeFwd + L * Math.sin(res.lowerAngle);
+  const footDown = kneeDown + L * Math.cos(res.lowerAngle);
+  return { fwd: footFwd, up: -footDown };
+}
+
+test('solve2BoneIK reachable target → foot lands on target', () => {
+  const U = 10, L = 10;
+  // Typical kick pose: ball 10 forward, 16 below hip.
+  const res = solve2BoneIK(10, -16, U, L, { upperAngle: 0, lowerAngle: 0, footFwd: 0, footUp: 0 });
+  assert.ok(footError(res, 10, -16) < 1e-9, `foot missed: ${footError(res, 10, -16)}`);
+  const recon = reconstructFoot(res, U, L);
+  assert.ok(Math.hypot(recon.fwd - 10, recon.up - (-16)) < 1e-9, 'angles inconsistent with foot position');
+});
+
+test('solve2BoneIK knee bends forward of hip→foot line', () => {
+  const U = 10, L = 10;
+  // Target forward and below — knee should be MORE forward than
+  // the midpoint of the hip→foot line (knee-forward branch).
+  const res = solve2BoneIK(8, -14, U, L, {});
+  const kneeFwd = U * Math.sin(res.upperAngle);
+  const midFwd = res.footFwd / 2;  // hip at 0, foot at footFwd
+  assert.ok(kneeFwd > midFwd, `knee should be forward of midpoint: knee=${kneeFwd} mid=${midFwd}`);
+});
+
+test('solve2BoneIK target at max reach → straight leg pointed at target', () => {
+  const U = 10, L = 10;
+  // D = U+L = 20 exactly.
+  const res = solve2BoneIK(20, 0, U, L, {});
+  assert.ok(Math.abs(res.upperAngle - res.lowerAngle) < 1e-9, 'straight leg: upper == lower angle');
+  assert.ok(footError(res, 20, 0) < 1e-9, 'foot on target at max reach');
+});
+
+test('solve2BoneIK target beyond max reach → clamped to straight leg toward target', () => {
+  const U = 10, L = 10;
+  // D = 30 > 20. Clamp to direction at reach 20.
+  const res = solve2BoneIK(30, 0, U, L, {});
+  assert.ok(Math.abs(res.upperAngle - res.lowerAngle) < 1e-9, 'clamped: straight leg');
+  // Foot should lie on the hip→target ray, at distance U+L from hip.
+  const footD = Math.hypot(res.footFwd, res.footUp);
+  assert.ok(Math.abs(footD - (U + L)) < 1e-9, `foot at max reach (got ${footD})`);
+  // Direction preserved.
+  assert.ok(res.footFwd > 0 && Math.abs(res.footUp) < 1e-9, 'along +fwd axis');
+});
+
+test('solve2BoneIK numerical stability at edge cases', () => {
+  const U = 10, L = 10;
+  // Fully extended (D exactly at U+L) should not NaN.
+  const r1 = solve2BoneIK(U + L, 0, U, L, {});
+  assert.ok(!Number.isNaN(r1.upperAngle), 'NaN at full extension');
+  // Target at hip (D=0) when U=L=0 is degenerate — our guard picks a default.
+  const r2 = solve2BoneIK(0, 0, U, L, {});
+  assert.ok(!Number.isNaN(r2.upperAngle), 'NaN at zero-distance target');
+  // Target directly below hip, distance = |U-L| = 0 (U=L case) → straight down, no bend.
+  const r3 = solve2BoneIK(0, -0.5, U, L, {});
+  assert.ok(!Number.isNaN(r3.upperAngle) && !Number.isNaN(r3.lowerAngle), 'NaN on near-zero vertical target');
+});
+
+test('solve2BoneIK unequal bone lengths reach correct foot position', () => {
+  const U = 12, L = 8;
+  const res = solve2BoneIK(9, -11, U, L, {});
+  assert.ok(footError(res, 9, -11) < 1e-9, 'foot on target with U != L');
+  const recon = reconstructFoot(res, U, L);
+  assert.ok(Math.hypot(recon.fwd - 9, recon.up - (-11)) < 1e-9, 'reconstruction matches');
+});
+
+test('solve2BoneIK scratch-out parameter is mutated and returned', () => {
+  const U = 10, L = 10;
+  const out = { upperAngle: -99, lowerAngle: -99, footFwd: -99, footUp: -99 };
+  const returned = solve2BoneIK(6, -12, U, L, out);
+  assert.equal(returned, out, 'returns same object');
+  assert.ok(out.upperAngle !== -99, 'out was mutated');
+});
+
+/* ── Ballistic prediction parity with the actual integrator ──── */
+
+test('kick prediction matches physics integration over 6 + 9 ticks', () => {
+  // Mirrors `predictBallAtStrike`'s use in the reachability gate.
+  // If the prediction formula drifts from the integrator, the gate
+  // accepts or rejects kicks the visible simulation can't finish.
+  for (const leadTicks of [6, 9]) {
+    // Freeze p1 in place so the body collider doesn't deflect the
+    // ball mid-prediction (clean ballistic parity check).
+    const state = freshState();
+    state.p1.x = -1000;  // park player far away so no interaction
+    state.p2.x = -1001;
+    state.ball.x = 0;
+    state.ball.y = FIELD_HEIGHT / 2;
+    state.ball.z = 50;
+    state.ball.vx = 3;
+    state.ball.vy = 0;
+    state.ball.vz = 2;
+    state.ball.frozen = false;
+
+    // Advance N ticks with no input — pure ballistic + friction.
+    for (let i = 0; i < leadTicks; i++) tick(state, NOOP, NOOP);
+
+    // Actual vs predicted vertical position (before friction affects it).
+    // Friction only damps x/y, so the prediction error on z is from the
+    // integrator discretization alone.
+    const actualZ = state.ball.z;
+    const predictedZ = Math.max(
+      0,
+      50 + 2 * leadTicks - 0.5 * GRAVITY * leadTicks * (leadTicks + 1),
+    );
+    assert.ok(
+      Math.abs(actualZ - predictedZ) < 0.01,
+      `lead ${leadTicks}: predicted z ${predictedZ}, actual ${actualZ}`,
+    );
+  }
+});
+
+/* ── canKickReach ↔ tryStartKick parity ──────────────────────── */
+
+test('canKickReach matches tryStartKick commit exactly (no ghost outputs)', () => {
+  // Scan a grid of ball positions around a stationary player. For
+  // each position, canKickReach(margin=0) must match whether
+  // applyAction/tryStartKick actually commits a kick. If the two
+  // ever disagree the teacher emits kick actions the physics
+  // silently rejects (or vice versa) — kills imitation signal.
+  const disagreements = [];
+  for (let dx = -25; dx <= 25; dx += 5) {
+    for (let dy = -6; dy <= 6; dy += 2) {
+      for (let bz = 0; bz <= 12; bz += 4) {
+        const state = freshState();
+        state.p1.x = 400;
+        state.p1.y = 25;
+        state.p1.heading = 0;
+        state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + dx;
+        state.ball.y = state.p1.y + dy;
+        state.ball.z = bz;
+        state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+        state.ball.frozen = false;
+        const predicted = canKickReach(state, state.p1);
+        tick(state, kickAction(1, 0, 0, 1), NOOP);
+        const actual = state.p1.kick.active;
+        if (predicted !== actual) {
+          disagreements.push({ dx, dy, bz, predicted, actual });
+        }
+      }
+    }
+  }
+  assert.equal(disagreements.length, 0,
+    `canKickReach must match tryStartKick, disagreements: ${JSON.stringify(disagreements)}`);
+});
+
+test('canKickReach safetyMargin shrinks the reach sphere', () => {
+  // Hip world vertical is HIP_BASE_Z=20; ball at ground has
+  // up = −15.776 world units. Max forward reach at ground level is
+  // sqrt(20² − 15.776²) ≈ 12.3 for margin=0. With margin=2 (reach
+  // capped at 18) the forward budget shrinks to sqrt(18² − 15.776²)
+  // ≈ 8.7. A ball 10 forward sits between the two thresholds.
+  const state = freshState();
+  state.p1.x = 400;
+  state.p1.y = 25;
+  state.p1.heading = 0;
+  state.ball.y = state.p1.y;
+  state.ball.z = 0;
+  state.ball.frozen = false;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+
+  // fwd = 10 — inside margin=0, outside margin=2
+  state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 10;
+  assert.equal(canKickReach(state, state.p1, 0), true, 'margin=0 accepts at fwd=10');
+  assert.equal(canKickReach(state, state.p1, 2), false, 'margin=2 rejects at fwd=10');
+
+  // fwd = 6 — well inside both margins.
+  state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 6;
+  assert.equal(canKickReach(state, state.p1, 0), true, 'margin=0 accepts at fwd=6');
+  assert.equal(canKickReach(state, state.p1, 2), true, 'margin=2 accepts at fwd=6');
+
+  // fwd = 14 — beyond both margins.
+  state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 14;
+  assert.equal(canKickReach(state, state.p1, 0), false, 'margin=0 rejects at fwd=14');
+});
+
+/* ── Adaptive kick state machine ─────────────────────────────── */
+
+/** Place p1 with the ball at his feet, stationary, ball within hip
+ *  reach along the body-axis. Returns the state. Used as a clean
+ *  kick-bench fixture. */
+function kickBenchState() {
+  const state = freshState();
+  state.p1.x = 300;
+  state.p1.y = 20;
+  state.p1.heading = 0;
+  state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 5;
+  state.ball.y = state.p1.y;
+  state.ball.z = 0;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  return state;
+}
+
+test('kick rejects when ball is beyond hip reach', () => {
+  const state = kickBenchState();
+  // Shove the ball 30 units forward — well beyond STICKMAN_UPPER_LEG +
+  // STICKMAN_LOWER_LEG = 20, even accounting for the drop to ball height.
+  state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 30;
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+  assert.equal(state.p1.kick.active, false, 'kick must not activate beyond reach');
+  assert.ok(
+    state.events.some((e) => e.type === 'kick_missed' && e.reason === 'out_of_reach'),
+    'should emit kick_missed with reason=out_of_reach',
+  );
+});
+
+test('kick footTarget tracks ball during windup and freezes at strike', () => {
+  const state = kickBenchState();
+  // Give the ball a small forward drift so its prediction moves each
+  // windup tick. Slow enough to stay in reach for the whole windup.
+  state.ball.vx = 0.4;
+
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+  assert.ok(state.p1.kick.active, 'kick committed');
+  assert.equal(state.p1.kick.stage, 'windup');
+  const targetAtStart = state.p1.kick.footTargetX;
+
+  // Mid-windup: prediction has shrunk (fewer remaining ticks), so
+  // with a ball still moving +x, the target SHOULD have moved.
+  const windupTicks = Math.ceil(KICK_WINDUP_MS / TICK_MS);
+  for (let i = 0; i < Math.floor(windupTicks / 2); i++) tick(state, NOOP, NOOP);
+  const targetMidWindup = state.p1.kick.footTargetX;
+  assert.notEqual(targetMidWindup, targetAtStart, 'target should update during windup');
+
+  // Drive to strike-start and capture the first frozen target.
+  while (state.p1.kick.stage === 'windup') tick(state, NOOP, NOOP);
+  assert.equal(state.p1.kick.stage, 'strike');
+  const targetAtStrike = state.p1.kick.footTargetX;
+
+  // One more strike tick: target must not change.
+  tick(state, NOOP, NOOP);
+  assert.equal(state.p1.kick.footTargetX, targetAtStrike, 'target frozen during strike');
+});
+
+test('kick fires on foot-ball contact during strike window', () => {
+  const state = kickBenchState();
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+  assert.ok(state.p1.kick.active);
+  // Drive through windup + first strike tick — contact should fire.
+  const strikeOnsetTicks = Math.ceil(KICK_WINDUP_MS / TICK_MS) + 1;
+  for (let i = 0; i < strikeOnsetTicks; i++) tick(state, NOOP, NOOP);
+  assert.ok(state.p1.kick.fired, `kick should have fired by tick ${strikeOnsetTicks}`);
+  assert.ok(state.ball.vx > 0, `ball should have gained +x velocity, got ${state.ball.vx}`);
+});
+
+test('kick misses when ball moves out of foot reach during windup', () => {
+  const state = kickBenchState();
+  // Launch the kick while the ball is stationary.
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+  assert.ok(state.p1.kick.active);
+  // Now YANK the ball way out of reach during windup so by the time
+  // strike opens, the frozen target is far from the actual ball.
+  state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 200;
+  // Drive past the full strike window, collecting events across
+  // ticks — state.events is cleared at the start of each tick so
+  // we can't inspect it once at the end.
+  let sawMiss = false;
+  const totalTicks = Math.ceil((KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS) / TICK_MS) + 2;
+  for (let i = 0; i < totalTicks; i++) {
+    tick(state, NOOP, NOOP);
+    if (state.events.some((e) => e.type === 'kick_missed' && e.reason === 'no_contact')) {
+      sawMiss = true;
+    }
+  }
+  assert.ok(sawMiss, 'should emit kick_missed with reason=no_contact across ticks');
+  assert.equal(state.p1.kick.fired, false, 'kick should not have fired');
+});
+
+test('kick foot-contact is symmetric on both hip sides', () => {
+  // The foot collider uses the BODY-AXIS center hip (matches the
+  // reach gate), so a ball offset by HIP_OFX to either the left or
+  // the right of the body axis gets kicked the same way — no
+  // asymmetric kill zone that silently wastes kicks on the
+  // non-dominant side.
+  for (const sign of [-1, +1]) {
+    const state = kickBenchState();
+    state.ball.y = state.p1.y + sign * (2.64 / Z_STRETCH);
+    tick(state, kickAction(1, 0, 0, 1), NOOP);
+    assert.ok(state.p1.kick.active, `ball on sign=${sign} side still reachable`);
+    const strikeOnsetTicks = Math.ceil(KICK_WINDUP_MS / TICK_MS) + 1;
+    for (let i = 0; i < strikeOnsetTicks; i++) tick(state, NOOP, NOOP);
+    assert.ok(state.p1.kick.fired, `foot-sphere should fire for ball on sign=${sign} side`);
+  }
+});
+
+test('kick facing cone rejects a ball behind the player', () => {
+  const state = kickBenchState();
+  state.p1.heading = Math.PI;  // facing -x, ball is in +x
+  tick(state, kickAction(1, 0, 0, 1), NOOP);
+  assert.equal(state.p1.kick.active, false, 'kick must not activate when facing away');
+  assert.ok(
+    state.events.some((e) => e.type === 'kick_missed' && e.reason === 'facing_away'),
+    'should emit kick_missed with reason=facing_away',
+  );
+});
+
+/* ── kickLegExtension — stage curve ──────────────────────────── */
+
+test('kickLegExtension returns 0 for inactive kick', () => {
+  assert.equal(kickLegExtension(null), 0);
+  assert.equal(kickLegExtension({ active: false }), 0);
+});
+
+test('kickLegExtension walks 0 → 0.7 → 1 → 0 across stages (ground)', () => {
+  const k = { active: true, kind: 'ground', timer: 0 };
+  assert.equal(kickLegExtension(k), 0, 'timer 0 → extension 0');
+  k.timer = KICK_WINDUP_MS / 2;
+  assert.ok(Math.abs(kickLegExtension(k) - 0.35) < 1e-9, 'mid-windup → 0.35');
+  k.timer = KICK_WINDUP_MS - 0.001;
+  assert.ok(Math.abs(kickLegExtension(k) - 0.7) < 1e-3, 'windup end → 0.7');
+  k.timer = KICK_WINDUP_MS;
+  assert.equal(kickLegExtension(k), 1, 'strike start → 1');
+  k.timer = KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS - 1;
+  assert.equal(kickLegExtension(k), 1, 'mid-strike → 1');
+  k.timer = KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS;
+  assert.equal(kickLegExtension(k), 1, 'recovery boundary → still 1 (just starting to decay)');
+  k.timer = KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS + 1;
+  assert.ok(kickLegExtension(k) < 1 && kickLegExtension(k) > 0.99, 'just inside recovery → <1');
+  k.timer = KICK_DURATION_MS;
+  assert.ok(Math.abs(kickLegExtension(k)) < 1e-9, 'recovery end → 0');
+});
+
+test('kickLegExtension uses AIRKICK_PEAK_FRAC * AIRKICK_MS as windup for air', () => {
+  const k = { active: true, kind: 'air', timer: 0 };
+  const windupMs = AIRKICK_PEAK_FRAC * AIRKICK_MS;
+  k.timer = windupMs / 2;
+  assert.ok(Math.abs(kickLegExtension(k) - 0.35) < 1e-9, 'air mid-windup → 0.35');
+  k.timer = windupMs + KICK_STRIKE_WINDOW_MS / 2;
+  assert.equal(kickLegExtension(k), 1, 'air strike → 1');
+});
+
+/* ── kickLegPose — IK integration ────────────────────────────── */
+
+test('kickLegPose neutral for inactive kick', () => {
+  const out = { upperAngle: 99, lowerAngle: 99 };
+  kickLegPose({ active: false }, 0, 20, 0, 1, 0, out);
+  assert.equal(out.upperAngle, 0);
+  assert.equal(out.lowerAngle, 0);
+});
+
+test('kickLegPose at strike reaches the foot target', () => {
+  // Hip at world (0, 20, 0), facing +x, target 8 forward at ground.
+  const k = {
+    active: true, kind: 'ground', stage: 'strike',
+    timer: KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS / 2,
+    footTargetX: 8, footTargetY: 4.224, footTargetZ: 0,
+  };
+  const out = { upperAngle: 0, lowerAngle: 0 };
+  kickLegPose(k, 0, 20, 0, 1, 0, out);
+  // Reconstruct foot position from angles.
+  const U = STICKMAN_UPPER_LEG, L = STICKMAN_LOWER_LEG;
+  const kneeFwd  = U * Math.sin(out.upperAngle);
+  const kneeDown = U * Math.cos(out.upperAngle);
+  const footFwd  = kneeFwd + L * Math.sin(out.lowerAngle);
+  const footDown = kneeDown + L * Math.cos(out.lowerAngle);
+  // Target local: fwd = 8, up = 4.224 - 20 = -15.776, down = 15.776.
+  assert.ok(Math.abs(footFwd - 8) < 1e-6, `foot fwd should be 8, got ${footFwd}`);
+  assert.ok(Math.abs(footDown - 15.776) < 1e-6, `foot down should be 15.776, got ${footDown}`);
+});
+
+test('kickLegPose windup peak = 70% extension toward target', () => {
+  const k = {
+    active: true, kind: 'ground', stage: 'windup',
+    timer: KICK_WINDUP_MS - 1,  // just before strike opens — peak windup
+    footTargetX: 10, footTargetY: 4.224, footTargetZ: 0,
+  };
+  const out = { upperAngle: 0, lowerAngle: 0 };
+  kickLegPose(k, 0, 20, 0, 1, 0, out);
+  const U = STICKMAN_UPPER_LEG, L = STICKMAN_LOWER_LEG;
+  const legLen = U + L;
+  const kneeFwd  = U * Math.sin(out.upperAngle);
+  const kneeDown = U * Math.cos(out.upperAngle);
+  const footFwd  = kneeFwd + L * Math.sin(out.lowerAngle);
+  const footDown = kneeDown + L * Math.cos(out.lowerAngle);
+  // Target at peak windup: fwd = 0.7 * 10 = 7, down = 0.7 * 15.776 + 0.3 * 20 = 11.0432 + 6 = 17.0432.
+  const tEff = 0.7 * ((KICK_WINDUP_MS - 1) / KICK_WINDUP_MS);
+  const expectedFwd = 10 * tEff;
+  const expectedDown = 15.776 * tEff + legLen * (1 - tEff);
+  assert.ok(Math.abs(footFwd - expectedFwd) < 1e-3, `foot fwd expected ${expectedFwd}, got ${footFwd}`);
+  assert.ok(Math.abs(footDown - expectedDown) < 1e-3, `foot down expected ${expectedDown}, got ${footDown}`);
+});
+
+test('kickLegPose produces finite, non-hyperextended angles across the full stage', () => {
+  // Sweep `kick.timer` from 0 → KICK_DURATION_MS across a range of
+  // foot targets (reachable and just-out-of-reach). The IK solver
+  // always picks the knee-forward branch; lowerAngle must never be
+  // less than the hip-foot angle (that would put the knee BEHIND
+  // the hip-foot line, i.e. hyperextended / reversed).
+  const hipWX = 0, hipWY = 20, hipWZ = 0;
+  const fwdX = 1, fwdZ = 0;
+  for (const targetFwd of [4, 8, 12, 18, 22]) {
+    for (const targetUp of [-18, -12, -4, 0, 6]) {
+      const k = {
+        active: true, kind: 'ground',
+        footTargetX: hipWX + targetFwd,
+        footTargetY: hipWY + targetUp,
+        footTargetZ: hipWZ,
+        timer: 0,
+      };
+      for (let t = 0; t <= KICK_DURATION_MS; t += 16) {
+        k.timer = t;
+        const out = { upperAngle: 0, lowerAngle: 0 };
+        kickLegPose(k, hipWX, hipWY, hipWZ, fwdX, fwdZ, out);
+        assert.ok(
+          Number.isFinite(out.upperAngle) && Number.isFinite(out.lowerAngle),
+          `NaN at t=${t}, target=(${targetFwd},${targetUp})`,
+        );
+        // Knee-forward branch: upperAngle ≥ lowerAngle for a forward
+        // target (upper sweeps ahead of shin). Not a strict rule —
+        // allow tiny epsilon for the fully-straight-leg edge.
+        if (targetFwd > 0) {
+          assert.ok(
+            out.upperAngle - out.lowerAngle > -1e-6,
+            `knee inverted at t=${t}, target=(${targetFwd},${targetUp}): upper=${out.upperAngle}, lower=${out.lowerAngle}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+test('kickLegPose projects along heading (rotation-invariant)', () => {
+  // Same relative target, different headings — the local angles
+  // must be identical because IK operates in hip-local (fwd, up).
+  const tgt = { fwd: 8, up: -15.776 };  // ball 8 forward, 15.776 below hip
+  const poses = [];
+  for (const h of [0, Math.PI / 3, Math.PI / 2, -Math.PI / 4, Math.PI]) {
+    const fwdX = Math.cos(h);
+    const fwdZ = Math.sin(h);
+    const targetX = tgt.fwd * fwdX;
+    const targetZ = tgt.fwd * fwdZ;
+    const k = {
+      active: true, kind: 'ground', stage: 'strike',
+      timer: KICK_WINDUP_MS,
+      footTargetX: targetX, footTargetY: 20 + tgt.up, footTargetZ: targetZ,
+    };
+    const out = { upperAngle: 0, lowerAngle: 0 };
+    kickLegPose(k, 0, 20, 0, fwdX, fwdZ, out);
+    poses.push({ h, ...out });
+  }
+  const ref = poses[0];
+  for (const p of poses) {
+    assert.ok(Math.abs(p.upperAngle - ref.upperAngle) < 1e-9,
+      `upperAngle drifts with heading ${p.h}: ${p.upperAngle} vs ${ref.upperAngle}`);
+    assert.ok(Math.abs(p.lowerAngle - ref.lowerAngle) < 1e-9,
+      `lowerAngle drifts with heading ${p.h}: ${p.lowerAngle} vs ${ref.lowerAngle}`);
+  }
+});
+
+/* ── resetStateInPlace: the per-match reuse primitive ──────────
+ * Load-bearing invariants:
+ *  1. No new object allocation — ball, p1, p2, p*.kick, events all the
+ *     same reference before vs after. This is the whole point; if it
+ *     fails we're back to the pre-6adf1cd heap drift behavior.
+ *  2. After reset, every observable field matches a freshly-constructed
+ *     createState(field, rng) from the same inputs, so running the
+ *     match from a reset state is bit-identical to a fresh match.
+ *  3. Determinism chain survives: reset → tick N → scoreL/R/ball
+ *     position == fresh createState → tick N with the same seed.
+ */
+
+test('resetStateInPlace: object references are preserved', () => {
+  const field = createField();
+  const state = createState(field, createSeededRng(1));
+  const ballRef = state.ball;
+  const p1Ref = state.p1;
+  const p2Ref = state.p2;
+  const p1KickRef = state.p1.kick;
+  const p2KickRef = state.p2.kick;
+  const eventsRef = state.events;
+
+  // Dirty the state so reset has work to do.
+  state.scoreL = 2;
+  state.scoreR = 1;
+  state.tick = 500;
+  state.ball.x = 123; state.ball.vx = 45;
+  state.p1.kick.active = true; state.p1.kick.timer = 5;
+  state.events.push({ type: 'goal', scorer: 'p1' });
+
+  resetStateInPlace(state, field, createSeededRng(2));
+
+  assert.equal(state.ball, ballRef, 'ball object must be reused');
+  assert.equal(state.p1, p1Ref, 'p1 object must be reused');
+  assert.equal(state.p2, p2Ref, 'p2 object must be reused');
+  assert.equal(state.p1.kick, p1KickRef, 'p1.kick object must be reused');
+  assert.equal(state.p2.kick, p2KickRef, 'p2.kick object must be reused');
+  assert.equal(state.events, eventsRef, 'events array must be reused');
+});
+
+test('resetStateInPlace: counters and flags are reset', () => {
+  const field = createField();
+  const state = createState(field, createSeededRng(1));
+
+  state.scoreL = 2;
+  state.scoreR = 3;
+  state.tick = 999;
+  state.stallCount = 4;
+  state.matchOver = true;
+  state.winner = 'left';
+  state.pauseState = 'matchend';
+  state.pauseTimer = 12;
+  state.goalScorer = state.p1;
+  state.headless = true;
+  state.recordEvents = true;
+  state.events.push({ type: 'out' });
+  state.p1.vx = 7; state.p1.stamina = 0.2;
+  state.p1.kick.active = true; state.p1.pushTimer = 3;
+
+  resetStateInPlace(state, field, createSeededRng(2));
+
+  assert.equal(state.scoreL, 0);
+  assert.equal(state.scoreR, 0);
+  assert.equal(state.tick, 0);
+  assert.equal(state.stallCount, 0);
+  assert.equal(state.matchOver, false);
+  assert.equal(state.winner, null);
+  assert.equal(state.pauseState, null);
+  assert.equal(state.pauseTimer, 0);
+  assert.equal(state.goalScorer, null);
+  assert.equal(state.headless, false);
+  assert.equal(state.recordEvents, false);
+  assert.equal(state.events.length, 0);
+  assert.equal(state.p1.vx, 0);
+  assert.equal(state.p1.stamina, 1);
+  assert.equal(state.p1.kick.active, false);
+  assert.equal(state.p1.pushTimer, 0);
+});
+
+test('resetStateInPlace: equivalent to createState for subsequent ticking', () => {
+  const SEED = 12345;
+  const TICKS = 300;
+
+  // Path A — fresh state.
+  const fieldA = createField();
+  const stateA = createState(fieldA, createSeededRng(SEED));
+  stateA.graceFrames = 0;
+  for (let i = 0; i < TICKS; i++) tick(stateA, null, null);
+
+  // Path B — dirty an old state then reset it with the same seed.
+  const fieldB = createField();
+  const stateB = createState(fieldB, createSeededRng(99));
+  // Burn some ticks to mutate the object meaningfully before resetting.
+  for (let i = 0; i < 50; i++) tick(stateB, null, null);
+  stateB.scoreL = 2; stateB.ball.x = 500; stateB.ball.vx = 10;
+  resetStateInPlace(stateB, fieldB, createSeededRng(SEED));
+  stateB.graceFrames = 0;
+  for (let i = 0; i < TICKS; i++) tick(stateB, null, null);
+
+  assert.equal(stateA.tick, stateB.tick);
+  assert.equal(stateA.scoreL, stateB.scoreL);
+  assert.equal(stateA.scoreR, stateB.scoreR);
+  assert.ok(Math.abs(stateA.ball.x - stateB.ball.x) < 1e-9);
+  assert.ok(Math.abs(stateA.ball.y - stateB.ball.y) < 1e-9);
+  assert.ok(Math.abs(stateA.ball.vx - stateB.ball.vx) < 1e-9);
+  assert.ok(Math.abs(stateA.ball.vy - stateB.ball.vy) < 1e-9);
+  assert.ok(Math.abs(stateA.p1.x - stateB.p1.x) < 1e-9);
+  assert.ok(Math.abs(stateA.p2.x - stateB.p2.x) < 1e-9);
+});
+
+test('resetStateInPlace: swapping the rng produces a different stream than before', () => {
+  const field = createField();
+  const state = createState(field, createSeededRng(1));
+  resetStateInPlace(state, field, createSeededRng(1));
+  const a1 = state.rng(), a2 = state.rng();
+
+  resetStateInPlace(state, field, createSeededRng(2));
+  const b1 = state.rng(), b2 = state.rng();
+
+  assert.notEqual(a1, b1, 'different seed must advance to a different first value');
+  assert.notEqual(a2, b2, 'different seed must advance to a different second value');
+});
+
+/* ── Winner celebration flow (visual path, recent feature) ────── */
+
+test('winning goal sets celebrate pause AND flags winner (not matchend directly)', () => {
+  const state = freshState();
+  state.headless = false;
+  state.recordEvents = false;
+  // Ball crossing goalLineR (into the right goal) credits scoreL.
+  // See project_football_scoring_sides memory: side arg names the
+  // goal that conceded. Pre-seed scoreL=2 so the next score is 3 = win.
+  state.scoreL = 2;
+  state.ball.x = state.field.goalLineR + 1;
+  state.ball.y = FIELD_HEIGHT / 2;
+  state.ball.z = 0;
+  state.ball.vx = 5;
+  state.ball.vy = 0;
+  state.ball.vz = 0;
+  state.graceFrames = 0;
+
+  tick(state, null, null);
+
+  assert.equal(state.scoreL, 3, 'left-side scored the winning goal');
+  assert.equal(state.pauseState, 'celebrate', 'must stay in celebrate for the animation, not jump to matchend');
+  assert.equal(state.winner, 'left', 'winner must be flagged at the scoring tick');
+  assert.equal(state.matchOver, false, 'match is not over yet — celebrate then matchend');
+});
+
+test('visual celebrate → matchend transition when winner is set', () => {
+  const state = freshState();
+  state.headless = false;
+  state.recordEvents = false;
+  state.scoreL = 2;
+  state.ball.x = state.field.goalLineR + 1;
+  state.ball.y = FIELD_HEIGHT / 2;
+  state.ball.z = 0;
+  state.ball.vx = 5;
+  state.graceFrames = 0;
+  tick(state, null, null);
+
+  assert.equal(state.pauseState, 'celebrate');
+  const celebrateTicks = state.pauseTimer;
+  assert.ok(celebrateTicks > 0);
+
+  // Run the celebrate countdown. During celebrate, advancePause still
+  // lets the ball roll under gravity, so the transition test gates on
+  // the pauseState flip, not a fixed tick count.
+  for (let i = 0; i < celebrateTicks + 5; i++) {
+    tick(state, null, null);
+    if (state.pauseState === 'matchend') break;
+  }
+  assert.equal(state.pauseState, 'matchend', 'after celebrate expires on a winning goal we jump to matchend, skipping reposition');
+});
+
+test('non-winning goal celebrates then reposition (no matchend)', () => {
+  const state = freshState();
+  state.headless = false;
+  state.recordEvents = false;
+  state.scoreR = 0;   // first goal of the match, nowhere near WIN_SCORE
+  state.ball.x = state.field.goalLineR + 1;
+  state.ball.y = FIELD_HEIGHT / 2;
+  state.ball.z = 0;
+  state.ball.vx = 5;
+  state.graceFrames = 0;
+  tick(state, null, null);
+
+  assert.equal(state.pauseState, 'celebrate');
+  assert.equal(state.winner, null, 'non-winning goal must NOT flag winner');
+  const celebrateTicks = state.pauseTimer;
+
+  for (let i = 0; i < celebrateTicks + 5; i++) {
+    tick(state, null, null);
+    if (state.pauseState !== 'celebrate') break;
+  }
+  assert.notEqual(state.pauseState, 'matchend', 'non-winning goal must NOT go to matchend');
+  assert.ok(state.pauseState === 'reposition' || state.pauseState === 'waiting' || state.pauseState === null,
+    `expected reposition/waiting/null after celebrate, got ${state.pauseState}`);
+});
+
+/* ── Action-slot index stability ───────────────────────────────
+ * ACTION_KICK_GATE is referenced by index in warm-start-lib.js
+ * (oversampleKickPositives reads actions[i][ACTION_KICK_GATE]). If
+ * the action layout ever shifts, that sampling would silently target
+ * the wrong slot. Pin the values here so a slot rename breaks loudly.
+ */
+test('ACTION_* slot indices are stable and contiguous', () => {
+  assert.equal(ACTION_MOVE_X,     0);
+  assert.equal(ACTION_MOVE_Y,     1);
+  assert.equal(ACTION_KICK_GATE,  2);
+  assert.equal(ACTION_KICK_DX,    3);
+  assert.equal(ACTION_KICK_DY,    4);
+  assert.equal(ACTION_KICK_DZ,    5);
+  assert.equal(ACTION_KICK_POWER, 6);
+  assert.equal(ACTION_PUSH_GATE,  7);
+  assert.equal(ACTION_PUSH_POWER, 8);
+  assert.equal(NN_OUTPUT_SIZE,    9);
 });

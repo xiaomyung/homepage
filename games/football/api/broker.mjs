@@ -38,6 +38,7 @@ import {
   recordRuntimeActivity as recordRuntimeActivityPure,
   flushRuntime as flushRuntimePure,
 } from './runtime-timer.js';
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EVOLUTION = path.join(HERE, '..', 'evolution');
 // DB_PATH and PORT are overridable via env for tests and local boot;
@@ -48,7 +49,36 @@ const ROUTE_PREFIX = '/api/football';
 const PORT = Number(process.env.FOOTBALL_PORT || 5050);
 const HOST = '127.0.0.1';
 
-const SHOWCASE_FALLBACK_EVERY_N = 5;
+// Showcase cadence. Half the showcases are the top brain playing the
+// fallback teacher — that's the visually clearest match (the user
+// sees the evolved policy competing against a known baseline). The
+// other half sample from the TOP 10 brains for variety — not the
+// full 50, because lower-ranked brains often have polarised
+// strategies that clash into 0-0 stalemates or 30-0 blowouts when
+// paired with each other, which reads as "the game is broken"
+// despite the training working fine.
+const SHOWCASE_FALLBACK_EVERY_N = 2;
+const SHOWCASE_TOP_POOL_SIZE    = 10;
+
+// Keys into the `meta` table. Extracted so read/write helpers can't
+// typo-split (they'd silently divorce and look like "no data yet").
+const META_KEY_RUNTIME_MS_TOTAL   = 'runtime_ms_total';
+const META_KEY_WARM_START_WEIGHTS = 'warm_start_weights';
+
+// Match-outcome counters, reset per generation. Returned by
+// freshMatchCounts() so every init/reset site uses the exact same
+// keyset — a future counter addition only needs updating here.
+function freshMatchCounts() {
+  return {
+    total: 0,
+    zeroZero: 0,           // final 0-0
+    nonzeroDraw: 0,        // 1-1, 2-2, ...
+    decisive: 0,           // winner, |diff| < BLOWOUT_THRESHOLD
+    blowout: 0,            // |diff| >= BLOWOUT_THRESHOLD
+    stalled: 0,            // match had ≥1 stall reset
+    decisiveNoStall: 0,    // winner AND no stall — showcase-eligible
+  };
+}
 
 const SURNAMES = [
   'Messi', 'Ronaldo', 'Neymar', 'Mbappe', 'Salah', 'Bruyne', 'Haaland',
@@ -68,6 +98,8 @@ CREATE TABLE IF NOT EXISTS brains (
     weights         TEXT    NOT NULL,
     pop_matches     INTEGER NOT NULL DEFAULT 0,
     pop_goal_diff   REAL    NOT NULL DEFAULT 0,
+    pop_wins        INTEGER NOT NULL DEFAULT 0,
+    pop_draws       INTEGER NOT NULL DEFAULT 0,
     fallback_matches INTEGER NOT NULL DEFAULT 0,
     fallback_wins   INTEGER NOT NULL DEFAULT 0,
     fallback_draws  INTEGER NOT NULL DEFAULT 0,
@@ -95,7 +127,7 @@ CREATE TABLE IF NOT EXISTS meta (
     value           TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO meta (key, value) VALUES ('runtime_ms_total', '0');
+INSERT OR IGNORE INTO meta (key, value) VALUES ('${META_KEY_RUNTIME_MS_TOTAL}', '0');
 
 INSERT OR IGNORE INTO config (key, value) VALUES
     ('population_size',         '50'),
@@ -159,7 +191,29 @@ const state = {
   runtimeMsTotal: 0,
   runtimeActiveStart: null,
   runtimeLastPostAt: null,
+  // Session-wide match-outcome counters since last reset. Cheap O(1)
+  // per match so we can show the user "how does training look right
+  // now" as percentages in the stats panel.
+  matchCounts: freshMatchCounts(),
+  // Ring buffer of recently-reported non-stalemate matches (≥1 goal),
+  // tagged with the worker's seed so the client can replay any of
+  // them deterministically. `/showcase` picks from this buffer so
+  // the visible match is a REAL training match we already know ends
+  // with a goal — no pre-simulation needed in the browser.
+  interestingMatches: [],
 };
+
+// Goal-diff threshold for classifying a match as a blowout. Training
+// matches are headless (no WIN_SCORE cap) so goal_diff can realistically
+// reach the 20s in an evolved-vs-weak pairing — 10 is a sane "the
+// losing side never contested" cutoff.
+const BLOWOUT_THRESHOLD = 10;
+
+// Cap on the recent-interesting-match ring buffer. 200 entries × ~32
+// bytes = ~6 KB. Enough for good showcase variety without holding
+// stale pairings forever. Cleared on breed because brain ids are
+// reused with new weights across generations.
+const INTERESTING_CAP = 200;
 
 // Gap between consecutive /results POSTs beyond which the broker
 // treats the training window as closed. Under normal load POSTs
@@ -184,6 +238,24 @@ let db = null;
 function openDb() {
   db = new DatabaseSync(DB_PATH);
   db.exec(SCHEMA_SQL);
+  migrateSchema();
+}
+
+/** Forward-only migrations for live deployments whose DB was created
+ *  by an older schema. ALTER TABLE ... ADD COLUMN is idempotent under
+ *  a try/catch because SQLite has no IF NOT EXISTS for columns. */
+function migrateSchema() {
+  const alters = [
+    'ALTER TABLE brains ADD COLUMN pop_wins  INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE brains ADD COLUMN pop_draws INTEGER NOT NULL DEFAULT 0',
+  ];
+  for (const sql of alters) {
+    try { db.exec(sql); }
+    catch (err) {
+      // "duplicate column" means the column already exists — fine.
+      if (!/duplicate column/i.test(String(err?.message || err))) throw err;
+    }
+  }
 }
 
 function loadConfig() {
@@ -199,7 +271,7 @@ function loadConfig() {
 
 function loadRuntimeMsTotal() {
   try {
-    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get('runtime_ms_total');
+    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(META_KEY_RUNTIME_MS_TOTAL);
     if (!row) return 0;
     const n = Number(row.value);
     return Number.isFinite(n) && n >= 0 ? n : 0;
@@ -211,7 +283,7 @@ function loadRuntimeMsTotal() {
 function persistRuntimeMsTotal(ms) {
   db.prepare(
     'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
-  ).run('runtime_ms_total', String(Math.floor(ms)));
+  ).run(META_KEY_RUNTIME_MS_TOTAL, String(Math.floor(ms)));
 }
 
 /** Total active training ms since last reset. */
@@ -257,6 +329,7 @@ function loadPopulation() {
   if (maxGen === 0) return [];
   const rows = db.prepare(
     `SELECT id, name, weights, pop_matches, pop_goal_diff,
+            pop_wins, pop_draws,
             fallback_matches, fallback_wins, fallback_draws,
             fitness, is_frozen_seed
      FROM brains
@@ -275,6 +348,8 @@ function loadPopulation() {
       _weightsJson: weightsJson,
       popMatches: r.pop_matches,
       popGoalDiff: r.pop_goal_diff,
+      popWins: r.pop_wins,
+      popDraws: r.pop_draws,
       fallbackMatches: r.fallback_matches,
       fallbackWins: r.fallback_wins,
       fallbackDraws: r.fallback_draws,
@@ -288,10 +363,10 @@ function savePopulation(generation) {
   const ins = db.prepare(
     `INSERT INTO brains (
         id, generation, name, weights,
-        pop_matches, pop_goal_diff,
+        pop_matches, pop_goal_diff, pop_wins, pop_draws,
         fallback_matches, fallback_wins, fallback_draws,
         fitness, is_frozen_seed
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   db.exec('BEGIN');
   try {
@@ -299,7 +374,7 @@ function savePopulation(generation) {
     for (const b of state.population) {
       ins.run(
         b.id, generation, b.name, getWeightsJson(b),
-        b.popMatches, b.popGoalDiff,
+        b.popMatches, b.popGoalDiff, b.popWins ?? 0, b.popDraws ?? 0,
         b.fallbackMatches, b.fallbackWins, b.fallbackDraws,
         b.fitness, b.isFrozenSeed ? 1 : 0,
       );
@@ -332,6 +407,8 @@ function newBrain(id, weights, isFrozenSeed = false) {
     _weightsJson: null,
     popMatches: base.popMatches ?? 0,
     popGoalDiff: base.popGoalDiff ?? 0,
+    popWins: base.popWins ?? 0,
+    popDraws: base.popDraws ?? 0,
     fallbackMatches: base.fallbackMatches ?? 0,
     fallbackWins: base.fallbackWins ?? 0,
     fallbackDraws: base.fallbackDraws ?? 0,
@@ -355,6 +432,16 @@ function getWeightsJson(brain) {
  *  copies so the initial GA pool has variance. Called from boot (when
  *  DB has weights but no population) and from /reset (seed arrives
  *  via request body). */
+// Mutation magnitudes applied to the warm-start seed when building
+// generation 1. The previous (0.3, 0.1) values — 30% of weights
+// shifted by N(0, 0.1) — perturbed ~170 weights per brain and
+// dropped gen-1 goals-per-match by 97% vs the pure warm-start. Those
+// values were tuned for BREEDING (mixing two parents, want divergent
+// offspring), not SEEDING (preserve the teacher, want small variance
+// across the pool). The new values still give diversity without
+// throwing away the imitation.
+const SEED_MUTATION_RATE = 0.05;
+const SEED_MUTATION_STD  = 0.02;
 function buildPopulationFromSeed(seedWeights, config) {
   if (!(seedWeights instanceof Float64Array) || seedWeights.length !== WEIGHT_COUNT) {
     throw new Error(`seed weights must be Float64Array of length ${WEIGHT_COUNT}`);
@@ -362,14 +449,14 @@ function buildPopulationFromSeed(seedWeights, config) {
   const rng = createGaRng((Math.random() * 2 ** 31) >>> 0);
   const population = [newBrain(0, seedWeights, true)];
   for (let i = 1; i < config.population_size; i++) {
-    const mutated = gaussianMutate(seedWeights, 0.3, 0.1, rng);
+    const mutated = gaussianMutate(seedWeights, SEED_MUTATION_RATE, SEED_MUTATION_STD, rng);
     population.push(newBrain(i, mutated, false));
   }
   return population;
 }
 
 function loadWarmStartWeights() {
-  const row = db.prepare('SELECT value FROM meta WHERE key = ?').get('warm_start_weights');
+  const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(META_KEY_WARM_START_WEIGHTS);
   if (!row) return null;
   try {
     const parsed = JSON.parse(row.value);
@@ -382,7 +469,7 @@ function loadWarmStartWeights() {
 
 function persistWarmStartWeights(weights) {
   db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
-    .run('warm_start_weights', JSON.stringify(Array.from(weights)));
+    .run(META_KEY_WARM_START_WEIGHTS, JSON.stringify(Array.from(weights)));
 }
 
 // ── Boot ──────────────────────────────────────────────────────
@@ -434,7 +521,6 @@ function fitnessWeightsFromConfig(cfg) {
   return makeFitnessWeights({
     wPop: cfg.fitness_w_pop,
     wFallback: cfg.fitness_w_fallback,
-    maxGoalDiff: cfg.fitness_max_goal_diff,
   });
 }
 
@@ -507,6 +593,16 @@ function tryBreed() {
   state.generation += 1;
   refreshPopulationIndex();
   state.fitnessDirty = true;
+  // Reset match-distribution counters per generation so the panel
+  // reflects CURRENT training quality (like `cur top` / `cur avg`),
+  // not a lifetime-since-reset average dominated by early bad gens.
+  state.matchCounts = freshMatchCounts();
+  // interestingMatches intentionally NOT cleared here — entries are
+  // tagged with their generation and pickInterestingReplay filters
+  // on current gen. That lets the showcase keep replaying last-gen
+  // matches for the first ~1 s of the new gen while the new
+  // generation's matches fill in (otherwise we got a visible
+  // "no seed → fallback to blind picker" blackout every breed).
   schedulePersist();
   return true;
 }
@@ -577,32 +673,81 @@ function pickShowcase() {
   const pop = state.population;
   if (pop.length === 0) return { mode: 'vs_fallback', p1: null, p2: null };
   state.showcaseCounter += 1;
+  ensureFitnessFresh();
 
+  // Prefer replaying a real non-stalemate match the trainer just ran
+  // — the seed makes the visual a bit-identical deterministic replay,
+  // so we show only matches we KNOW produced at least one goal. This
+  // gets rid of the "players run to walls and do nothing" showcase
+  // failure the old random-pair picker was prone to.
+  const replay = pickInterestingReplay();
+  if (replay) return replay;
+
+  // Fallback (buffer empty — fresh broker / right after breed): pick
+  // top brain vs fallback, or two top brains against each other.
   if (pop.length < 2 || state.showcaseCounter % SHOWCASE_FALLBACK_EVERY_N === 0) {
     let best = pop[0];
     for (const b of pop) if (b.fitness > best.fitness) best = b;
-    return {
-      mode: 'vs_fallback',
-      p1: brainView(best),
-      p2: null,
-    };
+    return { mode: 'vs_fallback', p1: brainView(best), p2: null };
   }
-
-  const a = pickRandom(pop);
-  let b = pickRandom(pop);
+  const k = Math.min(SHOWCASE_TOP_POOL_SIZE, pop.length);
+  const top = pop.slice().sort((x, y) => y.fitness - x.fitness).slice(0, k);
+  const a = pickRandom(top);
+  let b = pickRandom(top);
   for (let attempts = 0; b.id === a.id && attempts < 5; attempts++) {
-    b = pickRandom(pop);
+    b = pickRandom(top);
   }
-  return {
-    mode: 'recent',
-    p1: brainView(a),
-    p2: brainView(b),
+  return { mode: 'recent', p1: brainView(a), p2: brainView(b) };
+}
+
+/** Pick a recent match with ≥1 goal from the ring buffer. Each
+ *  entry carries its own weights snapshot so the replay works even
+ *  after breeds have rotated the population's brain ids. Rotates
+ *  between fallback-mode and brain-vs-brain so both styles surface.
+ *  Returns `null` only when the buffer is empty. */
+function pickInterestingReplay() {
+  const buf = state.interestingMatches;
+  if (buf.length === 0) return null;
+  const wantFallback = state.showcaseCounter % SHOWCASE_FALLBACK_EVERY_N === 0;
+
+  const snapView = (snap) => ({
+    id: snap.id,
+    name: snap.name,
+    weights: JSON.parse(snap.weights),  // weights stored as JSON string
+  });
+
+  const tryPick = (requireMode, cleanOnly) => {
+    for (let i = buf.length - 1; i >= 0; i--) {
+      const m = buf[i];
+      if (cleanOnly && m.stalled) continue;
+      const isFb = m.p2 == null;
+      if (requireMode === 'fallback' && !isFb) continue;
+      if (requireMode === 'recent' && isFb) continue;
+      return {
+        mode: isFb ? 'vs_fallback' : 'recent',
+        p1: snapView(m.p1),
+        p2: isFb ? null : snapView(m.p2),
+        seed: m.seed,
+        preview_score: [m.goals_p1, m.goals_p2],
+      };
+    }
+    return null;
   };
+
+  const preferred = wantFallback ? 'fallback' : 'recent';
+  // Priority: clean-matching-mode → clean-any-mode → stalled-matching-mode
+  //            → stalled-any-mode. Clean wins are always preferred even
+  //           when the rotation wanted fallback vs. recent. Only fall
+  //           back to stalled replays when nothing clean is available.
+  return tryPick(preferred, true)
+      ?? tryPick(null, true)
+      ?? tryPick(preferred, false)
+      ?? tryPick(null, false);
 }
 
 // ── Result recording ──────────────────────────────────────────
 
-function recordResult(result) {
+function recordResult(result, freshForReplay = true) {
   const byId = state.populationById;
   const p1 = byId[result.p1_id];
   if (!p1) return; // stale result from a previous generation — silently drop
@@ -623,6 +768,48 @@ function recordResult(result) {
     p1.popGoalDiff += diff;
     p2.popMatches += 1;
     p2.popGoalDiff -= diff;
+    if (goalsP1 > goalsP2)      { p1.popWins += 1; }
+    else if (goalsP1 < goalsP2) { p2.popWins += 1; }
+    else                        { p1.popDraws += 1; p2.popDraws += 1; }
+  }
+
+  // Session-wide match-ending distribution counters. Per-match O(1).
+  state.matchCounts.total += 1;
+  const isDecisive = goalsP1 !== goalsP2 && Math.abs(diff) < BLOWOUT_THRESHOLD;
+  if (goalsP1 === 0 && goalsP2 === 0)           state.matchCounts.zeroZero += 1;
+  else if (goalsP1 === goalsP2)                 state.matchCounts.nonzeroDraw += 1;
+  else if (Math.abs(diff) >= BLOWOUT_THRESHOLD) state.matchCounts.blowout += 1;
+  else                                          state.matchCounts.decisive += 1;
+  if (result.stalled) state.matchCounts.stalled += 1;
+  if (isDecisive && !result.stalled) state.matchCounts.decisiveNoStall += 1;
+
+  // Remember non-stalemate matches with their seeds so /showcase
+  // can replay a known-interesting match visually. Only snapshot
+  // when the result came from the CURRENT generation — post-breed
+  // brain ids carry different weights, so the snapshot would not
+  // match what the worker actually ran.
+  const seed = Number.isFinite(result.seed) ? result.seed >>> 0 : null;
+  const stalled = !!result.stalled;
+  // Replay buffer keeps ALL decisive (≥1 goal) matches, tagged with
+  // `stalled`. pickInterestingReplay prefers clean (unstalled) entries
+  // and only falls back to stalled ones when nothing clean is
+  // available — so the common case avoids mid-match teleports but
+  // stall-only populations still get something to show.
+  if (freshForReplay && seed !== null && (goalsP1 + goalsP2) > 0) {
+    const p2 = result.p2_id != null ? byId[result.p2_id] : null;
+    if (!result.p2_id || p2) {
+      state.interestingMatches.push({
+        p1: { id: p1.id, name: p1.name, weights: getWeightsJson(p1) },
+        p2: p2 ? { id: p2.id, name: p2.name, weights: getWeightsJson(p2) } : null,
+        seed,
+        goals_p1: goalsP1,
+        goals_p2: goalsP2,
+        stalled,
+      });
+      if (state.interestingMatches.length > INTERESTING_CAP) {
+        state.interestingMatches.shift();
+      }
+    }
   }
 
   state.totalMatches += 1;
@@ -714,9 +901,15 @@ async function handleResults(req, res) {
   }
   // Stale-generation results are silently dropped via recordResult's
   // id-miss guard (broker's population has new ids after a breed).
-  // The generation hint is informational only — we still try to
-  // record anything that matches the current population.
-  for (const r of results) recordResult(r);
+  // The generation hint decides whether the result's brain weights
+  // still match the current population: if the client was on an
+  // older gen at match time, the weights we'd snapshot now are a
+  // different set than the ones that produced the score, so replay
+  // would be non-deterministic. Fitness stats still get counted
+  // (goal-diff on gen-N and gen-N+1 brains is roughly fungible),
+  // but the replay buffer only accepts fresh-gen results.
+  const isFresh = clientGen === null || clientGen === state.generation;
+  for (const r of results) recordResult(r, isFresh);
   // Every /results POST is proof that a client is actively training.
   // Used to advance the cumulative runtime counter returned by /stats.
   recordRuntimeActivity();
@@ -764,6 +957,9 @@ function handleStats(req, res) {
   }
   const avg = pop.length > 0 ? sum / pop.length : 0;
   if (!isFinite(top)) top = 0;
+  const mc = state.matchCounts;
+  const mcTotal = mc.total;
+  const pct = (n) => mcTotal > 0 ? n / mcTotal : 0;
   json(res, 200, {
     generation: state.generation,
     population: pop.length,
@@ -772,6 +968,15 @@ function handleStats(req, res) {
     total_matches: state.totalMatches,
     fallback_win_rate: fbMatches > 0 ? fbWins / fbMatches : 0,
     runtime_ms: runtimeNowMs(),
+    match_distribution: {
+      total:                   mcTotal,
+      zero_zero_rate:          pct(mc.zeroZero),
+      nonzero_draw_rate:       pct(mc.nonzeroDraw),
+      decisive_rate:           pct(mc.decisive),
+      decisive_no_stall_rate:  pct(mc.decisiveNoStall),
+      blowout_rate:            pct(mc.blowout),
+      stall_rate:              pct(mc.stalled),
+    },
   });
 }
 
@@ -877,6 +1082,8 @@ function seedPopulationFromWeights(seedWeights) {
   state.runtimeMsTotal = 0;
   state.runtimeActiveStart = null;
   state.runtimeLastPostAt = null;
+  state.matchCounts = freshMatchCounts();
+  state.interestingMatches = [];
   refreshPopulationIndex();
 }
 

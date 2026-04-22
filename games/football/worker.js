@@ -26,7 +26,7 @@
 import {
   createField,
   createState,
-  createSeededRng,
+  resetStateInPlace,
   tick as physicsTick,
   buildInputs,
   NN_INPUT_SIZE,
@@ -47,6 +47,19 @@ const p2Brain = new NeuralNet(new Float64Array(WEIGHT_COUNT));
 const p1InputBuf = new Float64Array(NN_INPUT_SIZE);
 const p2InputBuf = new Float64Array(NN_INPUT_SIZE);
 
+// Persistent field + state + rng — allocated once per worker lifetime,
+// re-initialized in place before every match. Running thousands of
+// matches/sec with N workers, allocating a fresh state + field + rng
+// closure per match was the dominant source of V8 old-gen drift
+// (see project_football_renderer_oom).
+let sharedRngSeed = 1;
+function sharedRngFn() {
+  sharedRngSeed = (Math.imul(sharedRngSeed, 1664525) + 1013904223) >>> 0;
+  return sharedRngSeed / 4294967296;
+}
+const sharedField = createField();
+const sharedState = createState(sharedField, sharedRngFn);
+
 // Local weights cache populated from the main thread's `population`
 // message. Keyed by brain id; values are per-brain Float64Arrays.
 // Any cache miss during a match (e.g. a stale matchup landed during
@@ -60,9 +73,8 @@ self.onmessage = (ev) => {
       handlePopulation(msg);
     } else if (msg.type === 'batch') {
       handleBatch(msg);
-    } else if (msg.type === 'stop') {
-      /* no-op — main thread terminates the worker */
     }
+    // 'stop': no-op. The main thread terminates the worker directly.
   } catch (err) {
     self.postMessage({ type: 'error', message: String(err) });
   }
@@ -99,9 +111,9 @@ function runMatch(matchup) {
   const p2Weights = p2IsFallback ? null : weightsById.get(matchup.p2);
   if (!p2IsFallback && !p2Weights) return null;
 
-  const field = createField();
   const seed = (Math.random() * 2 ** 31) >>> 0;
-  const state = createState(field, createSeededRng(seed));
+  sharedRngSeed = seed || 1;
+  const state = resetStateInPlace(sharedState, sharedField, sharedRngFn);
   state.headless = true;
   state.graceFrames = 0;
   state.ball.z = 0;
@@ -111,14 +123,19 @@ function runMatch(matchup) {
 
   // Decision-outer / physics-inner stride loop. See physics.js
   // NN_ACTION_STRIDE comment for the training/visual parity rules.
+  // Loop exits early when physics sets `state.matchOver` (hit at
+  // WIN_SCORE under the new cap). Without this check the worker
+  // kept running buildInputs + two forward passes for every stride
+  // after matchOver fired — physics.tick returns early but the
+  // ~500 wasted NN evaluations per early-ending match were real.
   let ticksDone = 0;
-  while (ticksDone < matchTicks) {
+  while (ticksDone < matchTicks && !state.matchOver) {
     const p1Action = p1Brain.forward(buildInputs(state, 'p1', p1InputBuf));
     const p2Action = p2IsFallback
       ? fallbackAction(state, 'p2')
       : p2Brain.forward(buildInputs(state, 'p2', p2InputBuf));
     const chunkEnd = Math.min(ticksDone + NN_ACTION_STRIDE, matchTicks);
-    while (ticksDone < chunkEnd) {
+    while (ticksDone < chunkEnd && !state.matchOver) {
       physicsTick(state, p1Action, p2Action);
       ticksDone++;
     }
@@ -129,5 +146,15 @@ function runMatch(matchup) {
     p2_id: p2IsFallback ? null : matchup.p2,
     goals_p1: state.scoreL,
     goals_p2: state.scoreR,
+    // Seed reported back so the broker can replay a known-decisive
+    // match visually — same weights + same seed = bit-identical
+    // physics, so the showcase doesn't have to pre-simulate.
+    seed,
+    // Number of stall-reset firings during the match. The broker
+    // uses this to exclude stalled matches from the replay buffer —
+    // a mid-match teleport is visually jarring even when the final
+    // score is decisive. Fitness still counts whatever goals were
+    // scored; only the showcase filter cares.
+    stalled: state.stallCount > 0,
   };
 }

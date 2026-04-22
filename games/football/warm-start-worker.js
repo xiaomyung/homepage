@@ -25,6 +25,7 @@
 
 import {
   collectImitationDataset,
+  oversampleKickPositives,
   createTrainingState,
   epochStep,
   WARM_START_HYPERPARAMS,
@@ -45,11 +46,18 @@ self.addEventListener('message', (ev) => {
     if (msg.type === 'init') {
       workerId = msg.workerId;
       state = createTrainingState(msg.baseSeed + msg.workerId);
-      const { inputs, actions } = collectImitationDataset(
+      const raw = collectImitationDataset(
         msg.matches,
         msg.ticksPerMatch,
         msg.baseSeed + msg.seedOffset,
       );
+      // Rebalance positive-kick frames before training. The teacher
+      // fires kick=+1 on ~1.5% of ticks; plain MSE on the raw stream
+      // drives the NN to predict constant "don't kick" as the loss
+      // minimiser, and the student never commits a strike. Match the
+      // CLI pipeline (build-warm-start.mjs) so browser-trained and
+      // CLI-trained weights converge to the same kicking policy.
+      const { inputs, actions } = oversampleKickPositives(raw.inputs, raw.actions, { targetFrac: 0.25 });
       shardInputs = inputs;
       shardActions = actions;
       self.postMessage({ type: 'ready', workerId, samples: inputs.length });

@@ -16,6 +16,7 @@ import {
   tick,
   buildInputs,
   NN_INPUT_SIZE,
+  ACTION_KICK_GATE,
 } from '../physics.js';
 import { fallbackAction } from '../fallback.js';
 import { ARCH, WEIGHT_COUNT } from '../nn.js';
@@ -54,6 +55,67 @@ export function collectImitationDataset(numMatches, ticksPerMatch, seed) {
       buildInputs(state, 'p2', p2In);
       inputs.push(p2In.slice());
       actions.push(p2Act.slice());
+      tick(state, p1Act, p2Act);
+      if (state.matchOver) break;
+    }
+  }
+  return { inputs, actions };
+}
+
+/**
+ * DAgger-lite aggregation round. The student policy (from `weights`)
+ * plays one side; the fallback teacher plays the other. On every
+ * tick we record the student-visited state paired with the ACTION
+ * THE FALLBACK WOULD TAKE at that same state — the teacher's
+ * correction for states the student actually reaches rather than
+ * only the states the teacher visits on its own.
+ *
+ * This addresses the classic behavioural-cloning distribution shift:
+ * when the student drifts off the teacher's trajectory, plain BC has
+ * no training signal for the off-distribution states. DAgger closes
+ * that gap by querying the expert at student-visited states.
+ *
+ * Returns new training pairs to concatenate with the existing
+ * dataset before the next retrain round.
+ */
+export function collectDAggerDataset(weights, numMatches, ticksPerMatch, seed) {
+  const inputs = [];
+  const actions = [];
+  const studentIn = new Array(NN_INPUT_SIZE);
+  const teacherIn = new Array(NN_INPUT_SIZE);
+  // Scratch buffers for the student's forward pass.
+  const activations = makeActivationBuffers();
+  const preacts = makePreactivationBuffers();
+  for (let m = 0; m < numMatches; m++) {
+    const field = createField();
+    const state = createState(field, createSeededRng(seed + m));
+    state.graceFrames = 0;
+    // Alternate which side the student plays so the dataset is
+    // balanced across the symmetry axis.
+    const studentIsP1 = m % 2 === 0;
+    const studentWhich = studentIsP1 ? 'p1' : 'p2';
+    const teacherWhich = studentIsP1 ? 'p2' : 'p1';
+    for (let t = 0; t < ticksPerMatch; t++) {
+      // Student action — forward pass of current weights.
+      buildInputs(state, studentWhich, studentIn);
+      forwardCached(weights, studentIn, activations, preacts);
+      const studentOut = activations[LAYER_COUNT];
+      // Teacher action for the OTHER side — what it normally does.
+      const teacherAct = fallbackAction(state, teacherWhich);
+      // DAgger correction: what would the teacher do at the
+      // STUDENT'S state? Record (studentIn, teacherActionAtStudentState).
+      const teacherAtStudent = fallbackAction(state, studentWhich);
+      inputs.push(studentIn.slice());
+      actions.push(teacherAtStudent.slice());
+      // Also record the teacher-side pair so the dataset still has
+      // teacher-visited samples on the other side of the match.
+      buildInputs(state, teacherWhich, teacherIn);
+      inputs.push(teacherIn.slice());
+      actions.push(teacherAct.slice());
+      // Drive the simulation with student-vs-teacher so the state
+      // trajectory reflects the student's policy.
+      const p1Act = studentIsP1 ? Array.from(studentOut) : teacherAct;
+      const p2Act = studentIsP1 ? teacherAct : Array.from(studentOut);
       tick(state, p1Act, p2Act);
       if (state.matchOver) break;
     }
@@ -251,8 +313,8 @@ export function epochStep(state, inputs, actions, { batchSize, lr }) {
     const invBs = 1 / bs;
     for (let k = 0; k < WEIGHT_COUNT; k++) grad[k] *= invBs;
     state.t++;
-    const biasCorr1 = 1 - Math.pow(BETA1, state.t);
-    const biasCorr2 = 1 - Math.pow(BETA2, state.t);
+    const biasCorr1 = 1 - BETA1 ** state.t;
+    const biasCorr2 = 1 - BETA2 ** state.t;
     for (let k = 0; k < WEIGHT_COUNT; k++) {
       const g = grad[k];
       m[k] = BETA1 * m[k] + (1 - BETA1) * g;
@@ -278,6 +340,37 @@ export async function trainWarmStartWeights(inputs, actions, { epochs, batchSize
     await new Promise((ok) => setTimeout(ok, 0));
   }
   return { weights: state.weights, history: state.history };
+}
+
+/**
+ * Rebalance a classified-action dataset so positive kick-gate frames
+ * are a target fraction of the sample stream. The teacher fires kick=+1
+ * on ~1-2% of ticks; with plain MSE the NN minimises loss by predicting
+ * a constant "always don't kick" and never commits to a strike.
+ * Duplicating positive frames lifts their effective weight in the
+ * gradient so the NN actually learns to emit +1 when appropriate.
+ *
+ * Pure — returns new arrays. Leaves the original inputs/actions alone.
+ */
+export function oversampleKickPositives(inputs, actions, { targetFrac = 0.25 } = {}) {
+  const posIdx = [];
+  for (let i = 0; i < actions.length; i++) {
+    if (actions[i][ACTION_KICK_GATE] > 0) posIdx.push(i);
+  }
+  if (posIdx.length === 0) return { inputs, actions };
+  const negCount = actions.length - posIdx.length;
+  // Required positive count so that pos / (pos + neg) >= targetFrac.
+  // → pos >= negCount * targetFrac / (1 - targetFrac).
+  const wantPos = Math.ceil((negCount * targetFrac) / (1 - targetFrac));
+  if (wantPos <= posIdx.length) return { inputs, actions };
+  const out_in  = inputs.slice();
+  const out_act = actions.slice();
+  for (let k = posIdx.length; k < wantPos; k++) {
+    const src = posIdx[k % posIdx.length];
+    out_in.push(inputs[src]);
+    out_act.push(actions[src]);
+  }
+  return { inputs: out_in, actions: out_act };
 }
 
 export { LAYER_COUNT, OUTPUT_SIZE };

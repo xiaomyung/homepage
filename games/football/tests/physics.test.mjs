@@ -10,6 +10,7 @@ import {
   createField,
   createState,
   createSeededRng,
+  resetStateInPlace,
   tick,
   buildInputs,
   FIELD_HEIGHT,
@@ -2229,3 +2230,221 @@ test('kickLegPose projects along heading (rotation-invariant)', () => {
   }
 });
 
+/* ── resetStateInPlace: the per-match reuse primitive ──────────
+ * Load-bearing invariants:
+ *  1. No new object allocation — ball, p1, p2, p*.kick, events all the
+ *     same reference before vs after. This is the whole point; if it
+ *     fails we're back to the pre-6adf1cd heap drift behavior.
+ *  2. After reset, every observable field matches a freshly-constructed
+ *     createState(field, rng) from the same inputs, so running the
+ *     match from a reset state is bit-identical to a fresh match.
+ *  3. Determinism chain survives: reset → tick N → scoreL/R/ball
+ *     position == fresh createState → tick N with the same seed.
+ */
+
+test('resetStateInPlace: object references are preserved', () => {
+  const field = createField();
+  const state = createState(field, createSeededRng(1));
+  const ballRef = state.ball;
+  const p1Ref = state.p1;
+  const p2Ref = state.p2;
+  const p1KickRef = state.p1.kick;
+  const p2KickRef = state.p2.kick;
+  const eventsRef = state.events;
+
+  // Dirty the state so reset has work to do.
+  state.scoreL = 2;
+  state.scoreR = 1;
+  state.tick = 500;
+  state.ball.x = 123; state.ball.vx = 45;
+  state.p1.kick.active = true; state.p1.kick.timer = 5;
+  state.events.push({ type: 'goal', scorer: 'p1' });
+
+  resetStateInPlace(state, field, createSeededRng(2));
+
+  assert.equal(state.ball, ballRef, 'ball object must be reused');
+  assert.equal(state.p1, p1Ref, 'p1 object must be reused');
+  assert.equal(state.p2, p2Ref, 'p2 object must be reused');
+  assert.equal(state.p1.kick, p1KickRef, 'p1.kick object must be reused');
+  assert.equal(state.p2.kick, p2KickRef, 'p2.kick object must be reused');
+  assert.equal(state.events, eventsRef, 'events array must be reused');
+});
+
+test('resetStateInPlace: counters and flags are reset', () => {
+  const field = createField();
+  const state = createState(field, createSeededRng(1));
+
+  state.scoreL = 2;
+  state.scoreR = 3;
+  state.tick = 999;
+  state.stallCount = 4;
+  state.matchOver = true;
+  state.winner = 'left';
+  state.pauseState = 'matchend';
+  state.pauseTimer = 12;
+  state.goalScorer = state.p1;
+  state.headless = true;
+  state.recordEvents = true;
+  state.events.push({ type: 'out' });
+  state.p1.vx = 7; state.p1.stamina = 0.2;
+  state.p1.kick.active = true; state.p1.pushTimer = 3;
+
+  resetStateInPlace(state, field, createSeededRng(2));
+
+  assert.equal(state.scoreL, 0);
+  assert.equal(state.scoreR, 0);
+  assert.equal(state.tick, 0);
+  assert.equal(state.stallCount, 0);
+  assert.equal(state.matchOver, false);
+  assert.equal(state.winner, null);
+  assert.equal(state.pauseState, null);
+  assert.equal(state.pauseTimer, 0);
+  assert.equal(state.goalScorer, null);
+  assert.equal(state.headless, false);
+  assert.equal(state.recordEvents, false);
+  assert.equal(state.events.length, 0);
+  assert.equal(state.p1.vx, 0);
+  assert.equal(state.p1.stamina, 1);
+  assert.equal(state.p1.kick.active, false);
+  assert.equal(state.p1.pushTimer, 0);
+});
+
+test('resetStateInPlace: equivalent to createState for subsequent ticking', () => {
+  const SEED = 12345;
+  const TICKS = 300;
+
+  // Path A — fresh state.
+  const fieldA = createField();
+  const stateA = createState(fieldA, createSeededRng(SEED));
+  stateA.graceFrames = 0;
+  for (let i = 0; i < TICKS; i++) tick(stateA, null, null);
+
+  // Path B — dirty an old state then reset it with the same seed.
+  const fieldB = createField();
+  const stateB = createState(fieldB, createSeededRng(99));
+  // Burn some ticks to mutate the object meaningfully before resetting.
+  for (let i = 0; i < 50; i++) tick(stateB, null, null);
+  stateB.scoreL = 2; stateB.ball.x = 500; stateB.ball.vx = 10;
+  resetStateInPlace(stateB, fieldB, createSeededRng(SEED));
+  stateB.graceFrames = 0;
+  for (let i = 0; i < TICKS; i++) tick(stateB, null, null);
+
+  assert.equal(stateA.tick, stateB.tick);
+  assert.equal(stateA.scoreL, stateB.scoreL);
+  assert.equal(stateA.scoreR, stateB.scoreR);
+  assert.ok(Math.abs(stateA.ball.x - stateB.ball.x) < 1e-9);
+  assert.ok(Math.abs(stateA.ball.y - stateB.ball.y) < 1e-9);
+  assert.ok(Math.abs(stateA.ball.vx - stateB.ball.vx) < 1e-9);
+  assert.ok(Math.abs(stateA.ball.vy - stateB.ball.vy) < 1e-9);
+  assert.ok(Math.abs(stateA.p1.x - stateB.p1.x) < 1e-9);
+  assert.ok(Math.abs(stateA.p2.x - stateB.p2.x) < 1e-9);
+});
+
+test('resetStateInPlace: swapping the rng produces a different stream than before', () => {
+  const field = createField();
+  const state = createState(field, createSeededRng(1));
+  resetStateInPlace(state, field, createSeededRng(1));
+  const a1 = state.rng(), a2 = state.rng();
+
+  resetStateInPlace(state, field, createSeededRng(2));
+  const b1 = state.rng(), b2 = state.rng();
+
+  assert.notEqual(a1, b1, 'different seed must advance to a different first value');
+  assert.notEqual(a2, b2, 'different seed must advance to a different second value');
+});
+
+/* ── Winner celebration flow (visual path, recent feature) ────── */
+
+test('winning goal sets celebrate pause AND flags winner (not matchend directly)', () => {
+  const state = freshState();
+  state.headless = false;
+  state.recordEvents = false;
+  // Ball crossing goalLineR (into the right goal) credits scoreL.
+  // See project_football_scoring_sides memory: side arg names the
+  // goal that conceded. Pre-seed scoreL=2 so the next score is 3 = win.
+  state.scoreL = 2;
+  state.ball.x = state.field.goalLineR + 1;
+  state.ball.y = FIELD_HEIGHT / 2;
+  state.ball.z = 0;
+  state.ball.vx = 5;
+  state.ball.vy = 0;
+  state.ball.vz = 0;
+  state.graceFrames = 0;
+
+  tick(state, null, null);
+
+  assert.equal(state.scoreL, 3, 'left-side scored the winning goal');
+  assert.equal(state.pauseState, 'celebrate', 'must stay in celebrate for the animation, not jump to matchend');
+  assert.equal(state.winner, 'left', 'winner must be flagged at the scoring tick');
+  assert.equal(state.matchOver, false, 'match is not over yet — celebrate then matchend');
+});
+
+test('visual celebrate → matchend transition when winner is set', () => {
+  const state = freshState();
+  state.headless = false;
+  state.recordEvents = false;
+  state.scoreL = 2;
+  state.ball.x = state.field.goalLineR + 1;
+  state.ball.y = FIELD_HEIGHT / 2;
+  state.ball.z = 0;
+  state.ball.vx = 5;
+  state.graceFrames = 0;
+  tick(state, null, null);
+
+  assert.equal(state.pauseState, 'celebrate');
+  const celebrateTicks = state.pauseTimer;
+  assert.ok(celebrateTicks > 0);
+
+  // Run the celebrate countdown. During celebrate, advancePause still
+  // lets the ball roll under gravity, so the transition test gates on
+  // the pauseState flip, not a fixed tick count.
+  for (let i = 0; i < celebrateTicks + 5; i++) {
+    tick(state, null, null);
+    if (state.pauseState === 'matchend') break;
+  }
+  assert.equal(state.pauseState, 'matchend', 'after celebrate expires on a winning goal we jump to matchend, skipping reposition');
+});
+
+test('non-winning goal celebrates then reposition (no matchend)', () => {
+  const state = freshState();
+  state.headless = false;
+  state.recordEvents = false;
+  state.scoreR = 0;   // first goal of the match, nowhere near WIN_SCORE
+  state.ball.x = state.field.goalLineR + 1;
+  state.ball.y = FIELD_HEIGHT / 2;
+  state.ball.z = 0;
+  state.ball.vx = 5;
+  state.graceFrames = 0;
+  tick(state, null, null);
+
+  assert.equal(state.pauseState, 'celebrate');
+  assert.equal(state.winner, null, 'non-winning goal must NOT flag winner');
+  const celebrateTicks = state.pauseTimer;
+
+  for (let i = 0; i < celebrateTicks + 5; i++) {
+    tick(state, null, null);
+    if (state.pauseState !== 'celebrate') break;
+  }
+  assert.notEqual(state.pauseState, 'matchend', 'non-winning goal must NOT go to matchend');
+  assert.ok(state.pauseState === 'reposition' || state.pauseState === 'waiting' || state.pauseState === null,
+    `expected reposition/waiting/null after celebrate, got ${state.pauseState}`);
+});
+
+/* ── Action-slot index stability ───────────────────────────────
+ * ACTION_KICK_GATE is referenced by index in warm-start-lib.js
+ * (oversampleKickPositives reads actions[i][ACTION_KICK_GATE]). If
+ * the action layout ever shifts, that sampling would silently target
+ * the wrong slot. Pin the values here so a slot rename breaks loudly.
+ */
+test('ACTION_* slot indices are stable and contiguous', () => {
+  assert.equal(ACTION_MOVE_X,     0);
+  assert.equal(ACTION_MOVE_Y,     1);
+  assert.equal(ACTION_KICK_GATE,  2);
+  assert.equal(ACTION_KICK_DX,    3);
+  assert.equal(ACTION_KICK_DY,    4);
+  assert.equal(ACTION_KICK_DZ,    5);
+  assert.equal(ACTION_KICK_POWER, 6);
+  assert.equal(ACTION_PUSH_GATE,  7);
+  assert.equal(ACTION_PUSH_POWER, 8);
+  assert.equal(NN_OUTPUT_SIZE,    9);
+});

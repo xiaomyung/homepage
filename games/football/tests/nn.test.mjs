@@ -134,3 +134,76 @@ test('toJson roundtrips through fromJson', () => {
   const nn2 = NeuralNet.fromJson(json);
   assert.deepEqual(nn2.weights, nn1.weights);
 });
+
+/* ── loadWeights: the per-match reuse primitive ───────────────
+ * worker.js + main.js both reuse a single NeuralNet instance across
+ * thousands of matches and call loadWeights(w) between them. The
+ * invariants below are load-bearing:
+ *  1. The weights Float64Array must stay pinned (same reference) —
+ *     otherwise the reused-scratch layer buffers and the weights go
+ *     out of sync on the first forward() after a load.
+ *  2. Forward pass after loadWeights must equal forward pass of a
+ *     freshly-constructed NN with those weights (determinism of the
+ *     reused-NN path vs the fresh-NN path).
+ *  3. Wrong-length input must throw — silent truncation would corrupt
+ *     evolution.
+ */
+
+test('loadWeights mutates the existing weights buffer in place', () => {
+  const initial = Array.from({ length: WEIGHT_COUNT }, (_, i) => Math.sin(i) * 0.01);
+  const nn = new NeuralNet(initial);
+  const bufRef = nn.weights;
+  assert.ok(bufRef instanceof Float64Array, 'weights is a Float64Array');
+
+  const fresh = Array.from({ length: WEIGHT_COUNT }, (_, i) => Math.cos(i) * 0.05);
+  nn.loadWeights(fresh);
+
+  assert.equal(nn.weights, bufRef, 'Float64Array reference must stay the same');
+  for (let i = 0; i < WEIGHT_COUNT; i++) {
+    assert.ok(Math.abs(nn.weights[i] - fresh[i]) < 1e-12,
+      `weight ${i}: ${nn.weights[i]} should equal ${fresh[i]}`);
+  }
+});
+
+test('loadWeights accepts a Float64Array source', () => {
+  const nn = new NeuralNet(new Float64Array(WEIGHT_COUNT));
+  const src = new Float64Array(WEIGHT_COUNT);
+  for (let i = 0; i < WEIGHT_COUNT; i++) src[i] = Math.tanh(i * 0.1);
+  const bufRef = nn.weights;
+  nn.loadWeights(src);
+  assert.equal(nn.weights, bufRef, 'weights ref preserved across Float64Array load');
+  for (let i = 0; i < WEIGHT_COUNT; i++) {
+    assert.ok(Math.abs(nn.weights[i] - src[i]) < 1e-12);
+  }
+});
+
+test('loadWeights rejects wrong-length sources', () => {
+  const nn = new NeuralNet(new Float64Array(WEIGHT_COUNT));
+  assert.throws(() => nn.loadWeights(new Float64Array(WEIGHT_COUNT - 1)),
+    /weight count mismatch/);
+  assert.throws(() => nn.loadWeights(new Float64Array(WEIGHT_COUNT + 1)),
+    /weight count mismatch/);
+  assert.throws(() => nn.loadWeights([]),
+    /weight count mismatch/);
+});
+
+test('forward after loadWeights matches fresh NN with same weights', () => {
+  const reusedNN = new NeuralNet(new Float64Array(WEIGHT_COUNT));
+  // Arbitrary inputs — deterministic cos wave so the test is hermetic.
+  const inputs = Array.from({ length: 25 }, (_, i) => Math.cos(i * 0.37) * 0.8);
+
+  // Two different weight sets — load them in sequence, confirming both
+  // forward passes match a fresh NN built with those weights.
+  for (const salt of [0.1, -0.25, 0.5]) {
+    const w = Array.from({ length: WEIGHT_COUNT }, (_, i) => Math.sin(i * salt));
+    reusedNN.loadWeights(w);
+    const reused = Array.from(reusedNN.forward(inputs));
+    const freshNN = new NeuralNet(w);
+    const fresh = Array.from(freshNN.forward(inputs));
+    assert.equal(reused.length, fresh.length);
+    for (let i = 0; i < reused.length; i++) {
+      assert.ok(Math.abs(reused[i] - fresh[i]) < 1e-12,
+        `salt=${salt} output ${i}: reused ${reused[i]} !== fresh ${fresh[i]}`);
+    }
+  }
+});

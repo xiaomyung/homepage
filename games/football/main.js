@@ -92,7 +92,7 @@ async function main() {
     // worker.js stale. Bump the query string when the worker protocol
     // changes (e.g., this edit added `seed` to the result payload and
     // the broker expects it).
-    workerUrl: new URL('./worker.js?v=2', import.meta.url),
+    workerUrl: new URL('./worker.js?v=3', import.meta.url),
     onStats: ({ simsPerSec }) => statsPanel?.setSimsPerSec(simsPerSec),
   });
   // Runtime is broker-authoritative and comes back in the /stats

@@ -762,7 +762,8 @@ function recordResult(result, freshForReplay = true) {
   // brain ids carry different weights, so the snapshot would not
   // match what the worker actually ran.
   const seed = Number.isFinite(result.seed) ? result.seed >>> 0 : null;
-  if (freshForReplay && seed !== null && (goalsP1 + goalsP2) > 0) {
+  const stalled = !!result.stalled;
+  if (freshForReplay && !stalled && seed !== null && (goalsP1 + goalsP2) > 0) {
     const p2 = result.p2_id != null ? byId[result.p2_id] : null;
     if (!result.p2_id || p2) {
       state.interestingMatches.push({

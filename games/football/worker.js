@@ -137,5 +137,11 @@ function runMatch(matchup) {
     // match visually — same weights + same seed = bit-identical
     // physics, so the showcase doesn't have to pre-simulate.
     seed,
+    // Number of stall-reset firings during the match. The broker
+    // uses this to exclude stalled matches from the replay buffer —
+    // a mid-match teleport is visually jarring even when the final
+    // score is decisive. Fitness still counts whatever goals were
+    // scored; only the showcase filter cares.
+    stalled: state.stallCount > 0,
   };
 }

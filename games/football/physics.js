@@ -328,6 +328,12 @@ export function createState(field, rng = createSeededRng(0)) {
     tick: 0,
     graceFrames: RESPAWN_GRACE,
     lastKickTick: 0,
+    // Incremented every time the stall timeout fires. Workers read
+    // this after a match to tag the result — stalled matches are
+    // filtered out of the showcase replay buffer so visuals never
+    // show a mid-match teleport. Fitness unaffected: goals scored
+    // during or after a stall still count.
+    stallCount: 0,
     pauseState: null, // null | 'celebrate' | 'matchend' | 'reposition' | 'waiting'
     pauseTimer: 0,
     goalScorer: null,
@@ -412,6 +418,7 @@ export function tick(state, p1Act, p2Act) {
   updateBall(state);
 
   if (state.tick - state.lastKickTick > STALL_TICKS) {
+    state.stallCount += 1;
     if (state.headless) {
       // Full kickoff reset — both players teleported, velocities
       // zeroed, ball on ground at midfield — so stale segments

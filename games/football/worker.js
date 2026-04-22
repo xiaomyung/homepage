@@ -26,7 +26,7 @@
 import {
   createField,
   createState,
-  createSeededRng,
+  resetStateInPlace,
   tick as physicsTick,
   buildInputs,
   NN_INPUT_SIZE,
@@ -46,6 +46,19 @@ const p1Brain = new NeuralNet(new Float64Array(WEIGHT_COUNT));
 const p2Brain = new NeuralNet(new Float64Array(WEIGHT_COUNT));
 const p1InputBuf = new Float64Array(NN_INPUT_SIZE);
 const p2InputBuf = new Float64Array(NN_INPUT_SIZE);
+
+// Persistent field + state + rng — allocated once per worker lifetime,
+// re-initialized in place before every match. Running thousands of
+// matches/sec with N workers, allocating a fresh state + field + rng
+// closure per match was the dominant source of V8 old-gen drift
+// (see project_football_renderer_oom).
+let sharedRngSeed = 1;
+function sharedRngFn() {
+  sharedRngSeed = (Math.imul(sharedRngSeed, 1664525) + 1013904223) >>> 0;
+  return sharedRngSeed / 4294967296;
+}
+const sharedField = createField();
+const sharedState = createState(sharedField, sharedRngFn);
 
 // Local weights cache populated from the main thread's `population`
 // message. Keyed by brain id; values are per-brain Float64Arrays.
@@ -98,9 +111,9 @@ function runMatch(matchup) {
   const p2Weights = p2IsFallback ? null : weightsById.get(matchup.p2);
   if (!p2IsFallback && !p2Weights) return null;
 
-  const field = createField();
   const seed = (Math.random() * 2 ** 31) >>> 0;
-  const state = createState(field, createSeededRng(seed));
+  sharedRngSeed = seed || 1;
+  const state = resetStateInPlace(sharedState, sharedField, sharedRngFn);
   state.headless = true;
   state.graceFrames = 0;
   state.ball.z = 0;

@@ -250,55 +250,86 @@ export function createField(width = FIELD_WIDTH_REF) {
   return field;
 }
 
-function createPlayer(side, field) {
+function initPlayer(p, side, field) {
   const x = side === 'left'
     ? field.midX - STARTING_GAP - field.playerWidth / 2
     : field.midX + STARTING_GAP - field.playerWidth / 2;
-  return {
-    side,
-    x, y: FIELD_HEIGHT / 2,
-    vx: 0, vy: 0,
-    pushVx: 0, pushVy: 0,
-    stamina: 1,
-    exhausted: false,
-    // Pre-allocated kick slot — gated by `.active` so we never allocate
-    // a fresh object per kick attempt on the hot path.
-    //
-    // `kind` picks ground vs air; `stage` walks windup → strike →
-    // recovery. `footTargetX/Y/Z` is the world-space point the foot
-    // aims to reach at strike; it tracks the predicted ball during
-    // windup and freezes when stage flips to 'strike'.
-    kick: {
-      active: false,
-      kind: 'ground',         // 'ground' | 'air'
-      stage: 'windup',        // 'windup' | 'strike' | 'recovery'
-      timer: 0,
-      airZ: 0,
-      fired: false,
-      dx: 0, dy: 0, dz: 0,
-      power: 0,
-      footTargetX: 0, footTargetY: 0, footTargetZ: 0,
-    },
-    // Push state — timer is the countdown driven by `advancePush`;
-    // target/arm/type are set at `tryPush` commit and consumed by the
-    // renderer to IK the striking arm to the opponent's body. Impulse
-    // still applies instantly at commit — this state is purely for
-    // animation (+ future fist-contact if we ever need it).
-    pushTimer: 0,
-    pushTargetX: 0, pushTargetY: 0, pushTargetZ: 0,
-    pushArm: 'right',                           // 'left' | 'right'
-    pushType: 'jab',                            // 'jab' | 'hook' | 'uppercut'
-    // Heading: 0 = facing toward +x (right side of field). Players
-    // start facing the opposing goal so the first frame of a match
-    // looks like a kick-off, not two stickmen staring at the camera.
-    heading: side === 'left' ? 0 : Math.PI,
-    // Previous tick's commanded move direction (sign of move axis).
-    // Used to fire DIRECTION_CHANGE_DRAIN exactly once on each
-    // reversal instead of continuously while velocity crosses zero.
-    prevTargetDirX: 0,
-    prevTargetDirY: 0,
-    airZ: 0,
-  };
+  p.side = side;
+  p.x = x; p.y = FIELD_HEIGHT / 2;
+  p.vx = 0; p.vy = 0;
+  p.pushVx = 0; p.pushVy = 0;
+  p.stamina = 1;
+  p.exhausted = false;
+  const kick = p.kick;
+  kick.active = false;
+  kick.kind = 'ground';
+  kick.stage = 'windup';
+  kick.timer = 0;
+  kick.airZ = 0;
+  kick.fired = false;
+  kick.dx = 0; kick.dy = 0; kick.dz = 0;
+  kick.power = 0;
+  kick.footTargetX = 0; kick.footTargetY = 0; kick.footTargetZ = 0;
+  p.pushTimer = 0;
+  p.pushTargetX = 0; p.pushTargetY = 0; p.pushTargetZ = 0;
+  p.pushArm = 'right';
+  p.pushType = 'jab';
+  p.heading = side === 'left' ? 0 : Math.PI;
+  p.prevTargetDirX = 0;
+  p.prevTargetDirY = 0;
+  p.airZ = 0;
+  return p;
+}
+
+function createPlayer(side, field) {
+  // Pre-allocated kick slot — gated by `.active` so we never allocate
+  // a fresh object per kick attempt on the hot path.
+  //
+  // `kind` picks ground vs air; `stage` walks windup → strike →
+  // recovery. `footTargetX/Y/Z` is the world-space point the foot
+  // aims to reach at strike; it tracks the predicted ball during
+  // windup and freezes when stage flips to 'strike'.
+  return initPlayer({ kick: {} }, side, field);
+}
+
+/**
+ * Re-initialize an existing state for a new match, without allocating
+ * any new objects. The ball, p1, p2 (and their kick sub-objects), and
+ * the events array are all mutated in place. Field + rng can be swapped
+ * at will. `recordEvents` and `headless` are reset to their defaults;
+ * callers (worker, main) re-set them after reset as needed.
+ *
+ * Lets worker.js keep one state across thousands of matches instead of
+ * allocating a fresh state per runMatch. With N workers × thousands of
+ * matches/sec, that churn was the dominant source of old-gen drift —
+ * see project_football_renderer_oom in session memory.
+ */
+export function resetStateInPlace(state, field, rng) {
+  state.field = field;
+  state.rng = rng;
+  const ball = state.ball;
+  ball.x = field.midX; ball.y = FIELD_HEIGHT / 2;
+  ball.vx = 0; ball.vy = 0;
+  ball.z = RESPAWN_DROP_Z; ball.vz = 0;
+  ball.frozen = false;
+  ball.inGoal = false;
+  initPlayer(state.p1, 'left', field);
+  initPlayer(state.p2, 'right', field);
+  state.scoreL = 0;
+  state.scoreR = 0;
+  state.tick = 0;
+  state.graceFrames = RESPAWN_GRACE;
+  state.lastKickTick = 0;
+  state.stallCount = 0;
+  state.pauseState = null;
+  state.pauseTimer = 0;
+  state.goalScorer = null;
+  state.matchOver = false;
+  state.winner = null;
+  state.events.length = 0;
+  state.recordEvents = false;
+  state.headless = false;
+  return state;
 }
 
 /**
@@ -308,13 +339,13 @@ function createPlayer(side, field) {
  * state.events; production callers (main, worker) skip all event allocation.
  */
 export function createState(field, rng = createSeededRng(0)) {
-  return {
-    field,
-    rng,
+  const state = {
+    field: null,
+    rng: null,
     ball: {
-      x: field.midX, y: FIELD_HEIGHT / 2,
+      x: 0, y: 0,
       vx: 0, vy: 0,
-      z: RESPAWN_DROP_Z, vz: 0,
+      z: 0, vz: 0,
       frozen: false,
       // Set true on scoreGoal so updateBall routes goal-box collisions
       // through the absorbing inner-net resolver (ball stops, falls)
@@ -326,7 +357,7 @@ export function createState(field, rng = createSeededRng(0)) {
     scoreL: 0,
     scoreR: 0,
     tick: 0,
-    graceFrames: RESPAWN_GRACE,
+    graceFrames: 0,
     lastKickTick: 0,
     // Incremented every time the stall timeout fires. Workers read
     // this after a match to tag the result — stalled matches are
@@ -349,6 +380,8 @@ export function createState(field, rng = createSeededRng(0)) {
     // stays untouched.
     headless: false,
   };
+  resetStateInPlace(state, field, rng);
+  return state;
 }
 
 /* ── Seeded PRNG (LCG, Numerical Recipes params) ──────────────── */

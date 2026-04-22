@@ -20,14 +20,14 @@ import { Renderer } from './renderer.js';
 import {
   createField,
   createState,
-  createSeededRng,
+  resetStateInPlace,
   tick as physicsTick,
   buildInputs,
   TICK_MS,
   NN_INPUT_SIZE,
   NN_ACTION_STRIDE,
 } from './physics.js';
-import { NeuralNet } from './nn.js';
+import { NeuralNet, WEIGHT_COUNT } from './nn.js';
 import { fallbackAction } from './fallback.js';
 import { createTrainingOrchestrator } from './training-orchestrator.js';
 import { computeTicks } from './frame-loop.js';
@@ -77,6 +77,22 @@ const MAX_TICKS_PER_FRAME = 5;
 const p1InputBuf = new Array(NN_INPUT_SIZE);
 const p2InputBuf = new Array(NN_INPUT_SIZE);
 
+// Persistent showcase state + field + rng + NN pair. One allocation
+// per page lifetime — every showcase match reuses them via
+// resetStateInPlace + loadWeights. Prevents a steady allocation drip
+// on the main thread (~once per 30s) compounding over long sessions;
+// more importantly, keeps the showcase path symmetric with the
+// per-worker reuse pattern in worker.js.
+let showcaseRngSeed = 1;
+function showcaseRngFn() {
+  showcaseRngSeed = (Math.imul(showcaseRngSeed, 1664525) + 1013904223) >>> 0;
+  return showcaseRngSeed / 4294967296;
+}
+const showcaseField = createField();
+const showcaseState = createState(showcaseField, showcaseRngFn);
+const showcaseP1Brain = new NeuralNet(new Float64Array(WEIGHT_COUNT));
+const showcaseP2Brain = new NeuralNet(new Float64Array(WEIGHT_COUNT));
+
 async function main() {
   const canvas = document.getElementById('game-canvas');
   renderer = new Renderer(canvas);
@@ -92,7 +108,7 @@ async function main() {
     // worker.js stale. Bump the query string when the worker protocol
     // changes (e.g., this edit added `seed` to the result payload and
     // the broker expects it).
-    workerUrl: new URL('./worker.js?v=3', import.meta.url),
+    workerUrl: new URL('./worker.js?v=4', import.meta.url),
     onStats: ({ simsPerSec }) => statsPanel?.setSimsPerSec(simsPerSec),
   });
   // Runtime is broker-authoritative and comes back in the /stats
@@ -190,7 +206,8 @@ async function nextShowcase() {
   const seed = isReplay
     ? (matchup.seed >>> 0)
     : (Math.random() * 2 ** 31) >>> 0;
-  const state = createState(createField(), createSeededRng(seed));
+  showcaseRngSeed = seed || 1;
+  const state = resetStateInPlace(showcaseState, showcaseField, showcaseRngFn);
   state.graceFrames = 0;
   // Let the renderer consume ball-bounce events for splash particles.
   state.recordEvents = true;
@@ -212,7 +229,8 @@ async function nextShowcase() {
   if (matchup && matchup.p1) {
     p1Source = matchup.p1;
     try {
-      p1Brain = new NeuralNet(matchup.p1.weights);
+      showcaseP1Brain.loadWeights(matchup.p1.weights);
+      p1Brain = showcaseP1Brain;
     } catch {
       p1Brain = null;
     }
@@ -222,7 +240,8 @@ async function nextShowcase() {
     } else if (matchup.p2) {
       p2Source = matchup.p2;
       try {
-        p2Brain = new NeuralNet(matchup.p2.weights);
+        showcaseP2Brain.loadWeights(matchup.p2.weights);
+        p2Brain = showcaseP2Brain;
       } catch {
         p2Brain = null;
       }

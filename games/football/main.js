@@ -183,9 +183,38 @@ async function main() {
     }
   });
 
+  // Heap watchdog — belt-and-braces for runaway memory. The main fix
+  // is the per-match state/NN reuse above; this catches any residual
+  // drift (three.js internals, worker protocol queues, module
+  // registrations from devtools, etc.) before the tab crashes with
+  // SIGILL (V8 FatalProcessOutOfMemory). Non-Chromium browsers don't
+  // expose performance.memory, so we silently no-op there.
+  installHeapWatchdog();
+
   // Kick off the showcase loop
   nextShowcase();
   requestAnimationFrame(frame);
+}
+
+function installHeapWatchdog() {
+  const mem = performance.memory;
+  if (!mem || !Number.isFinite(mem.jsHeapSizeLimit)) return;
+  const RELOAD_FRAC = 0.75;
+  // Grace period after load — a large initial heap (module graph,
+  // three.js, warm-start fetch) is normal; we want to catch the
+  // monotonic drift that appears after training has been running
+  // for a while, not a tall first read.
+  const GRACE_MS = 60000;
+  const startedAt = Date.now();
+  setInterval(() => {
+    if (Date.now() - startedAt < GRACE_MS) return;
+    const used = mem.usedJSHeapSize;
+    const limit = mem.jsHeapSizeLimit;
+    if (!Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) return;
+    if (used / limit < RELOAD_FRAC) return;
+    try { console.warn(`[football] heap ${Math.round(used / 1048576)}MB / ${Math.round(limit / 1048576)}MB — reloading to avoid OOM`); } catch { /* ignore */ }
+    location.reload();
+  }, 10000);
 }
 
 /* ── Showcase loop ────────────────────────────────────── */

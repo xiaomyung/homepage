@@ -185,6 +185,8 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
     zerozero: document.getElementById('stat-zerozero'),
     draws: document.getElementById('stat-draws'),
     decisive: document.getElementById('stat-decisive'),
+    cleanDecisive: document.getElementById('stat-clean-decisive'),
+    stalled: document.getElementById('stat-stalled'),
     blowout: document.getElementById('stat-blowout'),
   };
 
@@ -237,10 +239,12 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
       // to '—'.
       if (md && md.total > 0) {
         const pctTxt = (r) => `${(r * 100).toFixed(1)}%`;
-        setIf(el.zerozero, pctTxt(md.zero_zero_rate));
-        setIf(el.draws,    pctTxt(md.nonzero_draw_rate));
-        setIf(el.decisive, pctTxt(md.decisive_rate));
-        setIf(el.blowout,  pctTxt(md.blowout_rate));
+        setIf(el.zerozero,      pctTxt(md.zero_zero_rate));
+        setIf(el.draws,         pctTxt(md.nonzero_draw_rate));
+        setIf(el.decisive,      pctTxt(md.decisive_rate));
+        setIf(el.cleanDecisive, pctTxt(md.decisive_no_stall_rate));
+        setIf(el.stalled,       pctTxt(md.stall_rate));
+        setIf(el.blowout,       pctTxt(md.blowout_rate));
       }
       if (typeof stats.runtime_ms === 'number') {
         setIf(el.runtime, formatRuntime(stats.runtime_ms));

@@ -175,10 +175,12 @@ const state = {
   // now" as percentages in the stats panel.
   matchCounts: {
     total: 0,
-    zeroZero: 0,      // final 0-0
-    nonzeroDraw: 0,   // 1-1, 2-2, ...
-    decisive: 0,      // winner, |diff| < BLOWOUT_THRESHOLD
-    blowout: 0,       // |diff| >= BLOWOUT_THRESHOLD
+    zeroZero: 0,           // final 0-0
+    nonzeroDraw: 0,        // 1-1, 2-2, ...
+    decisive: 0,           // winner, |diff| < BLOWOUT_THRESHOLD
+    blowout: 0,            // |diff| >= BLOWOUT_THRESHOLD
+    stalled: 0,            // match had ≥1 stall reset
+    decisiveNoStall: 0,    // winner AND no stall — showcase-eligible
   },
   // Ring buffer of recently-reported non-stalemate matches (≥1 goal),
   // tagged with the worker's seed so the client can replay any of
@@ -581,7 +583,10 @@ function tryBreed() {
   // Reset match-distribution counters per generation so the panel
   // reflects CURRENT training quality (like `cur top` / `cur avg`),
   // not a lifetime-since-reset average dominated by early bad gens.
-  state.matchCounts = { total: 0, zeroZero: 0, nonzeroDraw: 0, decisive: 0, blowout: 0 };
+  state.matchCounts = {
+    total: 0, zeroZero: 0, nonzeroDraw: 0, decisive: 0, blowout: 0,
+    stalled: 0, decisiveNoStall: 0,
+  };
   // interestingMatches intentionally NOT cleared here — entries are
   // tagged with their generation and pickInterestingReplay filters
   // on current gen. That lets the showcase keep replaying last-gen
@@ -751,10 +756,13 @@ function recordResult(result, freshForReplay = true) {
 
   // Session-wide match-ending distribution counters. Per-match O(1).
   state.matchCounts.total += 1;
+  const isDecisive = goalsP1 !== goalsP2 && Math.abs(diff) < BLOWOUT_THRESHOLD;
   if (goalsP1 === 0 && goalsP2 === 0)           state.matchCounts.zeroZero += 1;
   else if (goalsP1 === goalsP2)                 state.matchCounts.nonzeroDraw += 1;
   else if (Math.abs(diff) >= BLOWOUT_THRESHOLD) state.matchCounts.blowout += 1;
   else                                          state.matchCounts.decisive += 1;
+  if (result.stalled) state.matchCounts.stalled += 1;
+  if (isDecisive && !result.stalled) state.matchCounts.decisiveNoStall += 1;
 
   // Remember non-stalemate matches with their seeds so /showcase
   // can replay a known-interesting match visually. Only snapshot
@@ -936,11 +944,13 @@ function handleStats(req, res) {
     fallback_win_rate: fbMatches > 0 ? fbWins / fbMatches : 0,
     runtime_ms: runtimeNowMs(),
     match_distribution: {
-      total:           mcTotal,
-      zero_zero_rate:  pct(mc.zeroZero),
-      nonzero_draw_rate: pct(mc.nonzeroDraw),
-      decisive_rate:   pct(mc.decisive),
-      blowout_rate:    pct(mc.blowout),
+      total:                   mcTotal,
+      zero_zero_rate:          pct(mc.zeroZero),
+      nonzero_draw_rate:       pct(mc.nonzeroDraw),
+      decisive_rate:           pct(mc.decisive),
+      decisive_no_stall_rate:  pct(mc.decisiveNoStall),
+      blowout_rate:            pct(mc.blowout),
+      stall_rate:              pct(mc.stalled),
     },
   });
 }
@@ -1047,7 +1057,10 @@ function seedPopulationFromWeights(seedWeights) {
   state.runtimeMsTotal = 0;
   state.runtimeActiveStart = null;
   state.runtimeLastPostAt = null;
-  state.matchCounts = { total: 0, zeroZero: 0, nonzeroDraw: 0, decisive: 0, blowout: 0 };
+  state.matchCounts = {
+    total: 0, zeroZero: 0, nonzeroDraw: 0, decisive: 0, blowout: 0,
+    stalled: 0, decisiveNoStall: 0,
+  };
   state.interestingMatches = [];
   refreshPopulationIndex();
 }

@@ -244,6 +244,7 @@ const SHADOW_FRAGMENT_SHADER = /* glsl */ `
 `;
 const PLAYER_SHADOW_RADIUS = 12; // world units — fits under stickman glyph
 const SHADOW_ALPHA_BASE    = 0.55;
+const SHADOW_Y             = 0.2; // tiny offset above ground to avoid z-fight with field lines
 
 /* ── Palette (matches style.css design tokens) ─────────────── */
 
@@ -328,7 +329,8 @@ export class Renderer {
     // uAlpha can be animated per-entity (ball fades as it rises).
     const shadowGeom = new THREE.PlaneGeometry(1, 1);
     this._staticGeometries.push(shadowGeom);
-    const makeShadow = () => {
+    this._shadowGeom = shadowGeom;
+    this._makeShadow = () => {
       const mat = new THREE.ShaderMaterial({
         uniforms: { uAlpha: { value: SHADOW_ALPHA_BASE } },
         vertexShader: SHADOW_VERTEX_SHADER,
@@ -336,7 +338,7 @@ export class Renderer {
         transparent: true,
         depthWrite: false,
       });
-      const mesh = new THREE.Mesh(shadowGeom, mat);
+      const mesh = new THREE.Mesh(this._shadowGeom, mat);
       mesh.rotation.x = -Math.PI / 2;  // lay flat on xz plane
       mesh.frustumCulled = false;
       mesh._uAlpha = mat.uniforms.uAlpha;
@@ -344,9 +346,12 @@ export class Renderer {
       this.scene.add(mesh);
       return mesh;
     };
-    this._p1Shadow   = makeShadow();
-    this._p2Shadow   = makeShadow();
-    this._ballShadow = makeShadow();
+    // Pool of player shadows, grown on demand via _ensurePlayerShadow.
+    // Two pre-created for the common case of two players (zero extra
+    // cost vs the original _p1Shadow / _p2Shadow).
+    this._playerShadows = [this._makeShadow(), this._makeShadow()];
+    this._playerShadowCursor = 0;
+    this._ballShadow = this._makeShadow();
 
     // Stickman pipe parts — torsos, arms, and legs each use their own
     // fixed-length CapsuleGeometry so the hemispherical caps stay
@@ -633,20 +638,26 @@ export class Renderer {
   renderState(state) {
     const tick = state.tick || 0;
     const celebrating = state.pauseState === 'celebrate';
-    const p1Celebrating = celebrating && state.goalScorer === state.p1;
-    const p2Celebrating = celebrating && state.goalScorer === state.p2;
+    // state.players is the N-player path (any array of player-shaped
+    // objects). Falls back to [p1, p2] for the single-match case.
+    const players = state.players || [state.p1, state.p2];
     const prevTorsoCursor    = this._stickmanTorsoCursor;
     const prevUpperArmCursor = this._stickmanUpperArmCursor;
     const prevLowerArmCursor = this._stickmanLowerArmCursor;
     const prevLegCursor      = this._stickmanLegCursor;
     const prevSphCursor      = this._stickmanSphCursor;
+    const prevPlayerShadowCursor = this._playerShadowCursor;
     this._stickmanTorsoCursor    = 0;
     this._stickmanUpperArmCursor = 0;
     this._stickmanLowerArmCursor = 0;
     this._stickmanLegCursor      = 0;
     this._stickmanSphCursor      = 0;
-    this._addStickman(state.p1, COLOR_TEXT, tick, p1Celebrating);
-    this._addStickman(state.p2, COLOR_TEXT, tick, p2Celebrating);
+    this._playerShadowCursor     = 0;
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i];
+      this._addStickman(p, COLOR_TEXT, tick, celebrating && state.goalScorer === p);
+      this._placePlayerShadow(p);
+    }
     for (let i = this._stickmanTorsoCursor; i < prevTorsoCursor; i++) {
       this._stickmanTorsoOutline[i].visible = false;
       this._stickmanTorsoFill[i].visible = false;
@@ -656,6 +667,7 @@ export class Renderer {
     for (let i = this._stickmanLowerArmCursor; i < prevLowerArmCursor; i++) this._stickmanLowerArm[i].visible = false;
     for (let i = this._stickmanLegCursor; i < prevLegCursor; i++) this._stickmanLeg[i].visible = false;
     for (let i = this._stickmanSphCursor; i < prevSphCursor; i++) this._stickmanSph[i].visible = false;
+    for (let i = this._playerShadowCursor; i < prevPlayerShadowCursor; i++) this._playerShadows[i].visible = false;
 
     // Ball — real 3D sphere in world space. Altitude comes straight
     // from physics ball.z; gravity, bounce, and all collisions live
@@ -688,11 +700,6 @@ export class Renderer {
     // Ball shadow is anchored to the ball's x/y (physics plane) so it
     // stays put on the ground as the sphere rises on ball.z; radius
     // grows slightly and alpha fades with altitude, reading as height.
-    const SHADOW_Y = 0.2;   // tiny offset above ground to avoid z-fight
-    this._p1Shadow.position.set(state.p1.x + PLAYER_WIDTH / 2, SHADOW_Y, state.p1.y * Z_STRETCH);
-    this._p1Shadow.scale.set(PLAYER_SHADOW_RADIUS * 2, PLAYER_SHADOW_RADIUS * 2, 1);
-    this._p2Shadow.position.set(state.p2.x + PLAYER_WIDTH / 2, SHADOW_Y, state.p2.y * Z_STRETCH);
-    this._p2Shadow.scale.set(PLAYER_SHADOW_RADIUS * 2, PLAYER_SHADOW_RADIUS * 2, 1);
     const airH = Math.max(0, state.ball.z || 0);
     const ballShadowR = BALL_VISUAL_RADIUS * (1 + airH * 0.04);
     const ballShadowA = SHADOW_ALPHA_BASE / (1 + airH * 0.06);
@@ -1619,6 +1626,18 @@ export class Renderer {
       mesh.quaternion.identity();
     }
     mesh.material.color.setRGB(color[0], color[1], color[2]);
+  }
+
+  /** Place the next shadow from the player-shadow pool under
+   *  `player`, growing the pool on demand. Pooled so harnesses can
+   *  render N players without a fixed ceiling. */
+  _placePlayerShadow(player) {
+    const idx = this._playerShadowCursor++;
+    while (this._playerShadows.length <= idx) this._playerShadows.push(this._makeShadow());
+    const shadow = this._playerShadows[idx];
+    shadow.position.set(player.x + PLAYER_WIDTH / 2, SHADOW_Y, player.y * Z_STRETCH);
+    shadow.scale.set(PLAYER_SHADOW_RADIUS * 2, PLAYER_SHADOW_RADIUS * 2, 1);
+    shadow.visible = true;
   }
 
   /** Pull a torso capsule triple (outline + fill + disc) from the

@@ -428,7 +428,9 @@ export class Renderer {
     discGeom.rotateX(-Math.PI / 2);
     this._staticGeometries.push(discGeom);
 
-    const makeUpperArmMesh = () => {
+    // Mesh factories stored on `this` so pools can grow on demand in
+    // the _place* helpers (harnesses/tests can drive N > 2 players).
+    this._mkUpperArm = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
       const mesh = new THREE.Mesh(stickmanUpperArmGeom, mat);
       mesh.visible = false;
@@ -437,7 +439,7 @@ export class Renderer {
       this.scene.add(mesh);
       this._stickmanUpperArm.push(mesh);
     };
-    const makeLowerArmMesh = () => {
+    this._mkLowerArm = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
       const mesh = new THREE.Mesh(stickmanLowerArmGeom, mat);
       mesh.visible = false;
@@ -446,7 +448,7 @@ export class Renderer {
       this.scene.add(mesh);
       this._stickmanLowerArm.push(mesh);
     };
-    const makeLegMesh = () => {
+    this._mkLeg = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
       const mesh = new THREE.Mesh(stickmanLegGeom, mat);
       mesh.visible = false;
@@ -455,7 +457,7 @@ export class Renderer {
       this.scene.add(mesh);
       this._stickmanLeg.push(mesh);
     };
-    const makeTorsoOutlineMesh = () => {
+    this._mkTorsoOutline = () => {
       const mat = new THREE.MeshLambertMaterial({
         color: 0xffffff,
         transparent: true,
@@ -473,9 +475,9 @@ export class Renderer {
       this.scene.add(mesh);
       this._stickmanTorsoOutline.push(mesh);
     };
-    const makeTorsoFillMesh = () => {
-      // Each fill mesh gets its own clipping plane instance so the
-      // four pooled torsos can have independent fill levels.
+    this._mkTorsoFill = () => {
+      // Each fill mesh gets its own clipping plane instance so
+      // pooled torsos have independent fill levels.
       const plane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
       const mat = new THREE.MeshLambertMaterial({
         color: 0xffffff,
@@ -490,7 +492,7 @@ export class Renderer {
       this._stickmanTorsoFill.push(mesh);
       this._stickmanTorsoFillPlanes.push(plane);
     };
-    const makeTorsoDiscMesh = () => {
+    this._mkTorsoDisc = () => {
       const mat = new THREE.MeshLambertMaterial({
         color: 0xffffff,
         side: THREE.DoubleSide,
@@ -503,28 +505,26 @@ export class Renderer {
       this.scene.add(mesh);
       this._stickmanTorsoDisc.push(mesh);
     };
+    // Initial pools — sized for the common 2-player match case so the
+    // first frame has no allocation. _place* helpers grow on demand.
     for (let i = 0; i < 4; i++) {
-      makeTorsoOutlineMesh();
-      makeTorsoFillMesh();
-      makeTorsoDiscMesh();
+      this._mkTorsoOutline();
+      this._mkTorsoFill();
+      this._mkTorsoDisc();
     }
-    // Arms and legs both split at a joint: 2 players × 2 limbs ×
-    // 2 halves = 8 segments of each kind. Pools of 8 with no slack
-    // are fine (meshes are static and the draw order is
-    // deterministic); bump if future anims add extra draws.
-    for (let i = 0; i < 8; i++) { makeUpperArmMesh(); makeLowerArmMesh(); }
-    for (let i = 0; i < 16; i++) makeLegMesh();
+    for (let i = 0; i < 8; i++) { this._mkUpperArm(); this._mkLowerArm(); }
+    for (let i = 0; i < 16; i++) this._mkLeg();
     this._stickmanTorsoCursor = 0;
     this._stickmanUpperArmCursor = 0;
     this._stickmanLowerArmCursor = 0;
     this._stickmanLegCursor = 0;
 
-    // Stickman sphere pool — used for heads and fists. One shared
-    // unit sphere geometry, per-mesh Lambert material for color.
+    // Stickman sphere pool — used for heads, fists, elbows, knees.
+    // One shared unit sphere geometry, per-mesh Lambert material.
     const stickmanSph = new THREE.SphereGeometry(1, 14, 10);
     this._staticGeometries.push(stickmanSph);
     this._stickmanSph = [];
-    for (let i = 0; i < STICKMAN_SPH_POOL; i++) {
+    this._mkSph = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
       const mesh = new THREE.Mesh(stickmanSph, mat);
       mesh.visible = false;
@@ -532,7 +532,8 @@ export class Renderer {
       this._staticMaterials.push(mat);
       this.scene.add(mesh);
       this._stickmanSph.push(mesh);
-    }
+    };
+    for (let i = 0; i < STICKMAN_SPH_POOL; i++) this._mkSph();
     this._stickmanSphCursor = 0;
 
     // Smoothed animation state per player (tilt, amplitude, phase, lastTick).
@@ -1649,7 +1650,11 @@ export class Renderer {
    *  red→amber→green gradient driven by `staminaFrac`. */
   _placeTorso(ax, ay, az, bx, by, bz, color, staminaFrac) {
     const idx = this._stickmanTorsoCursor;
-    if (idx >= this._stickmanTorsoOutline.length) return;
+    while (this._stickmanTorsoOutline.length <= idx) {
+      this._mkTorsoOutline();
+      this._mkTorsoFill();
+      this._mkTorsoDisc();
+    }
     this._stickmanTorsoCursor++;
     const outline = this._stickmanTorsoOutline[idx];
     const fill    = this._stickmanTorsoFill[idx];
@@ -1736,15 +1741,13 @@ export class Renderer {
     const handZ = elbowZ + lFwdZ * L * lowerSin;
 
     // Upper segment (thicker): shoulder → elbow.
-    if (this._stickmanUpperArmCursor < this._stickmanUpperArm.length) {
-      const upperMesh = this._stickmanUpperArm[this._stickmanUpperArmCursor++];
-      this._orientBetween(upperMesh, px, py, pz, elbowX, elbowY, elbowZ, color);
-    }
+    while (this._stickmanUpperArm.length <= this._stickmanUpperArmCursor) this._mkUpperArm();
+    const upperMesh = this._stickmanUpperArm[this._stickmanUpperArmCursor++];
+    this._orientBetween(upperMesh, px, py, pz, elbowX, elbowY, elbowZ, color);
     // Lower segment (thinner): elbow → hand.
-    if (this._stickmanLowerArmCursor < this._stickmanLowerArm.length) {
-      const lowerMesh = this._stickmanLowerArm[this._stickmanLowerArmCursor++];
-      this._orientBetween(lowerMesh, elbowX, elbowY, elbowZ, handX, handY, handZ, color);
-    }
+    while (this._stickmanLowerArm.length <= this._stickmanLowerArmCursor) this._mkLowerArm();
+    const lowerMesh = this._stickmanLowerArm[this._stickmanLowerArmCursor++];
+    this._orientBetween(lowerMesh, elbowX, elbowY, elbowZ, handX, handY, handZ, color);
     // Elbow sphere — reads as a joint bump even when the arm is
     // straight and the two capsules are collinear.
     this._placeSph(elbowX, elbowY, elbowZ, STICKMAN_ELBOW_RADIUS, color);
@@ -1771,12 +1774,12 @@ export class Renderer {
     const footZ = kneeZ + forwardZ * L * lowerSin;
 
     // Upper segment: hip → knee.
-    if (this._stickmanLegCursor >= this._stickmanLeg.length) return;
+    while (this._stickmanLeg.length <= this._stickmanLegCursor) this._mkLeg();
     const upperMesh = this._stickmanLeg[this._stickmanLegCursor++];
     this._orientBetween(upperMesh, px, py, pz, kneeX, kneeY, kneeZ, color);
 
     // Lower segment: knee → foot.
-    if (this._stickmanLegCursor >= this._stickmanLeg.length) return;
+    while (this._stickmanLeg.length <= this._stickmanLegCursor) this._mkLeg();
     const lowerMesh = this._stickmanLeg[this._stickmanLegCursor++];
     this._orientBetween(lowerMesh, kneeX, kneeY, kneeZ, footX, footY, footZ, color);
 
@@ -1789,7 +1792,7 @@ export class Renderer {
   /** Pull a sphere from the pool and place it at a world point with
    *  the given radius and color. */
   _placeSph(cx, cy, cz, radius, color) {
-    if (this._stickmanSphCursor >= this._stickmanSph.length) return;
+    while (this._stickmanSph.length <= this._stickmanSphCursor) this._mkSph();
     const mesh = this._stickmanSph[this._stickmanSphCursor++];
     mesh.visible = true;
     mesh.position.set(cx, cy, cz);

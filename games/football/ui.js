@@ -238,7 +238,10 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
       // we leave the previous percentages visible instead of blanking
       // to '—'.
       if (md && md.total > 0) {
-        const pctTxt = (r) => `${(r * 100).toFixed(1)}%`;
+        // Missing fields (e.g., stall_rate from a broker on the old
+        // build) must NOT render as 'NaN%' — we pass nothing to
+        // setIf, which leaves the last-good value in place.
+        const pctTxt = (r) => (Number.isFinite(r) ? `${(r * 100).toFixed(1)}%` : null);
         setIf(el.zerozero,      pctTxt(md.zero_zero_rate));
         setIf(el.draws,         pctTxt(md.nonzero_draw_rate));
         setIf(el.decisive,      pctTxt(md.decisive_rate));

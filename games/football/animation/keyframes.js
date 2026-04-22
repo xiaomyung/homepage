@@ -1,0 +1,136 @@
+// Keyframe data per animation state.
+//
+// Each top-level entry corresponds to one FSM state defined in
+// state.js. Inside each state:
+//   ikGroups  — optional list of IK claims (see poses.js). Channels
+//               listed in an ikGroup are written by the solver;
+//               their keyframe arrays are ignored in that state.
+//   <channel> — keyframe arrays, one per keyframed (or scaled)
+//               channel. Channels not listed fall through to the
+//               `default` in channels.js.
+//
+// Hand-tune via debug/test-renderer.html's keyframe editor, then
+// "Copy as code" replaces the relevant block verbatim.
+
+// ── Constants mirrored from renderer.js / physics.js ──────────
+// Kept local so this file stays independent of the renderer. Update
+// alongside the source constants if they're ever retuned.
+const STICKMAN_GLYPH_SIZE = 22;
+const KICK_CROUCH_DEPTH   = 0.12 * STICKMAN_GLYPH_SIZE;
+const PUSH_CROUCH_DEPTH   = 0.30 * STICKMAN_GLYPH_SIZE;
+const PUSH_HOP_DIST       = 0.40 * STICKMAN_GLYPH_SIZE;
+const KICK_BACK_TILT      = 0.12;
+const KICK_FWD_TILT       = 0.22;
+const KICK_ARM_SWING      = Math.PI * 0.45;
+const KICK_HIP_TWIST_MAX  = Math.PI * 0.11;
+const KICK_SUPPORT_CROUCH = 0.2;
+const AIRKICK_BACK_TILT   = 0.55;
+const PUSH_BACK_TILT      = 0.28;
+const PUSH_FWD_TILT       = 0.42;
+
+// Composite-kick stage boundaries (fraction of full kick duration).
+// KICK_WIND   : 0      .. KICK_FIRE_T
+// KICK_STRIKE : KICK_FIRE_T .. KICK_STRIKE_END_T
+// KICK_RECOVER: KICK_STRIKE_END_T .. 1
+// Per the ground-kick timings in renderer.js:
+//   KICK_FIRE_T       ≈ 96/288  = 0.333
+//   KICK_STRIKE_END_T ≈ 0.333 + 0.15 = 0.483
+// For the airkick: AIRKICK_PEAK_FRAC = 0.4 and strike span = 0.20,
+// so AIRKICK_STRIKE_END_T ≈ 0.6.
+
+// Each state's `t` runs 0..1 over its own stage. The keyframes
+// below encode the portions of the existing polynomial curves that
+// apply inside that stage, re-normalized.
+
+export const KEYFRAMES = {
+  // ─── Kick — ground ──────────────────────────────────────────
+  KICK_WIND: {
+    // During windup the torso tilts BACK (negative = backwards lean
+    // in the heading-relative forward/up frame), body dips
+    // (supportCrouch starts at 0 — the planted-leg crouch only
+    // appears in STRIKE). Counter-arm swings forward.
+    torsoTilt:     [{ t: 0, v: 0 }, { t: 1, v: -KICK_BACK_TILT, ease: 'out' }],
+    bodyY:         [{ t: 0, v: 0 }, { t: 1, v: -KICK_CROUCH_DEPTH, ease: 'out' }],
+    hipTwist:      [{ t: 0, v: 0 }, { t: 1, v: +KICK_HIP_TWIST_MAX }],
+    armR_upper:    [{ t: 0, v: 0 }, { t: 1, v: +KICK_ARM_SWING }],
+    supportCrouch: [{ t: 0, v: 0 }, { t: 1, v: 0 }],
+  },
+  KICK_STRIKE: {
+    // Striking leg is IK-driven toward the ball; other channels
+    // snap from windup-loaded to strike-released.
+    ikGroups: [
+      { solver: 'kickLeg', target: 'kick.footTarget',
+        channels: ['legR_upper'] },
+    ],
+    torsoTilt:     [{ t: 0, v: -KICK_BACK_TILT }, { t: 1, v: +KICK_FWD_TILT }],
+    bodyY:         [{ t: 0, v: -KICK_CROUCH_DEPTH }, { t: 1, v: 0 }],
+    hipTwist:      [{ t: 0, v: +KICK_HIP_TWIST_MAX }, { t: 1, v: -KICK_HIP_TWIST_MAX }],
+    armR_upper:    [{ t: 0, v: +KICK_ARM_SWING }, { t: 1, v: +KICK_ARM_SWING }],
+    supportCrouch: [{ t: 0, v: 0 }, { t: 1, v: +KICK_SUPPORT_CROUCH }],
+  },
+  KICK_RECOVER: {
+    torsoTilt:     [{ t: 0, v: +KICK_FWD_TILT }, { t: 1, v: 0 }],
+    bodyY:         [{ t: 0, v: 0 }, { t: 1, v: 0 }],
+    hipTwist:      [{ t: 0, v: -KICK_HIP_TWIST_MAX }, { t: 1, v: 0 }],
+    armR_upper:    [{ t: 0, v: +KICK_ARM_SWING }, { t: 1, v: 0 }],
+    supportCrouch: [{ t: 0, v: +KICK_SUPPORT_CROUCH }, { t: 1, v: 0 }],
+  },
+
+  // ─── Airkick ────────────────────────────────────────────────
+  // AIRKICK_LEAP corresponds to 0..AIRKICK_PEAK_FRAC of the airkick
+  // (body leans way back, player rises on airZ). AIRKICK_STRIKE is
+  // the volley contact window. AIRKICK_LAND is the descent.
+  AIRKICK_LEAP: {
+    torsoTilt:  [{ t: 0, v: 0 }, { t: 1, v: -AIRKICK_BACK_TILT, ease: 'out' }],
+    hipTwist:   [{ t: 0, v: 0 }, { t: 1, v: +KICK_HIP_TWIST_MAX }],
+    armR_upper: [{ t: 0, v: 0 }, { t: 1, v: +KICK_ARM_SWING }],
+  },
+  AIRKICK_STRIKE: {
+    ikGroups: [
+      { solver: 'kickLeg', target: 'kick.footTarget',
+        channels: ['legR_upper'] },
+    ],
+    // Back tilt holds through the contact window — cleaner than
+    // snapping forward and back mid-volley.
+    torsoTilt:  [{ t: 0, v: -AIRKICK_BACK_TILT }, { t: 1, v: -AIRKICK_BACK_TILT }],
+    hipTwist:   [{ t: 0, v: +KICK_HIP_TWIST_MAX }, { t: 1, v: -KICK_HIP_TWIST_MAX }],
+    armR_upper: [{ t: 0, v: +KICK_ARM_SWING }, { t: 1, v: +KICK_ARM_SWING }],
+  },
+  AIRKICK_LAND: {
+    torsoTilt:  [{ t: 0, v: -AIRKICK_BACK_TILT }, { t: 1, v: 0 }],
+    hipTwist:   [{ t: 0, v: -KICK_HIP_TWIST_MAX }, { t: 1, v: 0 }],
+    armR_upper: [{ t: 0, v: +KICK_ARM_SWING }, { t: 1, v: 0 }],
+  },
+
+  // ─── Push ───────────────────────────────────────────────────
+  // The original push curve has 4 sub-stages (RAISE / WINDUP /
+  // STRIKE / SETTLE). We collapse to 3 FSM sub-states with natural
+  // stage boundaries.
+  PUSH_WIND: {
+    torsoTilt: [{ t: 0, v: 0 }, { t: 1, v: -PUSH_BACK_TILT, ease: 'out' }],
+    bodyY:     [{ t: 0, v: 0 }, { t: 1, v: -PUSH_CROUCH_DEPTH, ease: 'out' }],
+  },
+  PUSH_STRIKE: {
+    // Striking arm is IK-driven toward the push target; other
+    // channels flip from windup-back to strike-forward.
+    ikGroups: [
+      { solver: 'pushArm', target: 'pushTarget',
+        channels: ['armR_upper'] },
+    ],
+    torsoTilt: [{ t: 0, v: -PUSH_BACK_TILT }, { t: 1, v: +PUSH_FWD_TILT }],
+    bodyY:     [{ t: 0, v: -PUSH_CROUCH_DEPTH }, { t: 1, v: 0 }],
+    // Whole-body hop along heading — accelerates forward during the
+    // snap, read by the renderer as +PUSH_HOP_DIST in forward-space.
+    hipTwist:  [{ t: 0, v: 0 }, { t: 1, v: +PUSH_HOP_DIST }],
+  },
+  PUSH_RECOVER: {
+    torsoTilt: [{ t: 0, v: +PUSH_FWD_TILT }, { t: 1, v: 0 }],
+    hipTwist:  [{ t: 0, v: +PUSH_HOP_DIST }, { t: 1, v: 0 }],
+  },
+
+  // ─── Locomotion / dead-ball / misc — populated in step 8 ────
+  // IDLE / WALK / RUN / TURN / STOP / CELEBRATE / CELEBRATE_IDLE /
+  // MATCHEND_WIN / MATCHEND_LOSS / REPOSITION / WAITING
+  // Empty for now — existing locomotion / celebrate code paths in
+  // renderer.js still drive those until step 6's FSM refactor.
+};

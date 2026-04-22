@@ -46,9 +46,22 @@ export function createScoreboard() {
         el.p2Tag.textContent = '[nn]';
         el.p2Name.textContent = (p2Source?.name ?? '—').toLowerCase();
       }
+      // Remember names so setWinner can look them up by 'left'/'right'.
+      el._p1Name = (p1?.name ?? '—').toLowerCase();
+      el._p2Name = p2Source && p2Source.type === 'fallback'
+        ? 'fallback'
+        : (p2Source?.name ?? '—').toLowerCase();
     },
     setScore(scoreL, scoreR) {
       el.score.textContent = `${scoreL} — ${scoreR}`;
+    },
+    /** Show "Winner: <name>" in place of the live score during the
+     *  matchend pause. Pass `null` (or omit) to clear and fall back
+     *  to normal score rendering. */
+    setWinner(side) {
+      if (!side) return;
+      const name = side === 'left' ? el._p1Name : el._p2Name;
+      el.score.textContent = `Winner: ${name}`;
     },
     setTimer(seconds, totalSeconds) {
       const fmt = (t) => {

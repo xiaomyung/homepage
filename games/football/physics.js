@@ -2138,9 +2138,13 @@ function scoreGoal(state, side) {
   state.pauseState = 'celebrate';
   state.pauseTimer = CELEBRATE_TICKS;
 
+  // Winning goal: flag the winner now, but still run the full
+  // celebrate animation. The advancePause celebrate handler detects
+  // `state.winner` on pause-end and jumps straight to matchend
+  // (bypassing reposition/waiting). Previously we overwrote
+  // pauseState to 'matchend' here, which skipped the scorer's
+  // celebrate pose entirely on the winning strike.
   if (state.scoreL >= WIN_SCORE || state.scoreR >= WIN_SCORE) {
-    state.pauseState = 'matchend';
-    state.pauseTimer = MATCHEND_PAUSE_TICKS;
     state.winner = state.scoreL >= WIN_SCORE ? 'left' : 'right';
   }
 }
@@ -2201,9 +2205,16 @@ function advancePause(state) {
   if (state.pauseState === 'celebrate') {
     state.pauseTimer--;
     if (state.pauseTimer <= 0) {
-      state.pauseState = 'reposition';
-      state.pauseTimer = 0;
-      state.goalScorer = null;
+      if (state.winner) {
+        // Winning goal just celebrated — go straight to matchend
+        // (no reposition; the match is over).
+        state.pauseState = 'matchend';
+        state.pauseTimer = MATCHEND_PAUSE_TICKS;
+      } else {
+        state.pauseState = 'reposition';
+        state.pauseTimer = 0;
+        state.goalScorer = null;
+      }
     }
     return;
   }

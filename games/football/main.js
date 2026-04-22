@@ -289,7 +289,11 @@ function frame(now) {
     physicsTick(state, currentMatch.p1Action, currentMatch.p2Action);
   }
 
-  scoreboard.setScore(state.scoreL, state.scoreR);
+  if (state.pauseState === 'matchend' && state.winner) {
+    scoreboard.setWinner(state.winner);
+  } else {
+    scoreboard.setScore(state.scoreL, state.scoreR);
+  }
   scoreboard.setTimer(
     (state.tick * TICK_MS) / 1000,
     SHOWCASE_MATCH_MS / 1000,

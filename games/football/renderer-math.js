@@ -25,3 +25,12 @@ export function updateStaminaClipPlane(plane, ay, by, staminaFrac) {
   plane.setComponents(0, -1, 0, fillWorldY);
   return fillWorldY;
 }
+
+// Easing helpers. Normalized domain/range (0..1 → 0..1).
+export function easeInOut(p) {
+  return p < 0.5 ? 2 * p * p : 1 - (2 * (1 - p)) * (1 - p);
+}
+export function easeOut(p) {
+  return 1 - (1 - p) * (1 - p);
+}
+

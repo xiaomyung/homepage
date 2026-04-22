@@ -17,6 +17,8 @@ import * as THREE from 'https://unpkg.com/three@0.164.0/build/three.module.js';
 import {
   staminaDiscRadius,
   updateStaminaClipPlane,
+  easeInOut,
+  easeOut,
 } from './renderer-math.js';
 import {
   createField,
@@ -2107,14 +2109,6 @@ function kickSupportCrouchAt(t) {
   }
   const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
   return KICK_SUPPORT_CROUCH * (1 - easeInOut(p));
-}
-
-function easeInOut(p) {
-  return p < 0.5 ? 2 * p * p : 1 - (2 * (1 - p)) * (1 - p);
-}
-
-function easeOut(p) {
-  return 1 - (1 - p) * (1 - p);
 }
 
 function rgb(hex) {

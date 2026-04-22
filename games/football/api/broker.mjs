@@ -723,7 +723,7 @@ function pickInterestingReplay() {
 
 // ── Result recording ──────────────────────────────────────────
 
-function recordResult(result) {
+function recordResult(result, freshForReplay = true) {
   const byId = state.populationById;
   const p1 = byId[result.p1_id];
   if (!p1) return; // stale result from a previous generation — silently drop
@@ -757,13 +757,12 @@ function recordResult(result) {
   else                                          state.matchCounts.decisive += 1;
 
   // Remember non-stalemate matches with their seeds so /showcase
-  // can replay a known-interesting match visually. Snapshot the
-  // weights and names AT THE TIME OF THE MATCH so replay survives
-  // breeding — brain ids get new weights at every breed, so a bare
-  // (id, seed) pair would decouple from the exact policy that
-  // produced the goals.
+  // can replay a known-interesting match visually. Only snapshot
+  // when the result came from the CURRENT generation — post-breed
+  // brain ids carry different weights, so the snapshot would not
+  // match what the worker actually ran.
   const seed = Number.isFinite(result.seed) ? result.seed >>> 0 : null;
-  if (seed !== null && (goalsP1 + goalsP2) > 0) {
+  if (freshForReplay && seed !== null && (goalsP1 + goalsP2) > 0) {
     const p2 = result.p2_id != null ? byId[result.p2_id] : null;
     if (!result.p2_id || p2) {
       state.interestingMatches.push({
@@ -868,9 +867,15 @@ async function handleResults(req, res) {
   }
   // Stale-generation results are silently dropped via recordResult's
   // id-miss guard (broker's population has new ids after a breed).
-  // The generation hint is informational only — we still try to
-  // record anything that matches the current population.
-  for (const r of results) recordResult(r);
+  // The generation hint decides whether the result's brain weights
+  // still match the current population: if the client was on an
+  // older gen at match time, the weights we'd snapshot now are a
+  // different set than the ones that produced the score, so replay
+  // would be non-deterministic. Fitness stats still get counted
+  // (goal-diff on gen-N and gen-N+1 brains is roughly fungible),
+  // but the replay buffer only accepts fresh-gen results.
+  const isFresh = clientGen === null || clientGen === state.generation;
+  for (const r of results) recordResult(r, isFresh);
   // Every /results POST is proof that a client is actively training.
   // Used to advance the cumulative runtime counter returned by /stats.
   recordRuntimeActivity();

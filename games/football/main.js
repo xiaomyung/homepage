@@ -186,13 +186,24 @@ async function nextShowcase() {
   // Prefer the seed the broker supplies (deterministic replay of a
   // known-decisive training match); otherwise pick a fresh random
   // seed for a live simulation.
-  const seed = Number.isFinite(matchup?.seed)
+  const isReplay = Number.isFinite(matchup?.seed);
+  const seed = isReplay
     ? (matchup.seed >>> 0)
     : (Math.random() * 2 ** 31) >>> 0;
   const state = createState(createField(), createSeededRng(seed));
   state.graceFrames = 0;
   // Let the renderer consume ball-bounce events for splash particles.
   state.recordEvents = true;
+  // Replay matches run with `state.headless = true` so `scoreGoal`
+  // instant-resets the field (matching the worker's recorded
+  // trajectory bit-for-bit). Without this the visual path takes a
+  // 1.5 s celebrate pause after each goal while the worker kept
+  // playing, so the physics diverge and the recorded decisive score
+  // never reproduces — replay ended 0-0 where the worker saw 1-0.
+  // Trade-off: the celebrate animation is skipped on replays; the
+  // scoreboard still increments. Live (non-replay) matches keep the
+  // full celebrate pause.
+  if (isReplay) state.headless = true;
 
   let p1Brain = null;
   let p2Brain = null;

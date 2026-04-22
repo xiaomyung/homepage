@@ -6,7 +6,7 @@
  *
  *   Inputs (25) → Hidden (16, LeakyReLU) → Output (9, tanh)
  *
- * Total 425 weights (400 + 16 + 9). Inputs 20–24 are derived
+ * Total 569 weights (400 + 16 + 144 + 9). Inputs 20–24 are derived
  * (possession / ball threat / goal distances) — see
  * physics.js:buildInputs(). Shrinking from the previous 3-layer
  * 1233-weight net is a NEAT-style "start small" choice: the new

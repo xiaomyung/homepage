@@ -1167,8 +1167,9 @@ export class Renderer {
     // points along `dir`, then translate to the midpoint of AB.
     const mesh = new THREE.Mesh(geom, material);
     const up = new THREE.Vector3(0, 1, 0);
-    const axis = up.clone().cross(dir.clone().normalize());
-    const angle = Math.acos(Math.max(-1, Math.min(1, up.dot(dir.clone().normalize()))));
+    const dirUnit = dir.clone().normalize();
+    const axis = up.clone().cross(dirUnit);
+    const angle = Math.acos(Math.max(-1, Math.min(1, up.dot(dirUnit))));
     if (axis.length() > 1e-6) {
       mesh.setRotationFromAxisAngle(axis.normalize(), angle);
     }
@@ -1926,7 +1927,6 @@ export class Renderer {
 /* ── Helpers ───────────────────────────────────────────────── */
 
 /**
-/**
  * Upper-body crouch depth during push. Body drops while the pivot
  * pulls back, snaps upright during the strike, settles at 0. Negative
  * values are subtracted from the upper body's Y so a negative result
@@ -1962,7 +1962,6 @@ function pushHopAt(t) {
   }
   return 0;
 }
-
 
 /**
  * Body lean along the player's heading as a signed "forward amount":

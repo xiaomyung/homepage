@@ -29,8 +29,6 @@ import {
   defenseWaypoint,
   resetTeacher,
   FALLBACK_DEAD_ZONE,
-  FALLBACK_CAPTURE_RADIUS,
-  NEAR_BLOCK_DIST,
   POSSESSION_COOLDOWN_TICKS,
   PRESS_COMMITMENT_TICKS,
 } from '../fallback.js';
@@ -319,7 +317,7 @@ test('press commitment keeps defender moving toward ball through signal drift', 
   resetTeacher(state);
   state.tick = 0;
 
-  const first = fallbackAction(state, 'p1');
+  fallbackAction(state, 'p1');
 
   // Press commitment should be set — check the memory flag.
   assert.ok(state.p1.teacher.pressUntil > 0, 'press commitment must activate');

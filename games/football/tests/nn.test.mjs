@@ -2,7 +2,7 @@
  * Unit tests for nn.js.
  *
  * Architecture: 25 → 16 → 9, LeakyReLU on hidden, tanh on output.
- * 425 total weights (25*16 + 16 + 16*9 + 9 = 400 + 16 + 144 + 9).
+ * 569 total weights (25*16 + 16 + 16*9 + 9 = 400 + 16 + 144 + 9).
  * Inputs 18 and 19 are cos/sin of the player's heading; 20–24 are
  * derived signals (see physics.js:buildInputs).
  */
@@ -72,9 +72,9 @@ test('forward output is in tanh range [-1, 1]', () => {
 });
 
 test('forward is deterministic: same weights + same inputs → same output', () => {
-  const weights = new Array(WEIGHT_COUNT).fill(0).map((_, i) => Math.sin(i) * 0.1);
+  const weights = Array.from({ length: WEIGHT_COUNT }, (_, i) => Math.sin(i) * 0.1);
   const nn = new NeuralNet(weights);
-  const inputs = new Array(25).fill(0).map((_, i) => Math.cos(i) * 0.5);
+  const inputs = Array.from({ length: 25 }, (_, i) => Math.cos(i) * 0.5);
   const out1 = nn.forward(inputs);
   const out2 = nn.forward(inputs);
   assert.deepEqual(out1, out2);
@@ -128,7 +128,7 @@ test('NeuralNet.fromJson rejects wrong-length arrays', () => {
 /* ── Serialize roundtrip ───────────────────────────────────── */
 
 test('toJson roundtrips through fromJson', () => {
-  const originalWeights = new Array(WEIGHT_COUNT).fill(0).map((_, i) => Math.sin(i));
+  const originalWeights = Array.from({ length: WEIGHT_COUNT }, (_, i) => Math.sin(i));
   const nn1 = new NeuralNet(originalWeights);
   const json = nn1.toJson();
   const nn2 = NeuralNet.fromJson(json);

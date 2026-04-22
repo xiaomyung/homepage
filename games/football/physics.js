@@ -334,7 +334,7 @@ export function resetStateInPlace(state, field, rng) {
 
 /**
  * Create a fresh game state. Default rng is a seeded LCG with seed 0 so that
- * accidentally-unseeded callers get a reproducible stream (parity with Py).
+ * accidentally-unseeded callers get a reproducible stream.
  * `recordEvents` is false by default — tests and runners opt in to collect
  * state.events; production callers (main, worker) skip all event allocation.
  */
@@ -760,12 +760,6 @@ function clampAndCollide(state, p) {
   clampPlayerToField(p, f);
 }
 
-/**
- * Player-vs-goal-box collision. Player is a 2D AABB [x, x+pw] ×
- * [y, y+ph] on the ground plane — z is ignored. Pushes the player
- * out along the axis of minimum penetration and zeroes the velocity
- * on that axis.
- */
 // Module-level scratch AABBs reused by the collision resolvers.
 // Physics runs synchronously on the main thread (or per-worker) so
 // a single shared scratch is safe — the caller consumes the result
@@ -2411,8 +2405,7 @@ export function buildInputs(state, which, out) {
   out[24] = Math.min(1, selfOppDist / fw);
 
   for (let i = 0; i < NN_INPUT_SIZE; i++) {
-    if (out[i] > 1) out[i] = 1;
-    else if (out[i] < -1) out[i] = -1;
+    out[i] = clamp(out[i], -1, 1);
   }
   return out;
 }

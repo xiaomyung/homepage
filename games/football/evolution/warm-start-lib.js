@@ -16,6 +16,7 @@ import {
   tick,
   buildInputs,
   NN_INPUT_SIZE,
+  ACTION_KICK_GATE,
 } from '../physics.js';
 import { fallbackAction } from '../fallback.js';
 import { ARCH, WEIGHT_COUNT } from '../nn.js';
@@ -312,8 +313,8 @@ export function epochStep(state, inputs, actions, { batchSize, lr }) {
     const invBs = 1 / bs;
     for (let k = 0; k < WEIGHT_COUNT; k++) grad[k] *= invBs;
     state.t++;
-    const biasCorr1 = 1 - Math.pow(BETA1, state.t);
-    const biasCorr2 = 1 - Math.pow(BETA2, state.t);
+    const biasCorr1 = 1 - BETA1 ** state.t;
+    const biasCorr2 = 1 - BETA2 ** state.t;
     for (let k = 0; k < WEIGHT_COUNT; k++) {
       const g = grad[k];
       m[k] = BETA1 * m[k] + (1 - BETA1) * g;
@@ -354,7 +355,7 @@ export async function trainWarmStartWeights(inputs, actions, { epochs, batchSize
 export function oversampleKickPositives(inputs, actions, { targetFrac = 0.25 } = {}) {
   const posIdx = [];
   for (let i = 0; i < actions.length; i++) {
-    if (actions[i][2] > 0) posIdx.push(i);
+    if (actions[i][ACTION_KICK_GATE] > 0) posIdx.push(i);
   }
   if (posIdx.length === 0) return { inputs, actions };
   const negCount = actions.length - posIdx.length;

@@ -5,8 +5,7 @@
  * Covers:
  *   - Scoreboard (tags, names, score, timer)
  *   - Start/Stop button
- *   - Options button + panel toggle (panel contents wired in ui_options.js
- *     in phase 4d2/4d3)
+ *   - Options button + panel contents (stats, fitness graph, config, cam toggles)
  *   - Auto-pause via visibilitychange + pagehide + pageshow
  *
  * Design: pure functions + small handle objects. No single god-class.

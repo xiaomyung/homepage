@@ -27,12 +27,8 @@ import {
   PLAYER_HEIGHT,
   FIELD_HEIGHT,
   BALL_RADIUS,
-  Z_STRETCH,
   MAX_PLAYER_SPEED,
   TICK_MS,
-  PUSH_RANGE_X,
-  PUSH_RANGE_Y,
-  PUSH_FACE_TOL,
   NN_OUTPUT_SIZE,
   ACTION_MOVE_X,
   ACTION_MOVE_Y,
@@ -43,7 +39,6 @@ import {
   ACTION_KICK_POWER,
   ACTION_PUSH_GATE,
   ACTION_PUSH_POWER,
-  facingToward,
   canKickReach,
 } from './physics.js';
 
@@ -98,9 +93,13 @@ export const PUSH_POWER_NORM           = 0.5;
 // when the teacher should be defending from tick 0.
 const PRIMED_MODE_SINCE = -POSSESSION_COOLDOWN_TICKS;
 
+function freshTeacher() {
+  return { mode: 'attack', modeSince: PRIMED_MODE_SINCE, pressUntil: 0 };
+}
+
 function ensureTeacher(player) {
   if (!player.teacher) {
-    player.teacher = { mode: 'attack', modeSince: PRIMED_MODE_SINCE, pressUntil: 0 };
+    player.teacher = freshTeacher();
   }
   return player.teacher;
 }
@@ -108,8 +107,8 @@ function ensureTeacher(player) {
 /** Clear teacher memory on both players. Call before deterministic
  *  tests to remove state carried over from previous runs. */
 export function resetTeacher(state) {
-  state.p1.teacher = { mode: 'attack', modeSince: PRIMED_MODE_SINCE, pressUntil: 0 };
-  state.p2.teacher = { mode: 'attack', modeSince: PRIMED_MODE_SINCE, pressUntil: 0 };
+  state.p1.teacher = freshTeacher();
+  state.p2.teacher = freshTeacher();
 }
 
 /* ── Geometric helpers ────────────────────────────────────────── */
@@ -304,7 +303,7 @@ function attackAction(state, self, opp, out) {
  * commitment once press fires). Press = chase a kick-spot like
  * attack; hold = stand on intercept-line midpoint.
  */
-function defenseAction(state, self, opp, out) {
+function defenseAction(state, self, out) {
   const tm = self.teacher;
   const t = state.tick || 0;
 
@@ -377,7 +376,7 @@ export function fallbackAction(state, which) {
   if (tm.mode === 'attack') {
     attackAction(state, self, opp, out);
   } else {
-    defenseAction(state, self, opp, out);
+    defenseAction(state, self, out);
   }
 
   // Push is disabled in the teacher. Symmetric fallback-vs-fallback

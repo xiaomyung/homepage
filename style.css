@@ -37,9 +37,7 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 /* Iosevka Term thins out at very small sizes — bump small text to medium weight for legibility */
-.card-url,
-.game-label,
-.game-placeholder {
+.card-url {
   font-weight: 500;
 }
 
@@ -70,7 +68,9 @@ body {
   color: var(--text-dim);
 }
 
-.banner-label {
+.banner-label,
+.section-label,
+.game-label {
   position: absolute;
   top: -0.55em;
   left: 0.85rem;
@@ -135,19 +135,6 @@ body {
 @media (max-width: 720px) {
   .sections { row-gap: 3.5rem; }
   .section { flex: 0 0 100%; }
-}
-
-.section-label {
-  position: absolute;
-  top: -0.55em;
-  left: 0.85rem;
-  padding: 0 0.5em;
-  background: var(--bg);
-  font-size: 0.6rem;
-  color: var(--text-dim);
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  font-weight: 500;
 }
 
 .grid {
@@ -261,7 +248,6 @@ body {
   }
 }
 
-
 /* ── Background black hole ── */
 
 #bh-bg {
@@ -301,18 +287,6 @@ body {
   margin-top: 2.5rem;
   color: var(--text-dim);
   font-family: var(--mono);
-}
-
-.game-label {
-  position: absolute;
-  top: -0.55em;
-  left: 0.85rem;
-  padding: 0 0.5em;
-  background: var(--bg);
-  font-size: 0.6rem;
-  color: var(--text-dim);
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
 }
 
 .game-scoreboard {

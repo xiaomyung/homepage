@@ -38,6 +38,7 @@ import {
   recordRuntimeActivity as recordRuntimeActivityPure,
   flushRuntime as flushRuntimePure,
 } from './runtime-timer.js';
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EVOLUTION = path.join(HERE, '..', 'evolution');
 // DB_PATH and PORT are overridable via env for tests and local boot;
@@ -58,6 +59,26 @@ const HOST = '127.0.0.1';
 // despite the training working fine.
 const SHOWCASE_FALLBACK_EVERY_N = 2;
 const SHOWCASE_TOP_POOL_SIZE    = 10;
+
+// Keys into the `meta` table. Extracted so read/write helpers can't
+// typo-split (they'd silently divorce and look like "no data yet").
+const META_KEY_RUNTIME_MS_TOTAL   = 'runtime_ms_total';
+const META_KEY_WARM_START_WEIGHTS = 'warm_start_weights';
+
+// Match-outcome counters, reset per generation. Returned by
+// freshMatchCounts() so every init/reset site uses the exact same
+// keyset — a future counter addition only needs updating here.
+function freshMatchCounts() {
+  return {
+    total: 0,
+    zeroZero: 0,           // final 0-0
+    nonzeroDraw: 0,        // 1-1, 2-2, ...
+    decisive: 0,           // winner, |diff| < BLOWOUT_THRESHOLD
+    blowout: 0,            // |diff| >= BLOWOUT_THRESHOLD
+    stalled: 0,            // match had ≥1 stall reset
+    decisiveNoStall: 0,    // winner AND no stall — showcase-eligible
+  };
+}
 
 const SURNAMES = [
   'Messi', 'Ronaldo', 'Neymar', 'Mbappe', 'Salah', 'Bruyne', 'Haaland',
@@ -106,7 +127,7 @@ CREATE TABLE IF NOT EXISTS meta (
     value           TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO meta (key, value) VALUES ('runtime_ms_total', '0');
+INSERT OR IGNORE INTO meta (key, value) VALUES ('${META_KEY_RUNTIME_MS_TOTAL}', '0');
 
 INSERT OR IGNORE INTO config (key, value) VALUES
     ('population_size',         '50'),
@@ -173,15 +194,7 @@ const state = {
   // Session-wide match-outcome counters since last reset. Cheap O(1)
   // per match so we can show the user "how does training look right
   // now" as percentages in the stats panel.
-  matchCounts: {
-    total: 0,
-    zeroZero: 0,           // final 0-0
-    nonzeroDraw: 0,        // 1-1, 2-2, ...
-    decisive: 0,           // winner, |diff| < BLOWOUT_THRESHOLD
-    blowout: 0,            // |diff| >= BLOWOUT_THRESHOLD
-    stalled: 0,            // match had ≥1 stall reset
-    decisiveNoStall: 0,    // winner AND no stall — showcase-eligible
-  },
+  matchCounts: freshMatchCounts(),
   // Ring buffer of recently-reported non-stalemate matches (≥1 goal),
   // tagged with the worker's seed so the client can replay any of
   // them deterministically. `/showcase` picks from this buffer so
@@ -258,7 +271,7 @@ function loadConfig() {
 
 function loadRuntimeMsTotal() {
   try {
-    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get('runtime_ms_total');
+    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(META_KEY_RUNTIME_MS_TOTAL);
     if (!row) return 0;
     const n = Number(row.value);
     return Number.isFinite(n) && n >= 0 ? n : 0;
@@ -270,7 +283,7 @@ function loadRuntimeMsTotal() {
 function persistRuntimeMsTotal(ms) {
   db.prepare(
     'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
-  ).run('runtime_ms_total', String(Math.floor(ms)));
+  ).run(META_KEY_RUNTIME_MS_TOTAL, String(Math.floor(ms)));
 }
 
 /** Total active training ms since last reset. */
@@ -443,7 +456,7 @@ function buildPopulationFromSeed(seedWeights, config) {
 }
 
 function loadWarmStartWeights() {
-  const row = db.prepare('SELECT value FROM meta WHERE key = ?').get('warm_start_weights');
+  const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(META_KEY_WARM_START_WEIGHTS);
   if (!row) return null;
   try {
     const parsed = JSON.parse(row.value);
@@ -456,7 +469,7 @@ function loadWarmStartWeights() {
 
 function persistWarmStartWeights(weights) {
   db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
-    .run('warm_start_weights', JSON.stringify(Array.from(weights)));
+    .run(META_KEY_WARM_START_WEIGHTS, JSON.stringify(Array.from(weights)));
 }
 
 // ── Boot ──────────────────────────────────────────────────────
@@ -583,10 +596,7 @@ function tryBreed() {
   // Reset match-distribution counters per generation so the panel
   // reflects CURRENT training quality (like `cur top` / `cur avg`),
   // not a lifetime-since-reset average dominated by early bad gens.
-  state.matchCounts = {
-    total: 0, zeroZero: 0, nonzeroDraw: 0, decisive: 0, blowout: 0,
-    stalled: 0, decisiveNoStall: 0,
-  };
+  state.matchCounts = freshMatchCounts();
   // interestingMatches intentionally NOT cleared here — entries are
   // tagged with their generation and pickInterestingReplay filters
   // on current gen. That lets the showcase keep replaying last-gen
@@ -1072,10 +1082,7 @@ function seedPopulationFromWeights(seedWeights) {
   state.runtimeMsTotal = 0;
   state.runtimeActiveStart = null;
   state.runtimeLastPostAt = null;
-  state.matchCounts = {
-    total: 0, zeroZero: 0, nonzeroDraw: 0, decisive: 0, blowout: 0,
-    stalled: 0, decisiveNoStall: 0,
-  };
+  state.matchCounts = freshMatchCounts();
   state.interestingMatches = [];
   refreshPopulationIndex();
 }

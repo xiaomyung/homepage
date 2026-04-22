@@ -203,7 +203,14 @@ async function nextShowcase() {
   // Trade-off: the celebrate animation is skipped on replays; the
   // scoreboard still increments. Live (non-replay) matches keep the
   // full celebrate pause.
-  if (isReplay) state.headless = true;
+  // Also zero `ball.z` — createState spawns the ball at
+  // RESPAWN_DROP_Z=60 for a nice visual drop on live matches, but
+  // the worker resets it to 0 before running, so replays need to
+  // match or the initial physics diverges.
+  if (isReplay) {
+    state.headless = true;
+    state.ball.z = 0;
+  }
 
   let p1Brain = null;
   let p2Brain = null;

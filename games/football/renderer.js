@@ -313,15 +313,28 @@ export class Renderer {
       metalness: 0.05,
       map: buildBallTexture(),
     });
-    this._ballMesh = new THREE.Mesh(ballGeom, ballMat);
-    this._ballMesh.frustumCulled = false;
     this._staticGeometries.push(ballGeom);
     this._staticMaterials.push(ballMat);
     if (ballMat.map) this._staticMaterials.push(ballMat.map);
-    this.scene.add(this._ballMesh);
-    // Ball orientation is integrated per frame from linear velocity
-    // (rolling without slipping on the ground). Reused scratch
-    // objects avoid per-frame allocation.
+    // Pooled ball meshes so harnesses can render N physics worlds.
+    // Each mesh's quaternion accumulates spin independently across
+    // frames — the caller must pass balls in stable order for
+    // rotation continuity.
+    this._ballGeom = ballGeom;
+    this._ballMat = ballMat;
+    this._ballMeshes = [];
+    this._ballCursor = 0;
+    this._mkBall = () => {
+      const mesh = new THREE.Mesh(this._ballGeom, this._ballMat);
+      mesh.frustumCulled = false;
+      mesh.visible = false;
+      this.scene.add(mesh);
+      this._ballMeshes.push(mesh);
+      return mesh;
+    };
+    this._mkBall();  // pre-create the common single-ball slot
+    // Ball-spin scratch objects (shared across pool — spin integration
+    // is applied to the currently-indexed mesh's quaternion).
     this._ballSpinAxis = new THREE.Vector3();
     this._ballSpinQuat = new THREE.Quaternion();
 
@@ -348,12 +361,14 @@ export class Renderer {
       this.scene.add(mesh);
       return mesh;
     };
-    // Pool of player shadows, grown on demand via _ensurePlayerShadow.
+    // Pool of player shadows, grown on demand via _placePlayerShadow.
     // Two pre-created for the common case of two players (zero extra
     // cost vs the original _p1Shadow / _p2Shadow).
     this._playerShadows = [this._makeShadow(), this._makeShadow()];
     this._playerShadowCursor = 0;
-    this._ballShadow = this._makeShadow();
+    // Pool of ball shadows — one per ball mesh (matched by index).
+    this._ballShadows = [this._makeShadow()];
+    this._ballShadowCursor = 0;
 
     // Stickman pipe parts — torsos, arms, and legs each use their own
     // fixed-length CapsuleGeometry so the hemispherical caps stay
@@ -650,12 +665,16 @@ export class Renderer {
     const prevLegCursor      = this._stickmanLegCursor;
     const prevSphCursor      = this._stickmanSphCursor;
     const prevPlayerShadowCursor = this._playerShadowCursor;
+    const prevBallCursor         = this._ballCursor;
+    const prevBallShadowCursor   = this._ballShadowCursor;
     this._stickmanTorsoCursor    = 0;
     this._stickmanUpperArmCursor = 0;
     this._stickmanLowerArmCursor = 0;
     this._stickmanLegCursor      = 0;
     this._stickmanSphCursor      = 0;
     this._playerShadowCursor     = 0;
+    this._ballCursor             = 0;
+    this._ballShadowCursor       = 0;
     for (let i = 0; i < players.length; i++) {
       const p = players[i];
       this._addStickman(p, COLOR_TEXT, tick, celebrating && state.goalScorer === p);
@@ -672,43 +691,46 @@ export class Renderer {
     for (let i = this._stickmanSphCursor; i < prevSphCursor; i++) this._stickmanSph[i].visible = false;
     for (let i = this._playerShadowCursor; i < prevPlayerShadowCursor; i++) this._playerShadows[i].visible = false;
 
-    // Ball — real 3D sphere in world space. Altitude comes straight
-    // from physics ball.z; gravity, bounce, and all collisions live
-    // in physics.js and are unaffected by the visual change.
-    const ballAltitude = state.ball.z || 0;
-    this._ballMesh.position.set(
-      state.ball.x,
-      ballAltitude + BALL_VISUAL_RADIUS,
-      state.ball.y * Z_STRETCH,
-    );
-    this._ballMesh.scale.set(BALL_VISUAL_RADIUS, BALL_VISUAL_RADIUS, BALL_VISUAL_RADIUS);
-    // Ball rotation: rolling-without-slipping angular velocity from
-    // linear velocity. For a ball on the ground moving with velocity
-    // v, the no-slip condition gives ω = (v_z / R, 0, -v_x / R)
-    // where world_z is field-depth (physics y scaled by Z_STRETCH)
-    // and world_x is physics x. In the air the same formula is used
-    // so the ball keeps spinning visibly — physically it's wrong but
-    // reads as motion. Integrated per frame (dt = 1 tick).
+    // Balls — single-ball state.ball path is backward-compatible;
+    // state.balls[] is the N-ball path for harnesses/testing.
+    // Each ball mesh accumulates its own spin quaternion across
+    // frames, so callers must pass balls in stable index order.
+    const balls = state.balls || [state.ball];
     const R = BALL_VISUAL_RADIUS;
-    const omegaX = (state.ball.vy * Z_STRETCH) / R;
-    const omegaZ = -state.ball.vx / R;
-    const omegaMag = Math.sqrt(omegaX * omegaX + omegaZ * omegaZ);
-    if (omegaMag > 1e-5) {
-      this._ballSpinAxis.set(omegaX / omegaMag, 0, omegaZ / omegaMag);
-      this._ballSpinQuat.setFromAxisAngle(this._ballSpinAxis, omegaMag);
-      this._ballMesh.quaternion.premultiply(this._ballSpinQuat);
+    for (let bi = 0; bi < balls.length; bi++) {
+      const b = balls[bi];
+      while (this._ballMeshes.length <= bi) this._mkBall();
+      while (this._ballShadows.length <= bi) this._ballShadows.push(this._makeShadow());
+      const mesh = this._ballMeshes[bi];
+      mesh.visible = true;
+      const ballAltitude = b.z || 0;
+      mesh.position.set(b.x, ballAltitude + BALL_VISUAL_RADIUS, b.y * Z_STRETCH);
+      mesh.scale.set(BALL_VISUAL_RADIUS, BALL_VISUAL_RADIUS, BALL_VISUAL_RADIUS);
+      // Rolling-without-slipping spin from linear velocity.
+      const omegaX = (b.vy * Z_STRETCH) / R;
+      const omegaZ = -b.vx / R;
+      const omegaMag = Math.sqrt(omegaX * omegaX + omegaZ * omegaZ);
+      if (omegaMag > 1e-5) {
+        this._ballSpinAxis.set(omegaX / omegaMag, 0, omegaZ / omegaMag);
+        this._ballSpinQuat.setFromAxisAngle(this._ballSpinAxis, omegaMag);
+        mesh.quaternion.premultiply(this._ballSpinQuat);
+      }
+      // Ground shadow for this ball — stays flat on the xz-plane,
+      // grows slightly and fades as the ball rises.
+      const shadow = this._ballShadows[bi];
+      const airH = Math.max(0, b.z || 0);
+      const ballShadowR = BALL_VISUAL_RADIUS * (1 + airH * 0.04);
+      const ballShadowA = SHADOW_ALPHA_BASE / (1 + airH * 0.06);
+      shadow.visible = true;
+      shadow.position.set(b.x, SHADOW_Y, b.y * Z_STRETCH);
+      shadow.scale.set(ballShadowR * 2, ballShadowR * 2, 1);
+      shadow._uAlpha.value = ballShadowA;
     }
-
-    // Ground shadows — stamped on the xz-plane, sized per-entity.
-    // Ball shadow is anchored to the ball's x/y (physics plane) so it
-    // stays put on the ground as the sphere rises on ball.z; radius
-    // grows slightly and alpha fades with altitude, reading as height.
-    const airH = Math.max(0, state.ball.z || 0);
-    const ballShadowR = BALL_VISUAL_RADIUS * (1 + airH * 0.04);
-    const ballShadowA = SHADOW_ALPHA_BASE / (1 + airH * 0.06);
-    this._ballShadow.position.set(state.ball.x, SHADOW_Y, state.ball.y * Z_STRETCH);
-    this._ballShadow.scale.set(ballShadowR * 2, ballShadowR * 2, 1);
-    this._ballShadow._uAlpha.value = ballShadowA;
+    this._ballCursor       = balls.length;
+    this._ballShadowCursor = balls.length;
+    // Hide any ball / ball-shadow slots beyond what this frame used.
+    for (let i = this._ballCursor;       i < prevBallCursor;       i++) this._ballMeshes[i].visible = false;
+    for (let i = this._ballShadowCursor; i < prevBallShadowCursor; i++) this._ballShadows[i].visible = false;
 
     // Consume per-frame physics events. `state.events` is cleared at
     // the top of each tick, so anything here is brand-new this frame.

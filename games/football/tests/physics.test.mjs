@@ -1124,43 +1124,44 @@ test('headless ballOut also resets instantly', () => {
   assert.equal(state.ball.vx, 0);
 });
 
-test('headless auto-resets a stale match after ~3 wall-clock seconds of no kicks', () => {
-  const state = freshState();
-  state.headless = true;
-  const f = state.field;
-  // Push the ball off-center so we can detect the reset.
-  state.ball.x = f.midX + 200;
-  state.ball.y = 10;
-  // Park p2 off-center too.
-  state.p2.x = 700;
-  state.p2.y = 5;
+test('stall reset fires after 10 wall-clock seconds of no kicks (headless + visual)', () => {
+  // The stall timeout was unified at 10 s for both modes so showcase
+  // replays (which run with state.headless=true for scoreGoal
+  // determinism) reset on the same schedule as the worker that
+  // produced the recording. Before the visual never saw a reset
+  // before tick 625, the worker at tick 187 — the mismatch showed up
+  // as jarring mid-replay teleports every 3 s.
+  const stallTicks = Math.ceil(10000 / TICK_MS);
 
-  // 3000ms / 16ms per tick = ~188 ticks. Pin stall trigger just past.
-  const stallTicks = Math.ceil(3000 / TICK_MS);
-  for (let i = 0; i <= stallTicks + 1; i++) tick(state, NOOP, NOOP);
+  for (const headless of [true, false]) {
+    const state = freshState();
+    state.headless = headless;
+    const f = state.field;
+    state.ball.x = f.midX + 200;
+    state.ball.y = 10;
+    state.p2.x = 700;
 
-  // Ball teleported back to midfield.
-  assert.ok(Math.abs(state.ball.x - f.midX) < 1, `ball.x should be ~midX, got ${state.ball.x}`);
-  assert.ok(Math.abs(state.ball.y - FIELD_HEIGHT / 2) < 1);
-  assert.equal(state.ball.vx, 0);
-  // Players teleported back to kickoff.
-  assert.ok(Math.abs(state.p1.y - FIELD_HEIGHT / 2) < 1);
-  assert.ok(Math.abs(state.p2.y - FIELD_HEIGHT / 2) < 1);
-});
+    // Just before the timeout: no reset yet.
+    for (let i = 0; i <= stallTicks - 2; i++) tick(state, NOOP, NOOP);
+    assert.ok(
+      Math.abs(state.ball.x - (f.midX + 200)) < 5,
+      `${headless ? 'headless' : 'visual'}: stall fired too early; ball.x=${state.ball.x}`,
+    );
 
-test('visual mode uses the 10-second stall timeout (NOT the 3s headless one)', () => {
-  const state = freshState();
-  // default headless=false
-  const f = state.field;
-  state.ball.x = f.midX + 200;
-  state.ball.y = 10;
-  // 3000ms / 16ms ≈ 188 ticks. After this many ticks, the ball should
-  // NOT have been reset (visual mode waits 10s = 625 ticks).
-  for (let i = 0; i <= 200; i++) tick(state, NOOP, NOOP);
-  assert.ok(
-    Math.abs(state.ball.x - (f.midX + 200)) < 5,
-    `visual mode must NOT fast-reset; got ball.x=${state.ball.x}`,
-  );
+    // Crossing the threshold: reset fires.
+    for (let i = 0; i < 3; i++) tick(state, NOOP, NOOP);
+    assert.ok(
+      Math.abs(state.ball.x - f.midX) < 1,
+      `${headless ? 'headless' : 'visual'}: ball should reset to midX, got ${state.ball.x}`,
+    );
+    assert.equal(state.ball.vx, 0);
+
+    // Headless also teleports players back; visual leaves them put.
+    if (headless) {
+      assert.ok(Math.abs(state.p1.y - FIELD_HEIGHT / 2) < 1);
+      assert.ok(Math.abs(state.p2.y - FIELD_HEIGHT / 2) < 1);
+    }
+  }
 });
 
 test('visual mode still runs the celebrate pause unchanged', () => {

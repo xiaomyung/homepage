@@ -194,23 +194,15 @@ async function nextShowcase() {
   state.graceFrames = 0;
   // Let the renderer consume ball-bounce events for splash particles.
   state.recordEvents = true;
-  // Replay matches run with `state.headless = true` so `scoreGoal`
-  // instant-resets the field (matching the worker's recorded
-  // trajectory bit-for-bit). Without this the visual path takes a
-  // 1.5 s celebrate pause after each goal while the worker kept
-  // playing, so the physics diverge and the recorded decisive score
-  // never reproduces — replay ended 0-0 where the worker saw 1-0.
-  // Trade-off: the celebrate animation is skipped on replays; the
-  // scoreboard still increments. Live (non-replay) matches keep the
-  // full celebrate pause.
-  // Also zero `ball.z` — createState spawns the ball at
-  // RESPAWN_DROP_Z=60 for a nice visual drop on live matches, but
-  // the worker resets it to 0 before running, so replays need to
-  // match or the initial physics diverges.
-  if (isReplay) {
-    state.headless = true;
-    state.ball.z = 0;
-  }
+  // Zero ball.z on replays — createState spawns the ball at
+  // RESPAWN_DROP_Z=60 for a visual drop on live matches, but the
+  // worker resets it to 0 before running, so replays need to match
+  // or the initial physics diverges. Post-goal kickoffs now go
+  // through the same resetToKickoff (via advancePause's waiting
+  // branch) in BOTH paths, so the visual can run the celebrate/
+  // reposition pauses and still end up bit-identical to the worker
+  // by the time play resumes.
+  if (isReplay) state.ball.z = 0;
 
   let p1Brain = null;
   let p2Brain = null;

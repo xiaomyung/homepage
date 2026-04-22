@@ -2234,8 +2234,14 @@ function advancePause(state) {
   if (state.pauseState === 'waiting') {
     state.pauseTimer--;
     if (state.pauseTimer <= 0) {
-      resetBall(state);
-      state.pauseState = null;
+      // End the post-goal cycle with a FULL kickoff reset (same one
+      // the headless path uses on scoreGoal). Previously we only ran
+      // resetBall here, which left player velocity/kick/push state
+      // from the pre-goal tick intact. Worker and visual replay then
+      // diverged on subsequent possessions — the worker saw a clean
+      // kickoff, the visual saw players still decelerating. Using
+      // the shared reset keeps the two bit-identical.
+      resetToKickoff(state);
     }
   }
 }

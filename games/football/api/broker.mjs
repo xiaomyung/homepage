@@ -706,9 +706,10 @@ function pickInterestingReplay() {
     weights: JSON.parse(snap.weights),  // weights stored as JSON string
   });
 
-  const tryPick = (requireMode) => {
+  const tryPick = (requireMode, cleanOnly) => {
     for (let i = buf.length - 1; i >= 0; i--) {
       const m = buf[i];
+      if (cleanOnly && m.stalled) continue;
       const isFb = m.p2 == null;
       if (requireMode === 'fallback' && !isFb) continue;
       if (requireMode === 'recent' && isFb) continue;
@@ -723,7 +724,15 @@ function pickInterestingReplay() {
     return null;
   };
 
-  return tryPick(wantFallback ? 'fallback' : 'recent') ?? tryPick(null);
+  const preferred = wantFallback ? 'fallback' : 'recent';
+  // Priority: clean-matching-mode → clean-any-mode → stalled-matching-mode
+  //            → stalled-any-mode. Clean wins are always preferred even
+  //           when the rotation wanted fallback vs. recent. Only fall
+  //           back to stalled replays when nothing clean is available.
+  return tryPick(preferred, true)
+      ?? tryPick(null, true)
+      ?? tryPick(preferred, false)
+      ?? tryPick(null, false);
 }
 
 // ── Result recording ──────────────────────────────────────────
@@ -771,7 +780,12 @@ function recordResult(result, freshForReplay = true) {
   // match what the worker actually ran.
   const seed = Number.isFinite(result.seed) ? result.seed >>> 0 : null;
   const stalled = !!result.stalled;
-  if (freshForReplay && !stalled && seed !== null && (goalsP1 + goalsP2) > 0) {
+  // Replay buffer keeps ALL decisive (≥1 goal) matches, tagged with
+  // `stalled`. pickInterestingReplay prefers clean (unstalled) entries
+  // and only falls back to stalled ones when nothing clean is
+  // available — so the common case avoids mid-match teleports but
+  // stall-only populations still get something to show.
+  if (freshForReplay && seed !== null && (goalsP1 + goalsP2) > 0) {
     const p2 = result.p2_id != null ? byId[result.p2_id] : null;
     if (!result.p2_id || p2) {
       state.interestingMatches.push({
@@ -780,6 +794,7 @@ function recordResult(result, freshForReplay = true) {
         seed,
         goals_p1: goalsP1,
         goals_p2: goalsP2,
+        stalled,
       });
       if (state.interestingMatches.length > INTERESTING_CAP) {
         state.interestingMatches.shift();

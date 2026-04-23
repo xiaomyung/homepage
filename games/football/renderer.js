@@ -18,36 +18,18 @@ import {
   staminaDiscRadius,
   updateStaminaClipPlane,
 } from './renderer-math.js';
-import {
-  KICK_FIRE_T, KICK_STRIKE_END_T, KICK_ARM_SWING, KICK_ARM_OPP_FRAC,
-  KICK_BACK_TILT, KICK_FWD_TILT, KICK_CROUCH_DEPTH,
-  KICK_HIP_TWIST_MAX, KICK_SUPPORT_CROUCH, KICK_SUPPORT_SHIN_RATIO,
-  AIRKICK_STRIKE_END_T, AIRKICK_BACK_TILT,
-  PUSH_TOTAL_TICKS, PUSH_RAISE_T, PUSH_WINDUP_T, PUSH_STRIKE_T,
-  PUSH_SETTLE_T, PUSH_WINDUP_DIST, PUSH_CROUCH_DEPTH, PUSH_HOP_DIST,
-  PUSH_BACK_TILT, PUSH_FWD_TILT,
-  kickArmAngleAt, kickDipAt, kickTiltAt, airkickTiltAt,
-  kickHipTwistAt, kickSupportCrouchAt,
-  pushBodyDipAt, pushHopAt, pushBodyTiltAt,
-} from './animation/curves.js';
 import { createAnimState, advanceAnimState } from './animation/state.js';
+import { composeStickmanPose, createPoseScratch } from './animation/poses.js';
 import {
   createField,
   FIELD_HEIGHT,
   FIELD_WIDTH_REF,
   BALL_RADIUS,
   GOAL_POST_RADIUS,
-  KICK_WINDUP_MS,
-  KICK_DURATION_MS,
-  AIRKICK_MS,
-  AIRKICK_PEAK_FRAC,
   PLAYER_WIDTH,
   Z_STRETCH,
   STICKMAN_GLYPH_SIZE,
-  STICKMAN_SHOULDER_OFX,
   STICKMAN_SHOULDER_OFY,
-  STICKMAN_HIP_OFX,
-  STICKMAN_HEAD_GAP_Y,
   STICKMAN_LIMB_FULL_H,
   STICKMAN_UPPER_LEG,
   STICKMAN_LOWER_LEG,
@@ -58,8 +40,6 @@ import {
   STICKMAN_LEG_RADIUS,
   STICKMAN_UPPER_ARM_RADIUS,
   STICKMAN_LOWER_ARM_RADIUS,
-  kickLegPose,
-  pushArmPose,
 } from './physics.js';
 
 // Small margin so field edges don't touch the canvas boundary.
@@ -90,39 +70,12 @@ const TWO_PI = Math.PI * 2;
 // Shin's world-space swing angle given the thigh's. Mild "follow-
 // through" curve: shin tracks 1 − `flex` of the thigh's angle where
 // `flex` grows with the thigh's swing magnitude, capped at 0.5. So
-// a straight-down thigh gives a straight-down shin (no bend at rest),
-// a forward-swinging thigh gets a knee that bends +forward, and a
-// backward-swinging push-off thigh also bends the knee +forward —
-// knees only hinge one way, just like real ones. Applies to walk,
-// idle, and celebrate poses; the kicking leg's shin comes from real
-// 2-bone IK in `kickLegPose` instead.
-const STICKMAN_KNEE_FLEX_MAX   = 0.5;
-const STICKMAN_KNEE_FLEX_SLOPE = 0.4;
-function shinAngleFor(thighAngle) {
-  const flex = Math.min(STICKMAN_KNEE_FLEX_MAX, STICKMAN_KNEE_FLEX_SLOPE * Math.abs(thighAngle));
-  return thighAngle * (1 - flex);
-}
+// Shin + forearm follow-through helpers moved to renderer-math.js
+// (shinAngleFor, forearmAngleFor) — imported at the top of this
+// file. They're pure math and shared with animation/poses.js.
 
-// Elbow flex for the forearm during cosmetic (non-IK) arm swings.
-// Peaks at `|angle| = π/2` (arms horizontal — mid-swing or punching
-// forward) and smoothly tapers to zero at both `0` (neutral, arms
-// at rest) and `±π` (celebrate — arms straight overhead). The walk
-// anim uses small angles in the linear zone; celebrate reaches the
-// other zero so arms read as fully extended, not crumpled.
-// The punch pose is scripted per-variant in `pushArmPose`, not this curve.
-const STICKMAN_ELBOW_FLEX_MAX = 0.45;
-function forearmAngleFor(upperArmAngle) {
-  const mag = Math.min(Math.abs(upperArmAngle), Math.PI);
-  const flex = STICKMAN_ELBOW_FLEX_MAX * Math.sin(mag);
-  return upperArmAngle * (1 - flex);
-}
-
-// Celebration pose — jumping-jack with arms straight up. The phase
-// rate lives in animation/state.js alongside the other per-frame
-// advancement tuning; these two shape constants stay here because
-// the pose composer reads them directly.
-const CELEB_JUMP_PEAK  = 0.55 * STICKMAN_GLYPH_SIZE;
-const CELEB_LEG_SPREAD = 0.55;           // leg outward angle at jump apex (rad)
+// Celebration pose shape constants moved to animation/poses.js
+// (CELEB_JUMP_PEAK, CELEB_LEG_SPREAD) — imported there, not here.
 // Push + kick + airkick tuning constants and the body-english curve
 // functions all live in `animation/curves.js` (pure module, testable
 // under node). Imported at the top of this file.
@@ -520,9 +473,10 @@ export class Renderer {
     // players so the hot draw path never allocates.
     this._scratchKickPose = { upperAngle: 0, lowerAngle: 0 };
     this._scratchPushPose = { upperAngle: 0, lowerAngle: 0, upperYaw: 0, lowerYaw: 0 };
-    // Reused snapshot for advanceAnimState so the per-frame anim
-    // advancement never allocates.
+    // Reused snapshot + pose objects so the per-frame pose pipeline
+    // (advanceAnimState → composeStickmanPose) never allocates.
     this._scratchAnimSnap = {};
+    this._scratchPose = createPoseScratch();
 
     // Splash particle pool — ring-buffer allocation, `life === 0` means
     // free. Fields are all numbers so there's zero GC churn per frame.
@@ -1316,220 +1270,31 @@ export class Renderer {
    * by `facing` and adding the player's world base (x, 0, z).
    */
   _addStickman(player, color, tick, isCelebrating) {
-    // Player world position — x along the field, z across the depth.
-    // Both are mutable because push-hop shifts the whole figure in
-    // the heading direction (which has both x and z components).
-    let baseX = player.x + PLAYER_WIDTH / 2;
-    let baseZ = player.y * Z_STRETCH;
-    const s = STICKMAN_GLYPH_SIZE;
-
-    // Heading = physics-space angle (0 = +x). Forward unit vector
-    // lives in world xz, perpendicular lateral vector is the left-
-    // hand rotation of forward. All shoulder / hip / limb / tilt
-    // offsets are built on this local frame.
-    const heading = player.heading ?? 0;
-    const forwardX = Math.cos(heading);
-    const forwardZ = Math.sin(heading);
-    const lateralX = -forwardZ;
-    const lateralZ =  forwardX;
-
-    // Fetch / init smoothed state for this player; one LPF + phase
-    // store per player so multiple stickmen on one renderer evolve
-    // independently. Advancement lives in animation/state.js.
+    // 1. Fetch / init the smoothed animation state for this player.
     let anim = this._animByPlayer.get(player);
     if (!anim) {
       anim = createAnimState(tick, player);
       this._animByPlayer.set(player, anim);
     }
-    const animSnap = advanceAnimState(anim, player, tick, isCelebrating, this._scratchAnimSnap);
-    const swing     = animSnap.swing;
-    const amplitude = animSnap.amplitude;
-    const celeb     = animSnap.celebrate;
-    const celebInv  = 1 - celeb;
-    const pushing   = animSnap.pushing;
-    const isKicking = animSnap.isKicking;
-    const isAirkick = animSnap.isAirkick;
-    const airLift   = animSnap.airLift;
-    const kick      = animSnap.kick;
+    // 2. Advance LPFs + phases one frame; derive per-frame snapshot.
+    const animSnap = advanceAnimState(
+      anim, player, tick, isCelebrating, this._scratchAnimSnap,
+    );
+    // 3. Compose the full pose — walk + kick + push + celebrate all
+    //    layered into one flat numeric pose via animation/poses.js.
+    const pose = composeStickmanPose(
+      animSnap, player, this._scratchPose,
+      this._scratchKickPose, this._scratchPushPose,
+    );
+    // 4. Place the meshes. Torso + head are single-piece; arms and
+    //    legs are 2-bone with per-segment angles from the pose.
+    this._placeTorso(pose.baseX, pose.upperHipY, pose.baseZ, pose.neckX, pose.neckY, pose.neckZ, color, player.stamina);
+    this._placeSph(pose.headX, pose.headY, pose.headZ, STICKMAN_HEAD_RADIUS, color);
+    this._placeArm(pose.lShX, pose.shoulderY, pose.lShZ, pose.lArmUpper, pose.lArmLower, pose.forwardX, pose.forwardZ, color, pose.lArmUpperYaw, pose.lArmLowerYaw);
+    this._placeArm(pose.rShX, pose.shoulderY, pose.rShZ, pose.rArmUpper, pose.rArmLower, pose.forwardX, pose.forwardZ, color, pose.rArmUpperYaw, pose.rArmLowerYaw);
+    this._placeLeg(pose.lHipX, pose.hipBaseY, pose.lHipZ, pose.lLegUpper, pose.lLegLower, pose.forwardX, pose.forwardZ, color);
+    this._placeLeg(pose.rHipX, pose.hipBaseY, pose.rHipZ, pose.rLegUpper, pose.rLegLower, pose.forwardX, pose.forwardZ, color);
 
-    const jumpY = Math.max(0, Math.sin(anim.celebratePhase)) * CELEB_JUMP_PEAK * celeb;
-    const bob = Math.abs(swing) * 0.08 * amplitude * celebInv;
-
-    // Push body cosmetics — dip / tilt / hop stay scripted; the
-    // striking arm itself gets real 2-bone IK to the opponent's
-    // body (see `pushArmPose` call below, after shoulderY is known).
-    let pushBodyDip    = 0;
-    let pushTiltOffset = 0;
-    if (pushing > 0) {
-      const pushT = Math.min(anim.pushProgress / PUSH_TOTAL_TICKS, 1);
-      pushBodyDip    =  pushBodyDipAt(pushT);
-      pushTiltOffset =  pushBodyTiltAt(pushT);
-      const hop       =  pushHopAt(pushT);
-      baseX          +=  forwardX * hop;
-      baseZ          +=  forwardZ * hop;
-    }
-
-    // Kick scripted state — the contralateral arm (left arm) drives
-    // the counter-swing; body dip + tilt sell the weight transfer;
-    // pelvis twists toward the kick direction and snaps through;
-    // the support (left) leg crouches a little during strike. The
-    // kicking leg itself is no longer scripted: it's IK'd to
-    // `kick.footTarget` below, after the leg-angle block.
-    let kickArmAngle       = 0;
-    let kickBodyDip        = 0;
-    let kickTiltOffset     = 0;
-    let kickHipTwist       = 0;
-    let kickSupportCrouch  = 0;
-    if (isKicking) {
-      const totalMs = isAirkick ? AIRKICK_MS : KICK_DURATION_MS;
-      const kickT   = Math.min(kick.timer / totalMs, 1);
-      kickTiltOffset    = isAirkick ? airkickTiltAt(kickT) : kickTiltAt(kickT);
-      kickArmAngle      = kickArmAngleAt(kickT);
-      kickBodyDip       = kickDipAt(kickT);
-      kickHipTwist      = kickHipTwistAt(kickT);
-      kickSupportCrouch = kickSupportCrouchAt(kickT);
-    }
-
-    const walkTilt  = anim.tilt;
-    const upperTilt = walkTilt + pushTiltOffset + kickTiltOffset;
-    const tiltC = Math.cos(upperTilt);
-    const tiltS = Math.sin(upperTilt);
-
-    // Feet-on-ground clearance — straight legs land on y=0. airLift
-    // raises the whole figure during the airkick leap (legs trail
-    // the body upward because hipBaseY lifts with the rest).
-    const hipBaseY  = STICKMAN_LIMB_FULL_H + bob * s + jumpY + airLift;
-    const upperHipY = hipBaseY + pushBodyDip + kickBodyDip;
-
-    // Neck (top of torso) is one torso-length above the hip, rotated
-    // forward by upperTilt in the (forward, up) plane. "Forward" is
-    // the heading-space xz vector (forwardX, forwardZ).
-    const torsoH      = STICKMAN_SHOULDER_OFY;
-    const neckFwdOfs  = torsoH * tiltS;
-    const neckX       = baseX + forwardX * neckFwdOfs;
-    const neckZ       = baseZ + forwardZ * neckFwdOfs;
-    const neckY       = upperHipY + torsoH * tiltC;
-
-    // Shoulders: lateral to neck along (lateralX, lateralZ).
-    const shoulderHalfWidth = STICKMAN_SHOULDER_OFX;
-    const lShX = neckX - lateralX * shoulderHalfWidth;
-    const lShZ = neckZ - lateralZ * shoulderHalfWidth;
-    const rShX = neckX + lateralX * shoulderHalfWidth;
-    const rShZ = neckZ + lateralZ * shoulderHalfWidth;
-
-    // Torso: capsule from hip center to neck (both move with baseX/Z).
-    this._placeTorso(baseX, upperHipY, baseZ, neckX, neckY, neckZ, color, player.stamina);
-
-    // Head: sphere a fixed gap above the neck, following the tilt so
-    // it stays anchored to the torso top.
-    const headGap     = STICKMAN_HEAD_GAP_Y;
-    const headFwdOfs  = headGap * tiltS;
-    const headCenterX = neckX + forwardX * headFwdOfs;
-    const headCenterZ = neckZ + forwardZ * headFwdOfs;
-    const headCenterY = neckY + headGap * tiltC + STICKMAN_HEAD_RADIUS;
-    this._placeSph(headCenterX, headCenterY, headCenterZ, STICKMAN_HEAD_RADIUS, color);
-
-    // Hips: lateral to hip center along the same lateral vector.
-    const hipHalfWidth = STICKMAN_HIP_OFX;
-    // Pelvis twist: rotate the right-hip lateral direction around the
-    // up axis by `kickHipTwist` so both hips describe the arc a real
-    // pelvis would during a right-footed kick. Left hip mirrors the
-    // right; when no kick is active, twist is 0 and we land back on
-    // the plain ±lateral offsets.
-    const twistSin = Math.sin(kickHipTwist);
-    const twistCos = Math.cos(kickHipTwist);
-    const twistedRightX = lateralX * twistCos - forwardX * twistSin;
-    const twistedRightZ = lateralZ * twistCos - forwardZ * twistSin;
-    const rHipX = baseX + twistedRightX * hipHalfWidth;
-    const rHipZ = baseZ + twistedRightZ * hipHalfWidth;
-    const lHipX = baseX - twistedRightX * hipHalfWidth;
-    const lHipZ = baseZ - twistedRightZ * hipHalfWidth;
-
-    // Limb angles — contralateral walk swing + celebration override
-    // (arms sweep to π = straight up, legs spread forward-back) +
-    // push override (both arms scripted to the punch curve).
-    const armSwing = swing * 0.85 * amplitude;
-    const legSwing = -swing * 0.7  * amplitude;
-    let leftArmAngle  =  armSwing;
-    let rightArmAngle = -armSwing;
-    let leftLegAngle  =  legSwing;
-    let rightLegAngle = -legSwing;
-
-    if (celeb > 0.001) {
-      const legSpread = Math.max(0, Math.sin(anim.celebratePhase)) * CELEB_LEG_SPREAD;
-      leftArmAngle  = leftArmAngle  * celebInv +  Math.PI   * celeb;
-      rightArmAngle = rightArmAngle * celebInv + -Math.PI   * celeb;
-      leftLegAngle  = leftLegAngle  * celebInv + -legSpread * celeb;
-      rightLegAngle = rightLegAngle * celebInv +  legSpread * celeb;
-    }
-
-    // Push arm override is applied AFTER the per-arm (upper, lower)
-    // split below — IK to the opponent's body needs the striking
-    // shoulder's world anchor, which we don't have yet. See the
-    // `if (pushing > 0 && celeb < 0.001)` block after `_placeArm`
-    // setup.
-
-    // Per-leg (upper, lower) angles for the 2-bone draw. Walk /
-    // celebrate use a cosmetic follow-through shin derived from the
-    // thigh via `shinAngleFor`; the kicking leg (right by convention)
-    // overrides with real 2-bone IK to `kick.footTarget` below.
-    let leftUpperAngle  = leftLegAngle;
-    let leftLowerAngle  = shinAngleFor(leftLegAngle);
-    let rightUpperAngle = rightLegAngle;
-    let rightLowerAngle = shinAngleFor(rightLegAngle);
-
-    // Kick takes precedence over walk swing (but not push — physics
-    // guarantees the two never overlap). Right leg IK's to the foot
-    // target; left (support) leg micro-crouches through strike so the
-    // planted weight reads visually; left arm counter-swings forward;
-    // right arm pulls back. Celebration still overrides everything.
-    if (isKicking && celeb < 0.001) {
-      kickLegPose(kick, rHipX, hipBaseY, rHipZ, forwardX, forwardZ, this._scratchKickPose);
-      rightUpperAngle = this._scratchKickPose.upperAngle;
-      rightLowerAngle = this._scratchKickPose.lowerAngle;
-      // Support leg: upper forward by `kickSupportCrouch`, lower
-      // rotates the opposite way (2× upper) so the foot stays close
-      // to the ground while the knee pokes forward.
-      leftUpperAngle = leftLegAngle + kickSupportCrouch;
-      leftLowerAngle = shinAngleFor(leftLegAngle) - KICK_SUPPORT_SHIN_RATIO * kickSupportCrouch;
-      leftArmAngle  = kickArmAngle;
-      rightArmAngle = -kickArmAngle * KICK_ARM_OPP_FRAC;
-    }
-
-    // Per-arm (upper, lower) angles. Walk / celebrate / kick-
-    // counter-swing use the same cosmetic forearm follow-through as
-    // the knee — `forearmAngleFor` bends the forearm in the direction
-    // of the upper-arm swing. A punch (when player.pushTimer > 0)
-    // overrides ONLY the striking arm via the variant-specific
-    // scripted trajectory in `pushArmPose`; the non-striking arm
-    // keeps its cosmetic swing.
-    let leftUpperArmAngle  = leftArmAngle;
-    let leftLowerArmAngle  = forearmAngleFor(leftArmAngle);
-    let rightUpperArmAngle = rightArmAngle;
-    let rightLowerArmAngle = forearmAngleFor(rightArmAngle);
-    let leftUpperYaw = 0, leftLowerYaw = 0;
-    let rightUpperYaw = 0, rightLowerYaw = 0;
-
-    const shoulderY = upperHipY + torsoH * tiltC;
-    if (player.pushTimer > 0 && celeb < 0.001) {
-      pushArmPose(player, this._scratchPushPose);
-      if (player.pushArm === 'right') {
-        rightUpperArmAngle = this._scratchPushPose.upperAngle;
-        rightLowerArmAngle = this._scratchPushPose.lowerAngle;
-        rightUpperYaw      = this._scratchPushPose.upperYaw;
-        rightLowerYaw      = this._scratchPushPose.lowerYaw;
-      } else {
-        leftUpperArmAngle = this._scratchPushPose.upperAngle;
-        leftLowerArmAngle = this._scratchPushPose.lowerAngle;
-        leftUpperYaw      = this._scratchPushPose.upperYaw;
-        leftLowerYaw      = this._scratchPushPose.lowerYaw;
-      }
-    }
-
-    this._placeArm(lShX, shoulderY, lShZ, leftUpperArmAngle,  leftLowerArmAngle,  forwardX, forwardZ, color, leftUpperYaw,  leftLowerYaw);
-    this._placeArm(rShX, shoulderY, rShZ, rightUpperArmAngle, rightLowerArmAngle, forwardX, forwardZ, color, rightUpperYaw, rightLowerYaw);
-    this._placeLeg(lHipX, hipBaseY, lHipZ, leftUpperAngle,  leftLowerAngle,  forwardX, forwardZ, color);
-    this._placeLeg(rHipX, hipBaseY, rHipZ, rightUpperAngle, rightLowerAngle, forwardX, forwardZ, color);
   }
 
   /** Orient `mesh` so its local +y axis points from A toward B and

@@ -34,3 +34,26 @@ export function easeOut(p) {
   return 1 - (1 - p) * (1 - p);
 }
 
+// Knee flex for cosmetic (non-IK) walk/celebrate/idle leg swings.
+// Straight-down thigh → straight-down shin. Larger swing magnitudes
+// bend the knee +forward regardless of swing sign (knees hinge one
+// way). Kicking leg bypasses this via real 2-bone IK in
+// physics.js::kickLegPose.
+export const STICKMAN_KNEE_FLEX_MAX   = 0.5;
+export const STICKMAN_KNEE_FLEX_SLOPE = 0.4;
+export function shinAngleFor(thighAngle) {
+  const flex = Math.min(STICKMAN_KNEE_FLEX_MAX, STICKMAN_KNEE_FLEX_SLOPE * Math.abs(thighAngle));
+  return thighAngle * (1 - flex);
+}
+
+// Elbow flex for cosmetic (non-IK) arm swings. Peaks at |angle|=π/2
+// (arms horizontal) and tapers to 0 at both 0 (neutral) and ±π
+// (celebrate — arms straight overhead). Punch poses bypass via
+// physics.js::pushArmPose.
+export const STICKMAN_ELBOW_FLEX_MAX = 0.45;
+export function forearmAngleFor(upperArmAngle) {
+  const mag = Math.min(Math.abs(upperArmAngle), Math.PI);
+  const flex = STICKMAN_ELBOW_FLEX_MAX * Math.sin(mag);
+  return upperArmAngle * (1 - flex);
+}
+

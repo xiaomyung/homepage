@@ -344,17 +344,21 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     pose.rHipX = rHipX * grieveInv + brHipX * grieve;
     pose.rHipZ = rHipZ * grieveInv + brHipZ * grieve;
     // Arms bent up with elbows pinched together and forearms
-    // converging so fists meet on the front of the face. Left-side
-    // yaw is negative (rotating rightward toward body centre),
-    // right-side yaw is positive — both steer the limb plane
-    // inward so the two arms mirror into each other at the face.
+    // converging so fists meet on the front of the face.
+    //   Upper yaw POSITIVE for left / NEGATIVE for right — rotates
+    //   each upper arm's forward around the vertical axis inward
+    //   toward the body centreline, pulling the elbows in.
+    //   Lower yaw has the opposite sign per side because the
+    //   forearm extends from the elbow in −forward direction
+    //   (sin(lowerAngle) is negative): flipping the sign brings
+    //   the fists toward centre instead of away from it.
     pose.lArmUpper    = leftUpperArmAngle  * grieveInv +  GRIEVE_ARM_UPPER  * grieve;
     pose.lArmLower    = leftLowerArmAngle  * grieveInv +  GRIEVE_ARM_LOWER  * grieve;
-    pose.lArmUpperYaw = leftUpperYaw       * grieveInv + (-GRIEVE_ARM_UPPER_YAW) * grieve;
+    pose.lArmUpperYaw = leftUpperYaw       * grieveInv + (+GRIEVE_ARM_UPPER_YAW) * grieve;
     pose.lArmLowerYaw = leftLowerYaw       * grieveInv + (-GRIEVE_ARM_LOWER_YAW) * grieve;
     pose.rArmUpper    = rightUpperArmAngle * grieveInv +  GRIEVE_ARM_UPPER  * grieve;
     pose.rArmLower    = rightLowerArmAngle * grieveInv +  GRIEVE_ARM_LOWER  * grieve;
-    pose.rArmUpperYaw = rightUpperYaw      * grieveInv + (+GRIEVE_ARM_UPPER_YAW) * grieve;
+    pose.rArmUpperYaw = rightUpperYaw      * grieveInv + (-GRIEVE_ARM_UPPER_YAW) * grieve;
     pose.rArmLowerYaw = rightLowerYaw      * grieveInv + (+GRIEVE_ARM_LOWER_YAW) * grieve;
     // Kneeling legs — thighs forward, shins straight down tucked under.
     pose.lLegUpper = leftUpperAngle  * grieveInv + GRIEVE_LEG_UPPER * grieve;

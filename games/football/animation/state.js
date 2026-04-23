@@ -23,6 +23,11 @@ export const STICKMAN_TILT_MAX = 0.45;
 // Celebrate rotation rate. ~25 ticks per jumping-jack cycle at 60Hz.
 export const CELEB_PHASE_RATE = 0.25;
 
+// Grieve rotation rate — the loser's slow back-and-forth body rock
+// during a goal celebration (non-scorer reaction). Much slower than
+// celebrate: ~80 ticks per cycle = ~1.3 s of gentle sway.
+export const GRIEVE_PHASE_RATE = 0.08;
+
 const TWO_PI = Math.PI * 2;
 
 /** Allocate a fresh per-player animation state. Call once per
@@ -34,6 +39,8 @@ export function createAnimState(tick, player) {
     phase: 0,
     celebrate: 0,
     celebratePhase: 0,
+    grieve: 0,
+    grievePhase: 0,
     pushing: 0,
     pushProgress: 0,
     prevPushTimer: 0,
@@ -52,7 +59,7 @@ export function createAnimState(tick, player) {
  *  behaviour and lets teleporting scenarios zero out walk animation
  *  by syncing anim.lastX after a jump.
  */
-export function advanceAnimState(anim, player, tick, isCelebrating, out) {
+export function advanceAnimState(anim, player, tick, isCelebrating, out, isGrieving = false) {
   const dt = tick > anim.lastTick ? tick - anim.lastTick : 0;
   const denom = dt > 0 ? dt : 1;
   const effVx = (player.x - anim.lastX) / denom;
@@ -81,6 +88,7 @@ export function advanceAnimState(anim, player, tick, isCelebrating, out) {
   const swingRate = 0.2 + speed * 0.04;
 
   const targetCelebrate = isCelebrating ? 1 : 0;
+  const targetGrieve    = isGrieving    ? 1 : 0;
   const targetPushing   = player.pushTimer > 0 ? 1 : 0;
 
   // Push-progress edge detection: reset to 0 on the rising edge of
@@ -97,9 +105,11 @@ export function advanceAnimState(anim, player, tick, isCelebrating, out) {
   anim.tilt      += (targetTilt      - anim.tilt)      * STICKMAN_SMOOTH;
   anim.amplitude += (targetAmplitude - anim.amplitude) * STICKMAN_SMOOTH;
   anim.celebrate += (targetCelebrate - anim.celebrate) * STICKMAN_SMOOTH;
+  anim.grieve    += (targetGrieve    - anim.grieve)    * STICKMAN_SMOOTH;
   anim.pushing = targetPushing;
-  anim.phase          = (anim.phase          + swingRate       * dt) % TWO_PI;
-  anim.celebratePhase = (anim.celebratePhase + CELEB_PHASE_RATE * dt) % TWO_PI;
+  anim.phase          = (anim.phase          + swingRate        * dt) % TWO_PI;
+  anim.celebratePhase = (anim.celebratePhase + CELEB_PHASE_RATE  * dt) % TWO_PI;
+  anim.grievePhase    = (anim.grievePhase    + GRIEVE_PHASE_RATE * dt) % TWO_PI;
 
   const kick = player.kick;
   const isKicking = !!(kick && kick.active);
@@ -110,6 +120,7 @@ export function advanceAnimState(anim, player, tick, isCelebrating, out) {
   // anim smoothing, so transitions are crisp.
   let stateName;
   if (isCelebrating)              stateName = 'CELEBRATE';
+  else if (isGrieving)            stateName = 'GRIEVE';
   else if (isKicking)             stateName = isAirkick ? 'KICK_AIR' : 'KICK_GROUND';
   else if (player.pushTimer > 0)  stateName = 'PUSH';
   else if (speed > 0.5)           stateName = 'WALK';
@@ -127,6 +138,8 @@ export function advanceAnimState(anim, player, tick, isCelebrating, out) {
   out.walkTilt       = anim.tilt;
   out.celebrate      = anim.celebrate;
   out.celebratePhase = anim.celebratePhase;
+  out.grieve         = anim.grieve;
+  out.grievePhase    = anim.grievePhase;
   out.pushing        = anim.pushing;
   out.pushProgress   = anim.pushProgress;
   out.isKicking      = isKicking;

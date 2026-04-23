@@ -53,6 +53,30 @@ import {
 const CELEB_JUMP_PEAK  = 0.55 * STICKMAN_GLYPH_SIZE;
 const CELEB_LEG_SPREAD = 0.55;
 
+// Grieve (anti-celebration) shape — the loser falls to knees,
+// hunches forward with head in hands, rocks gently back and forth.
+const GRIEVE_KNEEL_DROP   = 14;     // world units — hip drops from standing to kneeling
+const GRIEVE_BASE_TILT    = 0.45;   // rad — forward body lean
+const GRIEVE_ROCK_AMP     = 0.10;   // rad — amplitude of the sway
+// Arms folded up with elbows flared out + forearms bent back to
+// bring hands toward the head. Angle convention (upper + lower
+// both world-space in the forward-up plane):
+//   0 = straight down, +π/2 = forward, +π = straight up.
+// UPPER = 2π/3 → elbow up and forward from shoulder (elbow height
+//                +5 units, +8.7 forward)
+// LOWER = −π/2 → forearm swings backward horizontally from elbow
+//                (brings hand back to roughly head-level above
+//                shoulder, slightly behind the forward axis)
+const GRIEVE_ARM_UPPER     = 2.094;   // 2π/3 — upper arm up-and-forward
+const GRIEVE_ARM_LOWER     = -1.571;  // −π/2 — forearm back to head
+const GRIEVE_ARM_LOWER_YAW = 0.35;    // tiny inward yaw so the forearms read as framing the face
+// Kneeling leg angles. Upper leg angle +π/2 puts the thigh roughly
+// horizontal forward; shins hang straight down (angle 0) → foot
+// lands at hipY − STICKMAN_LOWER_LEG, which is what we set
+// hipBaseY to via GRIEVE_KNEEL_DROP.
+const GRIEVE_LEG_UPPER    = Math.PI / 2;
+const GRIEVE_LEG_LOWER    = 0;
+
 /** Allocate a reusable pose scratch object. Store one on each
  *  renderer and pass it to composeStickmanPose each frame. */
 export function createPoseScratch() {
@@ -108,6 +132,9 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   const amplitude = animSnap.amplitude;
   const celeb     = animSnap.celebrate;
   const celebInv  = 1 - celeb;
+  const grieve    = animSnap.grieve || 0;
+  const grieveInv = 1 - grieve;
+  const grievePhase = animSnap.grievePhase || 0;
   const pushing   = animSnap.pushing;
   const isKicking = animSnap.isKicking;
   const isAirkick = animSnap.isAirkick;
@@ -244,6 +271,86 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
       leftUpperYaw      = scratchPushPose.upperYaw;
       leftLowerYaw      = scratchPushPose.lowerYaw;
     }
+  }
+
+  // ── Grieve (anti-celebration) override ──────────────────
+  // Non-scorer during a goal celebration. Overrides walk/kick/push
+  // poses proportionally to the smoothed `grieve` factor so the
+  // switch fades in cleanly. Celebrate (`celeb`) still outranks
+  // grieve if both ever fire (they shouldn't — physics makes only
+  // the scorer celebrate — but the interp keeps the transition
+  // safe).
+  if (grieve > 0.001 && celeb < 0.001) {
+    // Rocking body lean: baseline forward tilt + small sinusoidal
+    // sway. Multiplied by `grieve` so the lean eases in from the
+    // previous pose.
+    const rock = Math.sin(grievePhase) * GRIEVE_ROCK_AMP;
+    const grieveTilt = (GRIEVE_BASE_TILT + rock) * grieve;
+    // Recompute torso anchors using the grieve tilt blended over
+    // whatever upperTilt produced for the non-grieve layer.
+    const blendedTilt = upperTilt * grieveInv + grieveTilt * grieve;
+    const gTiltC = Math.cos(blendedTilt);
+    const gTiltS = Math.sin(blendedTilt);
+
+    // Drop hip toward kneeling height. Blend from current hipBaseY
+    // (standing) toward STICKMAN_LIMB_FULL_H − GRIEVE_KNEEL_DROP.
+    const kneelHipY = STICKMAN_LIMB_FULL_H - GRIEVE_KNEEL_DROP;
+    const blendedHipBaseY = hipBaseY * grieveInv + kneelHipY * grieve;
+    const blendedUpperHipY = blendedHipBaseY;  // no dip/push on the loser
+
+    // Rebuild neck / head / shoulders / hips anchored to the new hip height.
+    const bNeckX = baseX + forwardX * (torsoH * gTiltS);
+    const bNeckZ = baseZ + forwardZ * (torsoH * gTiltS);
+    const bNeckY = blendedUpperHipY + torsoH * gTiltC;
+    const bHeadX = bNeckX + forwardX * (STICKMAN_HEAD_GAP_Y * gTiltS);
+    const bHeadZ = bNeckZ + forwardZ * (STICKMAN_HEAD_GAP_Y * gTiltS);
+    const bHeadY = bNeckY + STICKMAN_HEAD_GAP_Y * gTiltC + STICKMAN_HEAD_RADIUS;
+    const bShoulderY = blendedUpperHipY + torsoH * gTiltC;
+    const blShX = bNeckX - lateralX * STICKMAN_SHOULDER_OFX;
+    const blShZ = bNeckZ - lateralZ * STICKMAN_SHOULDER_OFX;
+    const brShX = bNeckX + lateralX * STICKMAN_SHOULDER_OFX;
+    const brShZ = bNeckZ + lateralZ * STICKMAN_SHOULDER_OFX;
+    const blHipX = baseX - lateralX * STICKMAN_HIP_OFX;
+    const blHipZ = baseZ - lateralZ * STICKMAN_HIP_OFX;
+    const brHipX = baseX + lateralX * STICKMAN_HIP_OFX;
+    const brHipZ = baseZ + lateralZ * STICKMAN_HIP_OFX;
+
+    // Blend hipBaseY + anchors by grieve factor — at grieve≈1 we
+    // fully land on the kneel pose; in between we cross-fade.
+    pose.baseX = baseX; pose.baseZ = baseZ;
+    pose.hipBaseY = blendedHipBaseY;
+    pose.upperHipY = blendedUpperHipY;
+    pose.neckX = neckX * grieveInv + bNeckX * grieve;
+    pose.neckY = neckY * grieveInv + bNeckY * grieve;
+    pose.neckZ = neckZ * grieveInv + bNeckZ * grieve;
+    pose.headX = headX * grieveInv + bHeadX * grieve;
+    pose.headY = headY * grieveInv + bHeadY * grieve;
+    pose.headZ = headZ * grieveInv + bHeadZ * grieve;
+    pose.shoulderY = shoulderY * grieveInv + bShoulderY * grieve;
+    pose.lShX = lShX * grieveInv + blShX * grieve;
+    pose.lShZ = lShZ * grieveInv + blShZ * grieve;
+    pose.rShX = rShX * grieveInv + brShX * grieve;
+    pose.rShZ = rShZ * grieveInv + brShZ * grieve;
+    pose.lHipX = lHipX * grieveInv + blHipX * grieve;
+    pose.lHipZ = lHipZ * grieveInv + blHipZ * grieve;
+    pose.rHipX = rHipX * grieveInv + brHipX * grieve;
+    pose.rHipZ = rHipZ * grieveInv + brHipZ * grieve;
+    // Arms up with elbows out → hands at head.
+    pose.lArmUpper    = leftUpperArmAngle  * grieveInv +  GRIEVE_ARM_UPPER  * grieve;
+    pose.lArmLower    = leftLowerArmAngle  * grieveInv +  GRIEVE_ARM_LOWER  * grieve;
+    pose.lArmUpperYaw = leftUpperYaw       * grieveInv + (-GRIEVE_ARM_LOWER_YAW) * grieve;
+    pose.lArmLowerYaw = leftLowerYaw       * grieveInv + (-GRIEVE_ARM_LOWER_YAW) * grieve;
+    pose.rArmUpper    = rightUpperArmAngle * grieveInv +  GRIEVE_ARM_UPPER  * grieve;
+    pose.rArmLower    = rightLowerArmAngle * grieveInv +  GRIEVE_ARM_LOWER  * grieve;
+    pose.rArmUpperYaw = rightUpperYaw      * grieveInv + (+GRIEVE_ARM_LOWER_YAW) * grieve;
+    pose.rArmLowerYaw = rightLowerYaw      * grieveInv + (+GRIEVE_ARM_LOWER_YAW) * grieve;
+    // Kneeling legs — thighs forward, shins straight down tucked under.
+    pose.lLegUpper = leftUpperAngle  * grieveInv + GRIEVE_LEG_UPPER * grieve;
+    pose.lLegLower = leftLowerAngle  * grieveInv + GRIEVE_LEG_LOWER * grieve;
+    pose.rLegUpper = rightUpperAngle * grieveInv + GRIEVE_LEG_UPPER * grieve;
+    pose.rLegLower = rightLowerAngle * grieveInv + GRIEVE_LEG_LOWER * grieve;
+    pose.forwardX = forwardX; pose.forwardZ = forwardZ;
+    return pose;
   }
 
   // Fill pose scratch.

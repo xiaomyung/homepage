@@ -590,7 +590,13 @@ export class Renderer {
     this._ballShadowCursor       = 0;
     for (let i = 0; i < players.length; i++) {
       const p = players[i];
-      this._addStickman(p, COLOR_TEXT, tick, celebrating && state.goalScorer === p);
+      const isScorer  = celebrating && state.goalScorer === p;
+      // Loser reaction: non-scorer on any team during a goal-celebrate
+      // pause. Only fires when there IS a goalScorer — otherwise (e.g.
+      // celebrate pinned in the harness with scorer=null) we fall back
+      // to idle.
+      const isGrieving = celebrating && state.goalScorer && state.goalScorer !== p;
+      this._addStickman(p, COLOR_TEXT, tick, isScorer, isGrieving);
       this._placePlayerShadow(p);
     }
     for (let i = this._stickmanTorsoCursor; i < prevTorsoCursor; i++) {
@@ -1269,7 +1275,7 @@ export class Renderer {
    * (celebration). World positions are produced by scaling local.x
    * by `facing` and adding the player's world base (x, 0, z).
    */
-  _addStickman(player, color, tick, isCelebrating) {
+  _addStickman(player, color, tick, isCelebrating, isGrieving = false) {
     // 1. Fetch / init the smoothed animation state for this player.
     let anim = this._animByPlayer.get(player);
     if (!anim) {
@@ -1278,7 +1284,7 @@ export class Renderer {
     }
     // 2. Advance LPFs + phases one frame; derive per-frame snapshot.
     const animSnap = advanceAnimState(
-      anim, player, tick, isCelebrating, this._scratchAnimSnap,
+      anim, player, tick, isCelebrating, this._scratchAnimSnap, isGrieving,
     );
     // 3. Compose the full pose — walk + kick + push + celebrate all
     //    layered into one flat numeric pose via animation/poses.js.

@@ -30,6 +30,7 @@ import {
   kickHipTwistAt, kickSupportCrouchAt,
   pushBodyDipAt, pushHopAt, pushBodyTiltAt,
 } from './animation/curves.js';
+import { createAnimState, advanceAnimState } from './animation/state.js';
 import {
   createField,
   FIELD_HEIGHT,
@@ -67,14 +68,9 @@ const HORIZONTAL_MARGIN = 1.15;
 // Rig proportions (STICKMAN_GLYPH_SIZE, SHOULDER/HIP offsets, LIMB_FULL_H,
 // TORSO/HEAD/LEG/ARM radii) come from physics.js so the ball-body
 // collider and the rendered silhouette can't drift apart.
-// Per-frame LPF coefficient for smoothing animation state (tilt, amplitude).
-// ~0.15 → time constant ≈ 100ms at 60 fps.
-const STICKMAN_SMOOTH = 0.15;
-// Forward-lean tuning: the run threshold above which the body starts to
-// lean in the direction of motion, and the slope + clamp for the lean angle.
-const STICKMAN_RUN_THRESHOLD = 1.2;
-const STICKMAN_TILT_PER_SPEED = 0.09;
-const STICKMAN_TILT_MAX = 0.45;
+// Walk-cycle LPF + forward-lean tuning constants moved to
+// `animation/state.js` (STICKMAN_SMOOTH, STICKMAN_RUN_THRESHOLD,
+// STICKMAN_TILT_PER_SPEED, STICKMAN_TILT_MAX).
 // Stamina fill capsule is inset inside the outline shell, creating a
 // visible "shell wall" (the outline appears thicker inward while the
 // outer silhouette is unchanged). Delta is in world units.
@@ -121,8 +117,10 @@ function forearmAngleFor(upperArmAngle) {
   return upperArmAngle * (1 - flex);
 }
 
-// Celebration pose — jumping-jack with arms straight up.
-const CELEB_PHASE_RATE = 0.25;           // rad per tick; ~25 ticks per hop
+// Celebration pose — jumping-jack with arms straight up. The phase
+// rate lives in animation/state.js alongside the other per-frame
+// advancement tuning; these two shape constants stay here because
+// the pose composer reads them directly.
 const CELEB_JUMP_PEAK  = 0.55 * STICKMAN_GLYPH_SIZE;
 const CELEB_LEG_SPREAD = 0.55;           // leg outward angle at jump apex (rad)
 // Push + kick + airkick tuning constants and the body-english curve
@@ -522,6 +520,9 @@ export class Renderer {
     // players so the hot draw path never allocates.
     this._scratchKickPose = { upperAngle: 0, lowerAngle: 0 };
     this._scratchPushPose = { upperAngle: 0, lowerAngle: 0, upperYaw: 0, lowerYaw: 0 };
+    // Reused snapshot for advanceAnimState so the per-frame anim
+    // advancement never allocates.
+    this._scratchAnimSnap = {};
 
     // Splash particle pool — ring-buffer allocation, `life === 0` means
     // free. Fields are all numbers so there's zero GC churn per frame.
@@ -1332,75 +1333,24 @@ export class Renderer {
     const lateralX = -forwardZ;
     const lateralZ =  forwardX;
 
-    // Fetch / init smoothed state for this player (same as before).
+    // Fetch / init smoothed state for this player; one LPF + phase
+    // store per player so multiple stickmen on one renderer evolve
+    // independently. Advancement lives in animation/state.js.
     let anim = this._animByPlayer.get(player);
     if (!anim) {
-      anim = {
-        tilt: 0, amplitude: 0, phase: 0,
-        celebrate: 0, celebratePhase: 0,
-        pushing: 0, pushProgress: 0, prevPushTimer: 0,
-        lastTick: tick, lastX: player.x, lastY: player.y,
-      };
+      anim = createAnimState(tick, player);
       this._animByPlayer.set(player, anim);
     }
-    const dt = tick > anim.lastTick ? tick - anim.lastTick : 0;
-    const denom = dt > 0 ? dt : 1;
-    const effVx = (player.x - anim.lastX) / denom;
-    const effVy = (player.y - anim.lastY) / denom;
-    anim.lastTick = tick;
-    anim.lastX = player.x;
-    anim.lastY = player.y;
-
-    const speed = Math.sqrt(effVx * effVx + effVy * effVy);
-
-    const targetAmplitude = Math.min(speed * 0.2, 1.0);
-    // Walk tilt — sign from the component of motion along the
-    // player's current heading, so "moving forward" leans in,
-    // "moving backward" leans the opposite way. Heading-frame
-    // decomposition uses the same Z_STRETCH as the physics-side
-    // target heading so motion direction and facing stay consistent.
-    const effVworldZ = effVy * Z_STRETCH;
-    const forwardSpeed = effVx * forwardX + effVworldZ * forwardZ;
-    const targetTilt = speed > STICKMAN_RUN_THRESHOLD
-      ? Math.sign(forwardSpeed) * Math.min(
-          (speed - STICKMAN_RUN_THRESHOLD) * STICKMAN_TILT_PER_SPEED,
-          STICKMAN_TILT_MAX,
-        )
-      : 0;
-    const swingRate = 0.2 + speed * 0.04;
-
-    const targetCelebrate = isCelebrating ? 1 : 0;
-    const targetPushing   = player.pushTimer > 0 ? 1 : 0;
-
-    if (player.pushTimer > 0) {
-      if (anim.prevPushTimer <= 0) anim.pushProgress = 0;
-      anim.pushProgress += dt;
-    } else {
-      anim.pushProgress = 0;
-    }
-    anim.prevPushTimer = player.pushTimer;
-
-    // Kick animation reads physics state directly — no smoothing, no
-    // local timer. `player.kick` is the authoritative source for
-    // active/phase/timer, and `player.airZ` is the airborne lift
-    // already computed by the physics tick for the airkick phase.
-    const kick = player.kick;
-    const isKicking = !!(kick && kick.active);
-    const isAirkick = isKicking && kick.kind === 'air';
-    const airLift   = player.airZ || 0;
-
-    anim.tilt      += (targetTilt      - anim.tilt)      * STICKMAN_SMOOTH;
-    anim.amplitude += (targetAmplitude - anim.amplitude) * STICKMAN_SMOOTH;
-    anim.celebrate += (targetCelebrate - anim.celebrate) * STICKMAN_SMOOTH;
-    anim.pushing = targetPushing;
-    anim.phase          = (anim.phase          + swingRate       * dt) % TWO_PI;
-    anim.celebratePhase = (anim.celebratePhase + CELEB_PHASE_RATE * dt) % TWO_PI;
-
-    const amplitude = anim.amplitude;
-    const celeb     = anim.celebrate;
+    const animSnap = advanceAnimState(anim, player, tick, isCelebrating, this._scratchAnimSnap);
+    const swing     = animSnap.swing;
+    const amplitude = animSnap.amplitude;
+    const celeb     = animSnap.celebrate;
     const celebInv  = 1 - celeb;
-    const pushing   = anim.pushing;
-    const swing     = Math.sin(anim.phase);
+    const pushing   = animSnap.pushing;
+    const isKicking = animSnap.isKicking;
+    const isAirkick = animSnap.isAirkick;
+    const airLift   = animSnap.airLift;
+    const kick      = animSnap.kick;
 
     const jumpY = Math.max(0, Math.sin(anim.celebratePhase)) * CELEB_JUMP_PEAK * celeb;
     const bob = Math.abs(swing) * 0.08 * amplitude * celebInv;

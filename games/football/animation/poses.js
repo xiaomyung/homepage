@@ -66,20 +66,24 @@ const GRIEVE_ROCK_AMP   = 0.10;     // rad — gentle sway back and forth
 // Leg angles (world-space in the forward-up plane):
 //   0 = straight down, +π/2 = forward, −π/2 = backward
 // Upper leg slightly tilted backward from vertical; lower leg
-// horizontal pointing back under the body.
-const GRIEVE_LEG_UPPER = -0.15;     // thigh ~9° behind vertical
-const GRIEVE_LEG_LOWER = -Math.PI / 2;  // shin horizontal backward
+// folded back under the thigh with interior knee angle ≈ 60°
+// (instead of the 90° perpendicular seiza kneel). Heels come up
+// off the ground — it's the "tight kneel of despair" shape.
+const GRIEVE_LEG_UPPER = -0.10;     // thigh ~6° behind vertical
+const GRIEVE_LEG_LOWER = -(2 * Math.PI / 3);  // shin folded back ~120° from vertical → 60° knee bend
 
-// Arm angles (same convention) for hands-in-front-of-face. Solved
-// analytically so the hand target lands at roughly
-// (forward=+3, up=+5) relative to the shoulder — directly in front
-// of the head, which sits at (forward=0, up=+5). With arm length
-// 10+10, the solution is upper=1.33 rad, lower=−2.41 rad. Elbow
-// flexes forward so the arm reads as arms up and brought back in
-// to cover the face.
-const GRIEVE_ARM_UPPER     = 1.33;    // 76° — upper arm mostly forward, slight up
-const GRIEVE_ARM_LOWER     = -2.41;   // −138° — forearm bent back + up to the face
-const GRIEVE_ARM_LOWER_YAW = 0.30;    // small inward yaw so forearms converge on the face
+// Arm angles for fists-on-face. Solved analytically so the hand
+// target lands at roughly (forward=+4, up=+5) from the shoulder —
+// the head's front surface sits at (forward≈0.44, up≈4.9) plus
+// HEAD_RADIUS forward. Upper arm angle 1.22 rad puts the elbow
+// forward-and-slightly-below shoulder; lower arm angle −2.57
+// folds the forearm back up to the face. Yaw rotates each arm's
+// plane inward so the elbows pinch together and the fists
+// converge on the centre of the face.
+const GRIEVE_ARM_UPPER     = 1.22;    // 70° — upper arm forward, slight down
+const GRIEVE_ARM_LOWER     = -2.57;   // −147° — forearm bent back-and-up to face
+const GRIEVE_ARM_UPPER_YAW = 0.28;    // inward tilt of the upper-arm plane — elbows closer
+const GRIEVE_ARM_LOWER_YAW = 0.45;    // more inward on the forearm → fists meet at face centre
 
 /** Allocate a reusable pose scratch object. Store one on each
  *  renderer and pass it to composeStickmanPose each frame. */
@@ -339,14 +343,18 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     pose.lHipZ = lHipZ * grieveInv + blHipZ * grieve;
     pose.rHipX = rHipX * grieveInv + brHipX * grieve;
     pose.rHipZ = rHipZ * grieveInv + brHipZ * grieve;
-    // Arms up with elbows out → hands at head.
+    // Arms bent up with elbows pinched together and forearms
+    // converging so fists meet on the front of the face. Left-side
+    // yaw is negative (rotating rightward toward body centre),
+    // right-side yaw is positive — both steer the limb plane
+    // inward so the two arms mirror into each other at the face.
     pose.lArmUpper    = leftUpperArmAngle  * grieveInv +  GRIEVE_ARM_UPPER  * grieve;
     pose.lArmLower    = leftLowerArmAngle  * grieveInv +  GRIEVE_ARM_LOWER  * grieve;
-    pose.lArmUpperYaw = leftUpperYaw       * grieveInv + (-GRIEVE_ARM_LOWER_YAW) * grieve;
+    pose.lArmUpperYaw = leftUpperYaw       * grieveInv + (-GRIEVE_ARM_UPPER_YAW) * grieve;
     pose.lArmLowerYaw = leftLowerYaw       * grieveInv + (-GRIEVE_ARM_LOWER_YAW) * grieve;
     pose.rArmUpper    = rightUpperArmAngle * grieveInv +  GRIEVE_ARM_UPPER  * grieve;
     pose.rArmLower    = rightLowerArmAngle * grieveInv +  GRIEVE_ARM_LOWER  * grieve;
-    pose.rArmUpperYaw = rightUpperYaw      * grieveInv + (+GRIEVE_ARM_LOWER_YAW) * grieve;
+    pose.rArmUpperYaw = rightUpperYaw      * grieveInv + (+GRIEVE_ARM_UPPER_YAW) * grieve;
     pose.rArmLowerYaw = rightLowerYaw      * grieveInv + (+GRIEVE_ARM_LOWER_YAW) * grieve;
     // Kneeling legs — thighs forward, shins straight down tucked under.
     pose.lLegUpper = leftUpperAngle  * grieveInv + GRIEVE_LEG_UPPER * grieve;

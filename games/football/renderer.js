@@ -588,16 +588,33 @@ export class Renderer {
     this._playerShadowCursor     = 0;
     this._ballCursor             = 0;
     this._ballShadowCursor       = 0;
-    const isReposition = state.pauseState === 'reposition';
+    // Per-player dead-ball flags. The harness may stamp each player
+    // with `_scenePauseState` + `_sceneGoalScorer` + `_sceneWinner` so
+    // multiple independent scenarios inside one composite render
+    // frame don't cross-contaminate — in that case we read the
+    // player's own scenario state instead of the global composite.
+    // When those annotations aren't set (live match path), we fall
+    // back to the global state.pauseState.
     for (let i = 0; i < players.length; i++) {
       const p = players[i];
-      const isScorer  = celebrating && state.goalScorer === p;
-      // Loser reaction: non-scorer on any team during a goal-celebrate
-      // pause. Only fires when there IS a goalScorer — otherwise (e.g.
-      // celebrate pinned in the harness with scorer=null) we fall back
-      // to idle.
-      const isGrieving = celebrating && state.goalScorer && state.goalScorer !== p;
-      this._addStickman(p, COLOR_TEXT, tick, isScorer, isGrieving, isReposition);
+      const pPause      = p._scenePauseState !== undefined ? p._scenePauseState : state.pauseState;
+      const pGoalScorer = p._sceneGoalScorer !== undefined ? p._sceneGoalScorer : state.goalScorer;
+      const pWinner     = p._sceneWinner     !== undefined ? p._sceneWinner     : state.winner;
+      const pSide       = p._sceneSide       !== undefined ? p._sceneSide
+                         : p === state.p1 ? 'left' : p === state.p2 ? 'right' : null;
+
+      const pCelebrating = pPause === 'celebrate';
+      const pReposition  = pPause === 'reposition';
+      const pMatchend    = pPause === 'matchend';
+
+      const isScorer  = pCelebrating && pGoalScorer === p;
+      const isGrieving = pCelebrating && pGoalScorer && pGoalScorer !== p;
+      let isMatchendWin = false, isMatchendLose = false;
+      if (pMatchend && pWinner && pSide) {
+        isMatchendWin  = pSide === pWinner;
+        isMatchendLose = pSide !== pWinner;
+      }
+      this._addStickman(p, COLOR_TEXT, tick, isScorer, isGrieving, pReposition, isMatchendWin, isMatchendLose);
       this._placePlayerShadow(p);
     }
     for (let i = this._stickmanTorsoCursor; i < prevTorsoCursor; i++) {
@@ -1276,7 +1293,7 @@ export class Renderer {
    * (celebration). World positions are produced by scaling local.x
    * by `facing` and adding the player's world base (x, 0, z).
    */
-  _addStickman(player, color, tick, isCelebrating, isGrieving = false, isReposition = false) {
+  _addStickman(player, color, tick, isCelebrating, isGrieving = false, isReposition = false, isMatchendWin = false, isMatchendLose = false) {
     // 1. Fetch / init the smoothed animation state for this player.
     let anim = this._animByPlayer.get(player);
     if (!anim) {
@@ -1285,7 +1302,8 @@ export class Renderer {
     }
     // 2. Advance LPFs + phases one frame; derive per-frame snapshot.
     const animSnap = advanceAnimState(
-      anim, player, tick, isCelebrating, this._scratchAnimSnap, isGrieving, isReposition,
+      anim, player, tick, isCelebrating, this._scratchAnimSnap,
+      isGrieving, isReposition, isMatchendWin, isMatchendLose,
     );
     // 3. Compose the full pose — walk + kick + push + celebrate all
     //    layered into one flat numeric pose via animation/poses.js.

@@ -60,6 +60,9 @@ export function createAnimState(tick, player) {
     // heading during reposition so the stickman actually faces
     // where it's walking instead of side-stepping.
     animHeading: null,
+    // MATCHEND poses — triumph (winner) or slump (loser) at match over.
+    matchWin: 0,
+    matchLose: 0,
     lastTick: tick,
     lastX: player.x,
     lastY: player.y,
@@ -85,6 +88,7 @@ function wrapAngle(a) {
 export function advanceAnimState(
   anim, player, tick, isCelebrating, out,
   isGrieving = false, isReposition = false,
+  isMatchendWin = false, isMatchendLose = false,
 ) {
   const dt = tick > anim.lastTick ? tick - anim.lastTick : 0;
   const denom = dt > 0 ? dt : 1;
@@ -133,8 +137,10 @@ export function advanceAnimState(
     : 0;
   const swingRate = 0.2 + speed * 0.04;
 
-  const targetCelebrate = isCelebrating ? 1 : 0;
-  const targetGrieve    = isGrieving    ? 1 : 0;
+  const targetCelebrate = isCelebrating  ? 1 : 0;
+  const targetGrieve    = isGrieving     ? 1 : 0;
+  const targetMatchWin  = isMatchendWin  ? 1 : 0;
+  const targetMatchLose = isMatchendLose ? 1 : 0;
   const targetPushing   = player.pushTimer > 0 ? 1 : 0;
 
   // TURN / STOP detection — both inferred from per-frame deltas.
@@ -163,6 +169,8 @@ export function advanceAnimState(
   anim.amplitude += (targetAmplitude - anim.amplitude) * STICKMAN_SMOOTH;
   anim.celebrate += (targetCelebrate - anim.celebrate) * STICKMAN_SMOOTH;
   anim.grieve    += (targetGrieve    - anim.grieve)    * STICKMAN_SMOOTH;
+  anim.matchWin  += (targetMatchWin  - anim.matchWin)  * STICKMAN_SMOOTH;
+  anim.matchLose += (targetMatchLose - anim.matchLose) * STICKMAN_SMOOTH;
   anim.turn      += (targetTurn      - anim.turn)      * STICKMAN_SMOOTH;
   anim.stop      += (targetStop      - anim.stop)      * STICKMAN_SMOOTH;
   anim.pushing = targetPushing;
@@ -178,7 +186,9 @@ export function advanceAnimState(
   // future FSM extensions. Derived from physics flags only, not from
   // anim smoothing, so transitions are crisp.
   let stateName;
-  if (isCelebrating)                          stateName = 'CELEBRATE';
+  if (isMatchendWin)                          stateName = 'MATCHEND_WIN';
+  else if (isMatchendLose)                    stateName = 'MATCHEND_LOSE';
+  else if (isCelebrating)                     stateName = 'CELEBRATE';
   else if (isGrieving)                        stateName = 'GRIEVE';
   else if (isReposition && speed > 0.3)       stateName = 'REPOSITION';
   else if (isKicking)                         stateName = isAirkick ? 'KICK_AIR' : 'KICK_GROUND';
@@ -202,6 +212,8 @@ export function advanceAnimState(
   out.celebratePhase = anim.celebratePhase;
   out.grieve         = anim.grieve;
   out.grievePhase    = anim.grievePhase;
+  out.matchWin       = anim.matchWin;
+  out.matchLose      = anim.matchLose;
   out.turn           = anim.turn;
   out.stop           = anim.stop;
   out.pushing        = anim.pushing;

@@ -61,6 +61,16 @@ const STOP_BACK_TILT_MAX = 0.22;
 // Reads like a quick plant / centre-of-mass shift.
 const TURN_BODY_DIP_MAX = 1.4;  // world units subtracted from upperHipY at full turn
 
+// MATCHEND poses — applied at match-over (pauseState='matchend'
+// with state.winner set). Winner reads upright + arms raised in
+// triumph; loser reads head down + shoulders slumped forward.
+// Static (no sway/phase animation) — the match is decided, there's
+// nothing more to do.
+const MATCH_WIN_ARM_UPPER  =  2.3;    // ~132° — arms raised up-and-out to the sides
+const MATCH_WIN_ARM_LOWER  =  2.3;    // forearms continue the upper direction (straight arms)
+const MATCH_LOSE_TILT      =  0.30;   // rad — moderate forward slump
+const MATCH_LOSE_ARM_UPPER = -0.25;   // arms slightly behind vertical — hanging limp
+
 // Grieve (anti-celebration) shape — the loser falls to his knees,
 // hunches forward with both hands in front of his face, rocks
 // gently back and forth like he's crying.
@@ -153,6 +163,8 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   const grievePhase = animSnap.grievePhase || 0;
   const turn      = animSnap.turn || 0;
   const stop      = animSnap.stop || 0;
+  const matchWin  = animSnap.matchWin  || 0;
+  const matchLose = animSnap.matchLose || 0;
   const pushing   = animSnap.pushing;
   const isKicking = animSnap.isKicking;
   const isAirkick = animSnap.isAirkick;
@@ -201,8 +213,11 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   const stopTiltOffset = -STOP_BACK_TILT_MAX * stop;
   const turnHipDip     = TURN_BODY_DIP_MAX * turn;
 
+  // MATCHEND loser adds a moderate forward slump to the body.
+  const matchLoseTiltOffset = MATCH_LOSE_TILT * matchLose;
+
   // ── Body anchors (hip → neck → head) ─────────────────────
-  const upperTilt = walkTilt + pushTiltOffset + kickTiltOffset + stopTiltOffset;
+  const upperTilt = walkTilt + pushTiltOffset + kickTiltOffset + stopTiltOffset + matchLoseTiltOffset;
   const tiltC = Math.cos(upperTilt);
   const tiltS = Math.sin(upperTilt);
 
@@ -297,6 +312,31 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
       leftUpperYaw      = scratchPushPose.upperYaw;
       leftLowerYaw      = scratchPushPose.lowerYaw;
     }
+  }
+
+  // ── MATCHEND winner / loser overrides ───────────────────
+  // Winner: arms raised out to the sides in triumph. Loser: arms
+  // limp at the sides + forward slump (tilt applied above).
+  // Skipped when celebrate or grieve are active (per-goal reactions
+  // take priority over the final-match pose).
+  if (matchWin > 0.001 && celeb < 0.001 && grieve < 0.001) {
+    const w = matchWin;
+    leftUpperArmAngle  = leftUpperArmAngle  * (1 - w) + MATCH_WIN_ARM_UPPER * w;
+    leftLowerArmAngle  = leftLowerArmAngle  * (1 - w) + MATCH_WIN_ARM_LOWER * w;
+    rightUpperArmAngle = rightUpperArmAngle * (1 - w) + MATCH_WIN_ARM_UPPER * w;
+    rightLowerArmAngle = rightLowerArmAngle * (1 - w) + MATCH_WIN_ARM_LOWER * w;
+    // Arms spread outward: left yaws outward (negative), right yaws outward (positive).
+    // (Sign convention matches the grim fix — inward is + for left, − for right,
+    //  so outward is the mirror.)
+    leftUpperYaw  = leftUpperYaw  * (1 - w) + (-0.25) * w;
+    rightUpperYaw = rightUpperYaw * (1 - w) + (+0.25) * w;
+  }
+  if (matchLose > 0.001 && celeb < 0.001 && grieve < 0.001) {
+    const l = matchLose;
+    leftUpperArmAngle  = leftUpperArmAngle  * (1 - l) + MATCH_LOSE_ARM_UPPER * l;
+    rightUpperArmAngle = rightUpperArmAngle * (1 - l) + MATCH_LOSE_ARM_UPPER * l;
+    leftLowerArmAngle  = forearmAngleFor(leftUpperArmAngle);
+    rightLowerArmAngle = forearmAngleFor(rightUpperArmAngle);
   }
 
   // ── Grieve (anti-celebration) override ──────────────────

@@ -215,4 +215,36 @@ describe('animation/state', () => {
       assert.ok(Math.abs(snap.forwardZ - 1) < 1e-9);
     });
   });
+
+  describe('advanceAnimState — REPOSITION walk-back', () => {
+    it('rotates animation heading toward motion direction when repositioning', () => {
+      // Player facing +x but physics translates them in −x (stepReposition).
+      const p = makePlayer({ heading: 0 });
+      const a = createAnimState(0, p);
+      // Simulate 20 frames of leftward translation with heading still +x.
+      let snap;
+      for (let t = 1; t <= 20; t++) {
+        p.x = -t * 3;   // moving in −x
+        snap = advanceAnimState(a, p, t, false, {}, false, /*isReposition*/ true);
+      }
+      // Motion heading for −x is π. anim.animHeading should have
+      // converged toward π (or −π, same direction). forwardX should
+      // be near −1 (facing −x).
+      assert.ok(snap.forwardX < -0.7, `forwardX=${snap.forwardX} should face −x (~−1)`);
+      assert.equal(snap.state, 'REPOSITION');
+    });
+
+    it('falls back to physics heading when not repositioning', () => {
+      const p = makePlayer({ heading: 0 });
+      const a = createAnimState(0, p);
+      let snap;
+      for (let t = 1; t <= 10; t++) {
+        p.x = -t * 3;
+        snap = advanceAnimState(a, p, t, false, {}, false, /*isReposition*/ false);
+      }
+      // Player still faces +x (heading=0) even while moving −x.
+      assert.ok(Math.abs(snap.forwardX - 1) < 1e-6);
+      assert.notEqual(snap.state, 'REPOSITION');
+    });
+  });
 });

@@ -56,6 +56,10 @@ export function createAnimState(tick, player) {
     stop: 0,
     prevHeading: player.heading ?? 0,
     prevSpeed: 0,
+    // Animation-side smoothed heading — decoupled from physics
+    // heading during reposition so the stickman actually faces
+    // where it's walking instead of side-stepping.
+    animHeading: null,
     lastTick: tick,
     lastX: player.x,
     lastY: player.y,
@@ -78,7 +82,10 @@ function wrapAngle(a) {
  *  behaviour and lets teleporting scenarios zero out walk animation
  *  by syncing anim.lastX after a jump.
  */
-export function advanceAnimState(anim, player, tick, isCelebrating, out, isGrieving = false) {
+export function advanceAnimState(
+  anim, player, tick, isCelebrating, out,
+  isGrieving = false, isReposition = false,
+) {
   const dt = tick > anim.lastTick ? tick - anim.lastTick : 0;
   const denom = dt > 0 ? dt : 1;
   const effVx = (player.x - anim.lastX) / denom;
@@ -87,11 +94,31 @@ export function advanceAnimState(anim, player, tick, isCelebrating, out, isGriev
   anim.lastX = player.x;
   anim.lastY = player.y;
 
-  const heading = player.heading ?? 0;
+  const physicsHeading = player.heading ?? 0;
+  const speed = Math.sqrt(effVx * effVx + effVy * effVy);
+
+  // Animation heading — normally the physics heading, but during
+  // reposition the physics-side heading lags (stepReposition just
+  // translates position without updating heading). Face the motion
+  // direction instead so the stickman walks FACING kickoff instead
+  // of side-stepping. Smoothly interpolated via anim.animHeading
+  // so the turn doesn't snap.
+  let heading = physicsHeading;
+  if (isReposition && speed > 0.3) {
+    const motionHeading = Math.atan2(effVy * Z_STRETCH, effVx);
+    // Seed on first frame of reposition so we don't pop from an old
+    // physics heading to the new motion heading.
+    if (anim.animHeading == null) anim.animHeading = motionHeading;
+    const delta = wrapAngle(motionHeading - anim.animHeading);
+    anim.animHeading = wrapAngle(anim.animHeading + delta * STICKMAN_SMOOTH * 2);
+    heading = anim.animHeading;
+  } else {
+    // Not repositioning — track physics heading so re-entry into
+    // reposition smoothly interpolates from the current facing.
+    anim.animHeading = physicsHeading;
+  }
   const forwardX = Math.cos(heading);
   const forwardZ = Math.sin(heading);
-
-  const speed = Math.sqrt(effVx * effVx + effVy * effVy);
 
   // Walk tilt — sign from the component of motion along the player's
   // heading. Positive = moving forward; negative = moving backward.
@@ -151,14 +178,15 @@ export function advanceAnimState(anim, player, tick, isCelebrating, out, isGriev
   // future FSM extensions. Derived from physics flags only, not from
   // anim smoothing, so transitions are crisp.
   let stateName;
-  if (isCelebrating)              stateName = 'CELEBRATE';
-  else if (isGrieving)            stateName = 'GRIEVE';
-  else if (isKicking)             stateName = isAirkick ? 'KICK_AIR' : 'KICK_GROUND';
-  else if (player.pushTimer > 0)  stateName = 'PUSH';
-  else if (targetStop > 0.5)      stateName = 'STOP';
-  else if (targetTurn > 0.5)      stateName = 'TURN';
-  else if (speed > 0.5)           stateName = 'WALK';
-  else                            stateName = 'IDLE';
+  if (isCelebrating)                          stateName = 'CELEBRATE';
+  else if (isGrieving)                        stateName = 'GRIEVE';
+  else if (isReposition && speed > 0.3)       stateName = 'REPOSITION';
+  else if (isKicking)                         stateName = isAirkick ? 'KICK_AIR' : 'KICK_GROUND';
+  else if (player.pushTimer > 0)              stateName = 'PUSH';
+  else if (targetStop > 0.5)                  stateName = 'STOP';
+  else if (targetTurn > 0.5)                  stateName = 'TURN';
+  else if (speed > 0.5)                       stateName = 'WALK';
+  else                                        stateName = 'IDLE';
 
   if (!out) out = {};
   out.state          = stateName;

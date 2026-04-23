@@ -28,6 +28,13 @@ export const CELEB_PHASE_RATE = 0.25;
 // celebrate: ~80 ticks per cycle = ~1.3 s of gentle sway.
 export const GRIEVE_PHASE_RATE = 0.08;
 
+// TURN / STOP detection thresholds. Scales map raw angular velocity
+// (rad/tick) and deceleration (u/tick²) onto the 0..1 factor the
+// pose composer reads. Empirical — tuned against the locomotion
+// harness 'turn 180°' and 'hard stop' scenarios.
+export const TURN_ANGVEL_SCALE = 0.08;   // rad/tick that reads as "full turn"
+export const STOP_DECEL_SCALE  = 0.8;    // u/tick² deceleration that reads as "full stop brake"
+
 const TWO_PI = Math.PI * 2;
 
 /** Allocate a fresh per-player animation state. Call once per
@@ -44,10 +51,22 @@ export function createAnimState(tick, player) {
     pushing: 0,
     pushProgress: 0,
     prevPushTimer: 0,
+    // TURN + STOP detection history
+    turn: 0,
+    stop: 0,
+    prevHeading: player.heading ?? 0,
+    prevSpeed: 0,
     lastTick: tick,
     lastX: player.x,
     lastY: player.y,
   };
+}
+
+// Shortest-arc angle delta (−π, π].
+function wrapAngle(a) {
+  while (a > Math.PI) a -= TWO_PI;
+  while (a <= -Math.PI) a += TWO_PI;
+  return a;
 }
 
 /** Advance one frame of anim state in place. Returns a snapshot
@@ -91,6 +110,17 @@ export function advanceAnimState(anim, player, tick, isCelebrating, out, isGriev
   const targetGrieve    = isGrieving    ? 1 : 0;
   const targetPushing   = player.pushTimer > 0 ? 1 : 0;
 
+  // TURN / STOP detection — both inferred from per-frame deltas.
+  // angVel = how fast the heading is swinging this tick; decel =
+  // how much speed dropped this tick. Scaled by the shared scales
+  // above so the smoothed `turn` / `stop` live in [0, 1].
+  const angVel = Math.abs(wrapAngle(heading - anim.prevHeading)) / denom;
+  const decel  = Math.max(0, (anim.prevSpeed - speed) / denom);
+  anim.prevHeading = heading;
+  anim.prevSpeed   = speed;
+  const targetTurn = Math.min(1, angVel / TURN_ANGVEL_SCALE);
+  const targetStop = Math.min(1, decel  / STOP_DECEL_SCALE);
+
   // Push-progress edge detection: reset to 0 on the rising edge of
   // pushTimer, then accumulate dt while it's positive.
   if (player.pushTimer > 0) {
@@ -106,6 +136,8 @@ export function advanceAnimState(anim, player, tick, isCelebrating, out, isGriev
   anim.amplitude += (targetAmplitude - anim.amplitude) * STICKMAN_SMOOTH;
   anim.celebrate += (targetCelebrate - anim.celebrate) * STICKMAN_SMOOTH;
   anim.grieve    += (targetGrieve    - anim.grieve)    * STICKMAN_SMOOTH;
+  anim.turn      += (targetTurn      - anim.turn)      * STICKMAN_SMOOTH;
+  anim.stop      += (targetStop      - anim.stop)      * STICKMAN_SMOOTH;
   anim.pushing = targetPushing;
   anim.phase          = (anim.phase          + swingRate        * dt) % TWO_PI;
   anim.celebratePhase = (anim.celebratePhase + CELEB_PHASE_RATE  * dt) % TWO_PI;
@@ -123,6 +155,8 @@ export function advanceAnimState(anim, player, tick, isCelebrating, out, isGriev
   else if (isGrieving)            stateName = 'GRIEVE';
   else if (isKicking)             stateName = isAirkick ? 'KICK_AIR' : 'KICK_GROUND';
   else if (player.pushTimer > 0)  stateName = 'PUSH';
+  else if (targetStop > 0.5)      stateName = 'STOP';
+  else if (targetTurn > 0.5)      stateName = 'TURN';
   else if (speed > 0.5)           stateName = 'WALK';
   else                            stateName = 'IDLE';
 
@@ -140,6 +174,8 @@ export function advanceAnimState(anim, player, tick, isCelebrating, out, isGriev
   out.celebratePhase = anim.celebratePhase;
   out.grieve         = anim.grieve;
   out.grievePhase    = anim.grievePhase;
+  out.turn           = anim.turn;
+  out.stop           = anim.stop;
   out.pushing        = anim.pushing;
   out.pushProgress   = anim.pushProgress;
   out.isKicking      = isKicking;

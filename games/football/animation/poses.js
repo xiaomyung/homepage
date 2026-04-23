@@ -53,6 +53,14 @@ import {
 const CELEB_JUMP_PEAK  = 0.55 * STICKMAN_GLYPH_SIZE;
 const CELEB_LEG_SPREAD = 0.55;
 
+// STOP pose — subtle backward body lean when the player is
+// decelerating sharply (smoothed `stop` factor). Maxes out at this
+// many radians of back-tilt at full brake.
+const STOP_BACK_TILT_MAX = 0.22;
+// TURN pose — slight forward body dip while pivoting in place.
+// Reads like a quick plant / centre-of-mass shift.
+const TURN_BODY_DIP_MAX = 1.4;  // world units subtracted from upperHipY at full turn
+
 // Grieve (anti-celebration) shape — the loser falls to his knees,
 // hunches forward with both hands in front of his face, rocks
 // gently back and forth like he's crying.
@@ -143,6 +151,8 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   const grieve    = animSnap.grieve || 0;
   const grieveInv = 1 - grieve;
   const grievePhase = animSnap.grievePhase || 0;
+  const turn      = animSnap.turn || 0;
+  const stop      = animSnap.stop || 0;
   const pushing   = animSnap.pushing;
   const isKicking = animSnap.isKicking;
   const isAirkick = animSnap.isAirkick;
@@ -183,12 +193,20 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     kickSupportCrouch = kickSupportCrouchAt(kickT);
   }
 
+  // ── STOP + TURN additive layers ──────────────────────────
+  // A sharp decel leans the body back to sell the brake; an active
+  // in-place turn adds a subtle hip dip so the figure reads as
+  // planting + pivoting. Both are smooth 0..1 factors that vanish
+  // within a few frames of the transient ending.
+  const stopTiltOffset = -STOP_BACK_TILT_MAX * stop;
+  const turnHipDip     = TURN_BODY_DIP_MAX * turn;
+
   // ── Body anchors (hip → neck → head) ─────────────────────
-  const upperTilt = walkTilt + pushTiltOffset + kickTiltOffset;
+  const upperTilt = walkTilt + pushTiltOffset + kickTiltOffset + stopTiltOffset;
   const tiltC = Math.cos(upperTilt);
   const tiltS = Math.sin(upperTilt);
 
-  const hipBaseY  = STICKMAN_LIMB_FULL_H + bob * STICKMAN_GLYPH_SIZE + jumpY + airLift;
+  const hipBaseY  = STICKMAN_LIMB_FULL_H + bob * STICKMAN_GLYPH_SIZE + jumpY + airLift - turnHipDip;
   const upperHipY = hipBaseY + pushBodyDip + kickBodyDip;
 
   const torsoH     = STICKMAN_SHOULDER_OFY;

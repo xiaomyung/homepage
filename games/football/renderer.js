@@ -17,9 +17,19 @@ import * as THREE from 'https://unpkg.com/three@0.164.0/build/three.module.js';
 import {
   staminaDiscRadius,
   updateStaminaClipPlane,
-  easeInOut,
-  easeOut,
 } from './renderer-math.js';
+import {
+  KICK_FIRE_T, KICK_STRIKE_END_T, KICK_ARM_SWING, KICK_ARM_OPP_FRAC,
+  KICK_BACK_TILT, KICK_FWD_TILT, KICK_CROUCH_DEPTH,
+  KICK_HIP_TWIST_MAX, KICK_SUPPORT_CROUCH, KICK_SUPPORT_SHIN_RATIO,
+  AIRKICK_STRIKE_END_T, AIRKICK_BACK_TILT,
+  PUSH_TOTAL_TICKS, PUSH_RAISE_T, PUSH_WINDUP_T, PUSH_STRIKE_T,
+  PUSH_SETTLE_T, PUSH_WINDUP_DIST, PUSH_CROUCH_DEPTH, PUSH_HOP_DIST,
+  PUSH_BACK_TILT, PUSH_FWD_TILT,
+  kickArmAngleAt, kickDipAt, kickTiltAt, airkickTiltAt,
+  kickHipTwistAt, kickSupportCrouchAt,
+  pushBodyDipAt, pushHopAt, pushBodyTiltAt,
+} from './animation/curves.js';
 import {
   createField,
   FIELD_HEIGHT,
@@ -115,61 +125,9 @@ function forearmAngleFor(upperArmAngle) {
 const CELEB_PHASE_RATE = 0.25;           // rad per tick; ~25 ticks per hop
 const CELEB_JUMP_PEAK  = 0.55 * STICKMAN_GLYPH_SIZE;
 const CELEB_LEG_SPREAD = 0.55;           // leg outward angle at jump apex (rad)
-// Push pose — a one-armed boxing punch (jab / hook / uppercut).
-// The striking arm follows a variant-specific keyframe trajectory
-// in `pushArmPose` (physics.js). These scripted curves drive the
-// SUPPORTING body english (crouch / tilt / hop / pivot) — they
-// animate the non-striking side of the rig only.
-// Phases over normalized progress t ∈ [0, 1]:
-//   [0,        RAISE_T]     raise:   body inits, pivot 0
-//   [RAISE_T,  WINDUP_T]    windup:  pivot slides 0 → -WINDUP_DIST
-//   [WINDUP_T, STRIKE_T]    strike:  pivot snaps -WINDUP → +STRIKE (explosive hop)
-//   [STRIKE_T, SETTLE_T]    settle:  pivot +STRIKE → 0
-//   [SETTLE_T, LOWER_T]     hold:    pivot 0
-//   [LOWER_T,  1]           lower:   body returns to neutral
-const PUSH_TOTAL_TICKS    = 18;             // matches physics PUSH_ANIM_MS (300ms / TICK_MS)
-const PUSH_RAISE_T        = 0.15;
-const PUSH_WINDUP_T       = 0.35;
-const PUSH_STRIKE_T       = 0.50;
-const PUSH_SETTLE_T       = 0.70;
-const PUSH_LOWER_T        = 0.85;
-const PUSH_WINDUP_DIST    = 0.70 * STICKMAN_GLYPH_SIZE;  // pivot pull-back
-const PUSH_CROUCH_DEPTH   = 0.30 * STICKMAN_GLYPH_SIZE;  // upper body dip during windup
-const PUSH_HOP_DIST       = 0.40 * STICKMAN_GLYPH_SIZE;  // whole body hop on strike
-const PUSH_BACK_TILT      = 0.28;                        // rad — body leans back during windup
-const PUSH_FWD_TILT       = 0.42;                        // rad — body leans forward on strike
-
-// Kick body-english cosmetics. The leg pose itself is IK'd by
-// `kickLegPose` from physics.js (target = ball); what's here are
-// the counter-balance arm swing, body dip, and back/forward tilt
-// that sell the weight transfer. `KICK_FIRE_T` / `KICK_STRIKE_END_T`
-// gate the arm / dip / tilt curves on normalized t ∈ [0, 1].
-const KICK_FIRE_T         = KICK_WINDUP_MS / KICK_DURATION_MS;
-const KICK_STRIKE_SPAN_T  = 0.15;
-const KICK_STRIKE_END_T   = Math.min(0.95, KICK_FIRE_T + KICK_STRIKE_SPAN_T);
-const KICK_ARM_SWING      =  Math.PI * 0.45;             // rad — counter-arm forward throw
-const KICK_ARM_OPP_FRAC   = 0.35;                        // same-side arm small back-swing
-const KICK_BACK_TILT      = 0.12;                        // rad — body lean back during windup
-const KICK_FWD_TILT       = 0.22;                        // rad — body lean forward on strike
-const KICK_CROUCH_DEPTH   = 0.12 * STICKMAN_GLYPH_SIZE;  // body dip during windup
-
-// Airkick body cosmetics. The leap lifts the figure via
-// `player.airZ`; the leg itself comes from IK. Tilt is a long back-
-// lean that holds through the strike window.
-const AIRKICK_STRIKE_SPAN_T = 0.20;
-const AIRKICK_STRIKE_END_T = Math.min(0.95, AIRKICK_PEAK_FRAC + AIRKICK_STRIKE_SPAN_T);
-const AIRKICK_BACK_TILT    = 0.55;                       // rad — body leans way back on volley
-
-// Whole-body kick motion: pelvis twists around the vertical axis
-// (right hip pulls back through windup, snaps forward on strike);
-// the planted (support) leg bends slightly during strike to absorb
-// the reaction force.
-const KICK_HIP_TWIST_MAX  = Math.PI * 0.11;              // ~20° at windup peak
-const KICK_SUPPORT_CROUCH = 0.2;                          // rad — upper-leg forward on support
-// Shin/thigh ratio for the knee-out crouch: with `lowerAngle = -N·upperAngle`
-// (for U=L legs) the foot lands directly under the hip when N=2. Keeps the
-// foot planted while the knee pokes forward.
-const KICK_SUPPORT_SHIN_RATIO = 2;
+// Push + kick + airkick tuning constants and the body-english curve
+// functions all live in `animation/curves.js` (pure module, testable
+// under node). Imported at the top of this file.
 // Ball visual radius comes straight from physics.js so the rendered
 // sphere and the collision envelope are the same object — no drift.
 const BALL_VISUAL_RADIUS = BALL_RADIUS;
@@ -1972,166 +1930,8 @@ export class Renderer {
 
 /* ── Helpers ───────────────────────────────────────────────── */
 
-/**
- * Upper-body crouch depth during push. Body drops while the pivot
- * pulls back, snaps upright during the strike, settles at 0. Negative
- * values are subtracted from the upper body's Y so a negative result
- * means "lower than neutral."
- */
-function pushBodyDipAt(t) {
-  if (t < PUSH_RAISE_T) return 0;
-  if (t < PUSH_WINDUP_T) {
-    const p = (t - PUSH_RAISE_T) / (PUSH_WINDUP_T - PUSH_RAISE_T);
-    return -PUSH_CROUCH_DEPTH * easeOut(p);
-  }
-  if (t < PUSH_STRIKE_T) {
-    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
-    return -PUSH_CROUCH_DEPTH * (1 - p * p);
-  }
-  return 0;
-}
-
-/**
- * Whole-body horizontal hop during push. 0 during raise/windup, springs
- * forward with quadratic acceleration during strike, decays during settle.
- * Magnitude only — multiply by pushDir outside.
- */
-function pushHopAt(t) {
-  if (t < PUSH_WINDUP_T) return 0;
-  if (t < PUSH_STRIKE_T) {
-    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
-    return PUSH_HOP_DIST * p * p;
-  }
-  if (t < PUSH_SETTLE_T) {
-    const p = (t - PUSH_STRIKE_T) / (PUSH_SETTLE_T - PUSH_STRIKE_T);
-    return PUSH_HOP_DIST * (1 - easeInOut(p));
-  }
-  return 0;
-}
-
-/**
- * Body lean along the player's heading as a signed "forward amount":
- * negative = lean back (windup loading), positive = lean forward
- * (strike release). Added directly to the walk-tilt term because
- * both live in the same heading-relative (forward, up) frame.
- */
-function pushBodyTiltAt(t) {
-  if (t < PUSH_RAISE_T) return 0;
-  if (t < PUSH_WINDUP_T) {
-    const p = (t - PUSH_RAISE_T) / (PUSH_WINDUP_T - PUSH_RAISE_T);
-    return -PUSH_BACK_TILT * easeOut(p);
-  }
-  if (t < PUSH_STRIKE_T) {
-    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
-    return -PUSH_BACK_TILT + (PUSH_BACK_TILT + PUSH_FWD_TILT) * (p * p);
-  }
-  if (t < PUSH_SETTLE_T) {
-    const p = (t - PUSH_STRIKE_T) / (PUSH_SETTLE_T - PUSH_STRIKE_T);
-    return PUSH_FWD_TILT * (1 - easeInOut(p));
-  }
-  return 0;
-}
-
-/* ── Kick body-english curves ─────────────────────────────── */
-
-/**
- * Counter-balance arm swing: forward during windup + strike, returns
- * to 0 during recovery. Same shape for ground and airkick — the arm
- * doesn't need airkick-specific tuning because it isn't the load-
- * bearing limb.
- */
-function kickArmAngleAt(t) {
-  if (t < KICK_FIRE_T) {
-    const p = t / KICK_FIRE_T;
-    return KICK_ARM_SWING * easeInOut(p);
-  }
-  if (t < KICK_STRIKE_END_T) return KICK_ARM_SWING;
-  const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
-  return KICK_ARM_SWING * (1 - easeInOut(p));
-}
-
-/**
- * Body dip: crouch into the windup, spring back up on strike, settle
- * during recovery. Negative values lower the upper body.
- */
-function kickDipAt(t) {
-  if (t < KICK_FIRE_T) {
-    const p = t / KICK_FIRE_T;
-    return -KICK_CROUCH_DEPTH * easeOut(p);
-  }
-  if (t < KICK_STRIKE_END_T) {
-    const p = (t - KICK_FIRE_T) / (KICK_STRIKE_END_T - KICK_FIRE_T);
-    return -KICK_CROUCH_DEPTH * (1 - p * p);
-  }
-  return 0;
-}
-
-/**
- * Body tilt during ground kick: lean back during windup, flip forward
- * through strike, settle during recovery.
- */
-function kickTiltAt(t) {
-  if (t < KICK_FIRE_T) {
-    const p = t / KICK_FIRE_T;
-    return -KICK_BACK_TILT * easeOut(p);
-  }
-  if (t < KICK_STRIKE_END_T) {
-    const p = (t - KICK_FIRE_T) / (KICK_STRIKE_END_T - KICK_FIRE_T);
-    return -KICK_BACK_TILT + (KICK_BACK_TILT + KICK_FWD_TILT) * (p * p);
-  }
-  const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
-  return KICK_FWD_TILT * (1 - easeInOut(p));
-}
-
-/**
- * Body tilt during airkick: big back lean that holds through the
- * leap, settles as the player lands.
- */
-function airkickTiltAt(t) {
-  if (t < AIRKICK_PEAK_FRAC) {
-    const p = t / AIRKICK_PEAK_FRAC;
-    return -AIRKICK_BACK_TILT * easeOut(p);
-  }
-  if (t < AIRKICK_STRIKE_END_T) return -AIRKICK_BACK_TILT;
-  const p = (t - AIRKICK_STRIKE_END_T) / (1 - AIRKICK_STRIKE_END_T);
-  return -AIRKICK_BACK_TILT * (1 - easeInOut(p));
-}
-
-/**
- * Pelvis twist around the vertical axis. +angle rotates the right
- * hip back (and left hip forward) — the wind-up position for a
- * right-footed kick. Strike snaps the hip through to −MAX (right
- * hip forward, follow-through); recovery eases back to 0. Shared
- * between ground and airkick.
- */
-function kickHipTwistAt(t) {
-  if (t < KICK_FIRE_T) {
-    const p = t / KICK_FIRE_T;
-    return KICK_HIP_TWIST_MAX * easeInOut(p);
-  }
-  if (t < KICK_STRIKE_END_T) {
-    const p = (t - KICK_FIRE_T) / (KICK_STRIKE_END_T - KICK_FIRE_T);
-    return KICK_HIP_TWIST_MAX * (1 - 2 * easeInOut(p));
-  }
-  const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
-  return -KICK_HIP_TWIST_MAX * (1 - easeInOut(p));
-}
-
-/**
- * Support-leg (planted, non-kicking) micro-crouch. Kicks in at the
- * strike phase and fades through recovery. Used as the upper-leg
- * forward angle; the shin rotates the opposite way to keep the foot
- * roughly planted under the hip (knee-out crouch).
- */
-function kickSupportCrouchAt(t) {
-  if (t < KICK_FIRE_T) return 0;
-  if (t < KICK_STRIKE_END_T) {
-    const p = (t - KICK_FIRE_T) / (KICK_STRIKE_END_T - KICK_FIRE_T);
-    return KICK_SUPPORT_CROUCH * easeInOut(p);
-  }
-  const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
-  return KICK_SUPPORT_CROUCH * (1 - easeInOut(p));
-}
+// Body-english curves (pushBodyDipAt, kickTiltAt, airkickTiltAt, …)
+// moved to `animation/curves.js` — imported at the top of this file.
 
 function rgb(hex) {
   const h = hex.replace('#', '');

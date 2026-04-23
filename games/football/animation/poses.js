@@ -57,20 +57,20 @@ const CELEB_LEG_SPREAD = 0.55;
 // hunches forward with both hands in front of his face, rocks
 // gently back and forth like he's crying.
 //
-// Kneel geometry: thighs nearly vertical (slightly tilted back),
-// shins horizontal pointing back under the body. Knees on the
-// ground means hip height = STICKMAN_UPPER_LEG (≈14).
-const GRIEVE_KNEEL_DROP = 6;        // standing hipBaseY=20 → kneeling hipBaseY=14
+// Kneel geometry: both shins lie FLAT on the ground pointing back
+// (parallel to ground), thighs lean forward 30° so the hip sits
+// over-and-ahead of the knees. That gives a 60° interior knee
+// bend while keeping the shins on the ground — so the figure
+// rests on both knees and shins, not teetering on the knee joint.
+//
+// Hip height above ground = U · cos(30°) ≈ 12.12.
+const GRIEVE_KNEEL_DROP = 7.88;     // standing hipBaseY=20 → kneeling hipBaseY≈12.12
 const GRIEVE_BASE_TILT  = 0.45;     // rad — forward body lean
 const GRIEVE_ROCK_AMP   = 0.10;     // rad — gentle sway back and forth
 // Leg angles (world-space in the forward-up plane):
 //   0 = straight down, +π/2 = forward, −π/2 = backward
-// Upper leg slightly tilted backward from vertical; lower leg
-// folded back under the thigh with interior knee angle ≈ 60°
-// (instead of the 90° perpendicular seiza kneel). Heels come up
-// off the ground — it's the "tight kneel of despair" shape.
-const GRIEVE_LEG_UPPER = -0.10;     // thigh ~6° behind vertical
-const GRIEVE_LEG_LOWER = -(2 * Math.PI / 3);  // shin folded back ~120° from vertical → 60° knee bend
+const GRIEVE_LEG_UPPER = Math.PI / 6;     // +30° — thigh tilted forward (hip forward of knee)
+const GRIEVE_LEG_LOWER = -Math.PI / 2;    // shin horizontal backward, parallel to ground
 
 // Arm angles for fists-on-face. Solved analytically so the hand
 // target lands at roughly (forward=+4, up=+5) from the shoulder —

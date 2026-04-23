@@ -83,7 +83,7 @@ const GRIEVE_LEG_LOWER = -Math.PI / 2;    // shin horizontal backward, parallel 
 const GRIEVE_ARM_UPPER     = 1.22;    // 70° — upper arm forward, slight down
 const GRIEVE_ARM_LOWER     = -2.57;   // −147° — forearm bent back-and-up to face
 const GRIEVE_ARM_UPPER_YAW = 0.28;    // inward tilt of the upper-arm plane — elbows closer
-const GRIEVE_ARM_LOWER_YAW = 0.45;    // more inward on the forearm → fists meet at face centre
+const GRIEVE_ARM_LOWER_YAW = 0.80;    // strong inward yaw on the forearms → fists touch at the face centre
 
 /** Allocate a reusable pose scratch object. Store one on each
  *  renderer and pass it to composeStickmanPose each frame. */

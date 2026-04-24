@@ -233,21 +233,57 @@ test('push lands when players are in contact range', () => {
   state.p1.x = state.field.midX - 10;
   state.p2.x = state.field.midX + 10;
   state.p1.y = state.p2.y = FIELD_HEIGHT / 2;
+  const startX = state.p2.x;
 
   tick(state, pushAction(1), NOOP);
-
-  // p2 should have non-zero pushVx after the tick
-  assert.ok(
-    state.p2.pushVx !== 0,
-    `push did not land: p2.pushVx=${state.p2.pushVx}`
-  );
-  // The pusher should have entered push cooldown
-  assert.ok(state.p1.pushTimer > 0, 'pusher should have cooldown');
-  // Events should include a 'push' event
+  // Push event fires at tryPush (animation start) — visible tick 1.
   assert.ok(
     state.events.some(e => e.type === 'push'),
     `no push event emitted: ${JSON.stringify(state.events)}`
   );
+  assert.ok(state.p1.pushTimer > 0, 'pusher should have cooldown');
+
+  // Impulse itself is deferred to the strike tick (mid-animation).
+  // Tick forward through the strike window and verify the victim
+  // is actually displaced — the contract the user cares about.
+  for (let i = 0; i < 10; i++) tick(state, NOOP, NOOP);
+  assert.ok(
+    state.p2.x > startX,
+    `push did not displace victim: p2.x=${state.p2.x}, startX=${startX}`,
+  );
+});
+
+test('push impulse is deferred to the strike tick, not applied on windup', () => {
+  // Pushed player should NOT move during the windup phase — the
+  // impulse only lands at the animation's strike tick (mid-
+  // animation). Previously the victim jumped on frame 1, before
+  // the arm even swung forward.
+  const state = freshState();
+  state.p1.x = state.field.midX - 10;
+  state.p2.x = state.field.midX + 10;
+  state.p1.y = state.p2.y = FIELD_HEIGHT / 2;
+  const startX = state.p2.x;
+
+  tick(state, pushAction(1), NOOP);
+  assert.equal(
+    state.p2.pushVx, 0,
+    `impulse must not fire on tick 1 (windup), got pushVx=${state.p2.pushVx}`,
+  );
+  assert.equal(
+    state.p2.x, startX,
+    `victim must not move on tick 1, moved to ${state.p2.x}`,
+  );
+
+  // Strike fires somewhere in ticks 2-7 (strike threshold = 195 ms,
+  // timer decrements 16 ms per tick). Keep ticking until pushVx
+  // becomes non-zero — this is the strike moment.
+  let strikeTick = -1;
+  for (let i = 0; i < 10; i++) {
+    tick(state, NOOP, NOOP);
+    if (state.p2.pushVx !== 0 && strikeTick === -1) strikeTick = i + 2;
+  }
+  assert.ok(strikeTick >= 2 && strikeTick <= 8,
+    `strike tick out of expected range: ${strikeTick}`);
 });
 
 test('push does not land when players are out of range', () => {
@@ -935,14 +971,17 @@ test('push lands when players overlap in depth (touching)', () => {
   state.p2.x = state.field.midX + 8;
   state.p1.y = 10;
   state.p2.y = state.p1.y + PLAYER_HEIGHT - 0.5;  // 0.5 units of overlap
+  const startX = state.p2.x;
 
   tick(state, pushAction(1), NOOP);
-
-  assert.ok(
-    state.p2.pushVx !== 0,
-    `push should land when players touch in depth: pushVx=${state.p2.pushVx}`,
-  );
   assert.ok(state.events.some(e => e.type === 'push'), 'push event expected on touch');
+
+  // Strike tick is mid-animation — tick through it to see displacement.
+  for (let i = 0; i < 10; i++) tick(state, NOOP, NOOP);
+  assert.ok(
+    state.p2.x !== startX,
+    `push should displace victim on contact: p2.x=${state.p2.x}`,
+  );
 });
 
 test('kick activates when ball is within hip reach', () => {

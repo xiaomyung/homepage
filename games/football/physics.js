@@ -274,6 +274,12 @@ function initPlayer(p, side, field) {
   p.pushTargetX = 0; p.pushTargetY = 0; p.pushTargetZ = 0;
   p.pushArm = 'right';
   p.pushType = 'jab';
+  // Pending push impulse — committed at the animation's strike tick
+  // (`advancePush`), not at push start, so the victim only moves on
+  // actual contact rather than on the windup frame.
+  p.pendingPushVictim = null;
+  p.pendingPushVx = 0;
+  p.pendingPushVy = 0;
   p.heading = side === 'left' ? 0 : Math.PI;
   p.prevTargetDirX = 0;
   p.prevTargetDirY = 0;
@@ -491,13 +497,34 @@ export const ACTION_PUSH_GATE  = 7;
 export const ACTION_PUSH_POWER = 8;
 export const NN_OUTPUT_SIZE    = 9;
 
+/** Strike threshold in ms of `pushTimer` remaining. The arm reaches
+ *  the victim at `t = PUSH_WINDUP_FRAC` of the animation; pushTimer
+ *  counts DOWN from PUSH_ANIM_MS, so the strike fires when the timer
+ *  first drops to (or past) PUSH_ANIM_MS * (1 - PUSH_WINDUP_FRAC). */
+const PUSH_STRIKE_TIMER = 195; // PUSH_ANIM_MS * (1 - PUSH_WINDUP_FRAC) = 300 * 0.65
+
 /** Tick a push cooldown forward. Returns true if the player is still
  *  mid-push and should not accept new actions this tick — mirrors
- *  `advanceKick`'s in-flight-lock contract. */
+ *  `advanceKick`'s in-flight-lock contract. Also commits the pending
+ *  push impulse to the victim at the strike tick, so the victim only
+ *  moves on contact rather than on the windup frame. */
 function advancePush(p) {
   if (p.pushTimer <= 0) return false;
+  const prevTimer = p.pushTimer;
   p.pushTimer -= TICK_MS;
   if (p.pushTimer < 0) p.pushTimer = 0;
+  // Strike fires on the single tick where pushTimer crosses the
+  // threshold. One-shot by construction: after committing, the
+  // pending pointer is nulled so subsequent ticks through the
+  // recovery phase do not re-apply the impulse.
+  if (p.pendingPushVictim && prevTimer > PUSH_STRIKE_TIMER && p.pushTimer <= PUSH_STRIKE_TIMER) {
+    const victim = p.pendingPushVictim;
+    victim.pushVx = p.pendingPushVx;
+    victim.pushVy = p.pendingPushVy;
+    p.pendingPushVictim = null;
+    p.pendingPushVx = 0;
+    p.pendingPushVy = 0;
+  }
   return true;
 }
 
@@ -2004,8 +2031,13 @@ function tryPush(state, pusher, victim, powerNorm) {
   const pMag    = Math.sqrt(fxWorld * fxWorld + fyPhys * fyPhys) || 1;
   pusher.pushTimer = PUSH_ANIM_MS;
 
-  victim.pushVx = (fxWorld / pMag) * force;
-  victim.pushVy = (fyPhys  / pMag) * force;
+  // Schedule the impulse for the strike tick instead of applying now.
+  // The pending pointer + ∂v survives across ticks on the pusher; the
+  // strike tick in `advancePush` writes them into the victim's active
+  // push fields so physics applies the motion only on contact.
+  pusher.pendingPushVictim = victim;
+  pusher.pendingPushVx = (fxWorld / pMag) * force;
+  pusher.pendingPushVy = (fyPhys  / pMag) * force;
 
   // Punch animation state. Pick the arm on the same side as the
   // victim (perpendicular to the pusher's heading) so the swing
@@ -2246,6 +2278,9 @@ function resetToKickoff(state) {
     p.pushVx = 0; p.pushVy = 0;
     p.airZ = 0;
     p.pushTimer = 0;
+    p.pendingPushVictim = null;
+    p.pendingPushVx = 0;
+    p.pendingPushVy = 0;
     p.kick.active = false;
     p.kick.timer = 0;
     p.kick.fired = false;

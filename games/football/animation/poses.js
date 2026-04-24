@@ -238,7 +238,11 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   const reactType   = animSnap.reactType  || 'jab';
   const rDirX       = animSnap.reactDirX  || 0;
   const rDirZ       = animSnap.reactDirZ  || 0;
-  const reactInt    = reactForce * (1 - reactT) * (1 - reactT);
+  // Intensity envelope. Force is compressed by sqrt so even a light
+  // push (force ≈ 0.1) produces a visible recoil (intensity ≈ 0.3),
+  // while full-force hits still top out at 1.0. Time decay is
+  // quadratic — sharp spike + gradual recovery.
+  const reactInt    = Math.sqrt(reactForce) * (1 - reactT) * (1 - reactT);
   // `fwdDot` > 0 ⇒ impulse goes along the victim's heading (hit from
   // behind). `latDot` sign picks which side the punch came from.
   const fwdDot = rDirX * forwardX + rDirZ * forwardZ;

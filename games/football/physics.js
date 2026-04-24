@@ -1888,9 +1888,10 @@ const UPPERCUT_REST   = [0,          0,           0, 0];
 const UPPERCUT_WINDUP = [-0.3,       1.7,         0, 0];
 // Strike: upper arm rises forward-and-up (elbow well above shoulder),
 // forearm whips almost straight up so the fist ends clearly above the
-// head, tucked toward the pusher's centerline — a chin-height punch
-// driving up through the target.
-const UPPERCUT_STRIKE = [2.0,        3.0,         0, 0];
+// head. Yaw tucks the arm inward toward the pusher's centerline so
+// the right-arm fist finishes on the pusher's LEFT (and vice versa)
+// — a chin-height punch driving up through the target from below.
+const UPPERCUT_STRIKE = [2.0,        3.0,         -0.50, -0.80];
 
 function writePose(out, kf, armSign) {
   out.upperAngle = kf[0];

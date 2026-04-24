@@ -17,6 +17,7 @@ import {
   PLAYER_HEIGHT,
   PLAYER_WIDTH,
   BALL_RADIUS,
+  GOAL_POST_RADIUS,
   MAX_PLAYER_SPEED,
   Z_STRETCH,
   TICK_MS,
@@ -819,6 +820,88 @@ test('head-on post hit at the centre of the post bounces straight back', () => {
     `head-on hit must have minimal y deflection, got vy=${state.ball.vy}`,
   );
   assert.equal(state.scoreR, 0);
+});
+
+/* ── Exterior goal faces are solid from outside.
+ *
+ * Every non-mouth face of the goal (back wall, 2 side walls, roof)
+ * must bounce balls that approach from outside. Without these
+ * colliders a ball arriving off-axis would tunnel through a side net
+ * or the roof and spawn inside the goal volume (a phantom score).
+ */
+
+test('airborne ball hitting the lower side net from outside bounces back', () => {
+  const state = freshState();
+  const f = state.field;
+  // Ball inside goal's x-range but below mouth y, airborne at side
+  // net height, moving INTO the net from below.
+  state.ball.x = f.goalLineL - 20;
+  state.ball.y = 6;                         // mouthYMin=13, 7 units below
+  state.ball.z = 10;
+  state.ball.vx = 0; state.ball.vy = 8; state.ball.vz = 0;
+  state.ball.frozen = false;
+  tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vy < 0, `lower side net must flip vy, got ${state.ball.vy}`);
+  assert.ok(
+    state.ball.y < f.goalMouthYMin,
+    `ball must stay outside mouth y, got y=${state.ball.y}`,
+  );
+  assert.equal(state.ball.inGoal, false);
+  assert.equal(state.scoreR, 0);
+});
+
+test('airborne ball hitting the upper side net from outside bounces back', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = f.goalLineL - 20;
+  state.ball.y = 50;                        // mouthYMax=41.6, 8.4 units above
+  state.ball.z = 10;
+  state.ball.vx = 0; state.ball.vy = -8; state.ball.vz = 0;
+  state.ball.frozen = false;
+  tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vy > 0, `upper side net must flip vy, got ${state.ball.vy}`);
+  assert.ok(
+    state.ball.y > f.goalMouthYMax,
+    `ball must stay outside mouth y, got y=${state.ball.y}`,
+  );
+  assert.equal(state.ball.inGoal, false);
+});
+
+test('ball dropping onto the roof from above bounces up', () => {
+  const state = freshState();
+  const f = state.field;
+  // Directly above the interior of the goal, falling.
+  state.ball.x = f.goalLineL - 20;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = f.goalMouthZMax + 6;       // 6 units above roof
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = -3;
+  state.ball.frozen = false;
+  for (let i = 0; i < 3; i++) tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vz > 0, `roof must flip vz positive, got ${state.ball.vz}`);
+  assert.ok(
+    state.ball.z >= f.goalMouthZMax,
+    `ball must not tunnel below roof, got z=${state.ball.z}`,
+  );
+  assert.equal(state.ball.inGoal, false);
+});
+
+test('bars are solid from INSIDE — crossbar bounces ball aligned directly below it', () => {
+  const state = freshState();
+  const f = state.field;
+  // Ball directly below the crossbar axis at x=mouthX so the contact
+  // normal is purely vertical — the bounce flips vz cleanly.
+  state.ball.x = f.goalLineL;   // aligned with crossbar axis on x
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = f.goalMouthZMax - BALL_RADIUS - GOAL_POST_RADIUS - 0.1;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 2;
+  state.ball.frozen = false;
+  state.ball.inGoal = true;
+  tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vz < 0, `inside-crossbar hit must flip vz, got ${state.ball.vz}`);
+  assert.ok(
+    state.ball.z + BALL_RADIUS <= f.goalMouthZMax + 0.01,
+    `ball must stay below crossbar after bounce, got z=${state.ball.z}`,
+  );
 });
 
 /* ── Lateral-reach bug fixes: push and kick must only fire when

@@ -567,17 +567,20 @@ function advancePush(p) {
     victim.reactForce = Math.min(1, impulseMag / MAX_PUSH_FORCE);
     victim.reactTimer = REACT_ANIM_MS;
     victim.reactType = p.pushType;
-    // Hook sweep direction in the victim's frame. A right-arm hook
-    // sweeps the fist toward the pusher's LEFT; a left-arm hook
-    // sweeps toward the pusher's RIGHT. Projecting that onto the
-    // victim's lateral axis gives a sign for how the victim's body
-    // whips — independent of the impulse direction (which is axial
+    // Hook recoil direction in the victim's frame. A right-arm hook
+    // APPROACHES the victim from the pusher's right → victim's left-
+    // side; the victim's body rocks AWAY from the approach = toward
+    // the victim's right. The fist's sweep direction in world xz is
+    // pusher's left for a right hook (pusher's right for a left hook);
+    // we project that onto the victim's lateral axis and NEGATE so
+    // the body whips opposite the sweep (away from the punch), not
+    // along it. Independent of impulse direction (which is axial
     // along pusher heading for all punch types).
     const pH = p.heading, vH = victim.heading;
     const sweepX = p.pushArm === 'right' ? -Math.sin(pH) :  Math.sin(pH);
     const sweepZ = p.pushArm === 'right' ?  Math.cos(pH) : -Math.cos(pH);
     const vLatX = -Math.sin(vH), vLatZ = Math.cos(vH);
-    victim.reactLatSign = (sweepX * vLatX + sweepZ * vLatZ) >= 0 ? 1 : -1;
+    victim.reactLatSign = (sweepX * vLatX + sweepZ * vLatZ) >= 0 ? -1 : 1;
     p.pendingPushVictim = null;
     p.pendingPushVx = 0;
     p.pendingPushVy = 0;

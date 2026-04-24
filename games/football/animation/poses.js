@@ -66,6 +66,11 @@ const REACT_HOOK_HEAD_SIDE    = 1.30;   // rad — head whips sideways, huge
 const REACT_UPPER_BODY_BACK   = 0.50;   // rad — body rocks back from chin hit
 const REACT_UPPER_HIP_LIFT    = 7.0;    // world units — hip lurches up
 const REACT_UPPER_HEAD_UP     = 1.10;   // rad — head jerks up + back hard
+// Arms fling forward from inertia when the body is jolted. Both arms
+// swing to roughly shoulder height at full force. Makes every
+// reaction read as a physical hit instead of the body rocking with
+// the arms pasted to the sides.
+const REACT_ARM_THROW         = Math.PI / 2.8;  // rad — ≈64° forward at peak
 
 // Celebration shape — jumping-jack height + leg spread. Imported
 // here so the pose composer stays self-contained.
@@ -268,12 +273,14 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
       reactHeadSide = REACT_HOOK_HEAD_SIDE * reactLatSign * reactInt;
       reactBodyTilt = REACT_HOOK_BODY_TILT * fwdDot * reactInt;
     } else if (reactType === 'uppercut') {
-      // Vertical dominant. Hip lurches up. Chin rises — head ALWAYS
-      // tilts back (up) because the uppercut rotates the skull around
-      // the neck regardless of which side the fist arrived from.
-      reactHipLift  = REACT_UPPER_HIP_LIFT * reactInt;
+      // Vertical dominant: hip lurches up and the head+body rock back
+      // along the impulse axis (for a face-to-face hit, fwdDot is
+      // negative → both tilt back). Head uses a bigger coefficient so
+      // the chin rises more than the body — the whip effect — but in
+      // the SAME direction as the body so head and torso move as one.
+      reactHipLift  = REACT_UPPER_HIP_LIFT  * reactInt;
       reactBodyTilt = REACT_UPPER_BODY_BACK * fwdDot * reactInt;
-      reactHeadBack = -REACT_UPPER_HEAD_UP * reactInt;
+      reactHeadBack = REACT_UPPER_HEAD_UP   * fwdDot * reactInt;
     } else {
       // Jab — clean axial recoil.
       reactBodyTilt = REACT_JAB_BODY_TILT * fwdDot * reactInt;
@@ -408,6 +415,19 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   let rightLowerArmAngle = forearmAngleFor(rightArmAngle);
   let leftUpperYaw = 0, leftLowerYaw = 0;
   let rightUpperYaw = 0, rightLowerYaw = 0;
+
+  // Hit-reaction arm fling — both arms jerk forward from inertia when
+  // the body is abruptly decelerated by the hit. Positive upper-arm
+  // angle is forward-from-hip in the pose rig. Only applies when
+  // the victim isn't mid-push of their own (which would overwrite
+  // the striking arm anyway via the push IK below).
+  if (reactInt > 0.001 && celeb < 0.001 && player.pushTimer <= 0) {
+    const throwAmp = REACT_ARM_THROW * reactInt;
+    leftUpperArmAngle  += throwAmp;
+    rightUpperArmAngle += throwAmp;
+    leftLowerArmAngle  = forearmAngleFor(leftUpperArmAngle);
+    rightLowerArmAngle = forearmAngleFor(rightUpperArmAngle);
+  }
 
   // Push override: striking arm → IK to player.pushTarget via the
   // variant-specific scripted trajectory. Only overrides the

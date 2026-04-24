@@ -274,15 +274,15 @@ test('push impulse is deferred to the strike tick, not applied on windup', () =>
     `victim must not move on tick 1, moved to ${state.p2.x}`,
   );
 
-  // Strike fires when pushTimer first drops <= PUSH_STRIKE_TIMER (650
-  // ms). pushTimer starts at 1000 ms and decrements 16 ms/tick, so
-  // strike ≈ tick 22 of the push.
+  // Strike fires when pushTimer first drops <= PUSH_STRIKE_TIMER
+  // (1000 * (1 - PUSH_STRIKE_FRAC) = 500 ms). pushTimer starts at
+  // 1000 ms and decrements 16 ms/tick, so strike ≈ tick 32 of push.
   let strikeTick = -1;
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 40; i++) {
     tick(state, NOOP, NOOP);
     if (state.p2.pushVx !== 0 && strikeTick === -1) strikeTick = i + 2;
   }
-  assert.ok(strikeTick >= 20 && strikeTick <= 25,
+  assert.ok(strikeTick >= 30 && strikeTick <= 35,
     `strike tick out of expected range: ${strikeTick}`);
 });
 

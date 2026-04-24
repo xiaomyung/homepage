@@ -126,6 +126,15 @@ const PUSH_VEL_THRESHOLD = 0.5;
 const PUSH_VEL_THRESHOLD_SQ = PUSH_VEL_THRESHOLD * PUSH_VEL_THRESHOLD;
 const MIN_PUSH_STAMINA = 0.2;
 export const PUSH_ANIM_MS = 1000;
+// Sub-stage boundaries of the push animation as fractions of
+// PUSH_ANIM_MS. Used by pushArmExtension + pushArmPose (arm blend)
+// and by advancePush (strike commit).
+const PUSH_WINDUP_FRAC = 0.35;   // windup → strike transition
+const PUSH_STRIKE_FRAC = 0.50;   // strike → recover transition;
+                                 //   this is where the arm + body
+                                 //   reach peak forward extension,
+                                 //   so contact lands here.
+const PUSH_WINDUP_PEAK_TEFF = 0.7;
 const PUSH_STAMINA_COST = 0.15;
 const PUSH_VICTIM_STAMINA_MULT = 3;
 
@@ -497,11 +506,14 @@ export const ACTION_PUSH_GATE  = 7;
 export const ACTION_PUSH_POWER = 8;
 export const NN_OUTPUT_SIZE    = 9;
 
-/** Strike threshold in ms of `pushTimer` remaining. The arm reaches
- *  the victim at `t = PUSH_WINDUP_FRAC` of the animation; pushTimer
- *  counts DOWN from PUSH_ANIM_MS, so the strike fires when the timer
- *  first drops to (or past) PUSH_ANIM_MS * (1 - PUSH_WINDUP_FRAC). */
-const PUSH_STRIKE_TIMER = 650; // PUSH_ANIM_MS * (1 - PUSH_WINDUP_FRAC) = 1000 * 0.65
+/** Strike threshold in ms of `pushTimer` remaining. Peak contact in
+ *  the animation is at `t = PUSH_STRIKE_FRAC`: that's when the
+ *  windup→strike arm blend finishes (arm at full forward extension),
+ *  the hop reaches maximum forward, and the body tilt flips from
+ *  back-lean to full forward-lean. pushTimer counts DOWN from
+ *  PUSH_ANIM_MS, so the strike fires when the timer first drops
+ *  to (or past) PUSH_ANIM_MS * (1 - PUSH_STRIKE_FRAC). */
+const PUSH_STRIKE_TIMER = PUSH_ANIM_MS * (1 - PUSH_STRIKE_FRAC);
 
 /** Tick a push cooldown forward. Returns true if the player is still
  *  mid-push and should not accept new actions this tick — mirrors
@@ -1754,9 +1766,6 @@ export function kickLegExtension(kick) {
  *   recovery : 1.0 → 0  (arm eases to neutral)
  * Returns 0 when `pushTimer <= 0` (no active push).
  */
-const PUSH_WINDUP_FRAC = 0.35;
-const PUSH_STRIKE_FRAC = 0.50;
-const PUSH_WINDUP_PEAK_TEFF = 0.7;
 export function pushArmExtension(pushTimer) {
   if (pushTimer <= 0) return 0;
   const t = 1 - (pushTimer / PUSH_ANIM_MS);

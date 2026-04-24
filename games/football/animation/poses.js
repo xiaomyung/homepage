@@ -80,9 +80,11 @@ const REACT_ARM_THROW         = Math.PI / 2.8;  // rad — ≈64° forward at pe
 const CELEB_JUMP_PEAK   = 0.55 * STICKMAN_GLYPH_SIZE;   // peak hip lift at apex
 const CELEB_CROUCH_DEPTH = 0.32 * STICKMAN_GLYPH_SIZE;  // hip drop at deepest crouch
 const CELEB_LEG_SQUAT    = 0.60;                        // rad thigh-fwd / shin-back at crouch
-const CELEB_ARM_RAISE_MAX = 0.95;                       // × π — at apex, arms almost straight up
-const CELEB_ARM_RAISE_REST = 0.80;                      // × π — between jumps (on ground)
-const CELEB_ARM_PUMP      = 0.12;                       // × π — alternate oscillation magnitude
+const CELEB_ARM_RAISE_MAX = 0.95;                       // × π — both arms at jump apex, near straight up
+const CELEB_ARM_RAISE_REST = 0.80;                      // × π — between jumps, fists still raised
+const CELEB_ARM_PUMP      = 0.14;                       // × π — SYMMETRIC fist-pump amplitude
+const CELEB_ARM_YAW       = 0.22;                       // rad — outward lateral spread so the raised arms make a V
+const CELEB_ARM_PUMP_RATE = 2;                          // fist-pumps per on-ground rest phase
 
 // STOP pose — subtle backward body lean when the player is
 // decelerating sharply (smoothed `stop` factor). Maxes out at this
@@ -356,19 +358,25 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   let leftLegAngle  =  legSwing;
   let rightLegAngle = -legSwing;
 
-  // Celebrate arms — both raised, with subtle alternate pumping.
-  // During the jump itself the raise climbs from rest-level toward
-  // max at apex; during the on-ground rest phase, a small sinusoidal
-  // pump alternates the arms so the pose doesn't freeze.
+  // Celebrate arms — both raised in a V, pumped TOGETHER. Old code
+  // sent the right arm through the BACKWARD half of the rotation
+  // (angle = −π) so alternating pump made the arms sweep through
+  // paths a human shoulder can't actually follow. Now both arms use
+  // a positive (forward-up) swing with a yawed lateral spread, and
+  // the pump dips/raises both fists at once like a real fist-pump.
   if (celeb > 0.001) {
     const restT = inJump ? 0 : (celebratePhase - Math.PI) / Math.PI;  // 0..1 during rest half
     const jumpRaise = CELEB_ARM_RAISE_REST
                     + (CELEB_ARM_RAISE_MAX - CELEB_ARM_RAISE_REST) * Math.sin(Math.PI * celebJumpT);
     const baseRaise = inJump ? jumpRaise : CELEB_ARM_RAISE_REST;
-    // Alternate pump — only during rest so the jump itself stays clean.
-    const pump = inJump ? 0 : Math.sin(restT * Math.PI * 2) * CELEB_ARM_PUMP;
-    leftArmAngle  = leftArmAngle  * celebInv +  Math.PI * (baseRaise + pump) * celeb;
-    rightArmAngle = rightArmAngle * celebInv + -Math.PI * (baseRaise - pump) * celeb;
+    // Symmetric pump — both arms dip + rise together during rest
+    // (fist-pumping). Zero during the jump itself so the jump arc
+    // reads cleanly.
+    const pumpWave = inJump ? 0 : Math.sin(restT * Math.PI * CELEB_ARM_PUMP_RATE);
+    const pump = pumpWave * CELEB_ARM_PUMP;
+    const armA = Math.PI * (baseRaise + pump);
+    leftArmAngle  = leftArmAngle  * celebInv + armA * celeb;
+    rightArmAngle = rightArmAngle * celebInv + armA * celeb;
   }
 
   // ── Per-leg (upper, lower) base: cosmetic knee follow-through ─
@@ -449,6 +457,15 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   let rightLowerArmAngle = forearmAngleFor(rightArmAngle);
   let leftUpperYaw = 0, leftLowerYaw = 0;
   let rightUpperYaw = 0, rightLowerYaw = 0;
+
+  // Celebrate yaw — spread the raised arms into a V. Left arm yaws
+  // toward −lateral (outward from its left-side shoulder); right arm
+  // toward +lateral. Without this spread, both arms pointing
+  // forward-up would look parallel rather than victorious.
+  if (celeb > 0.001) {
+    leftUpperYaw  = leftUpperYaw  + (-CELEB_ARM_YAW) * celeb;
+    rightUpperYaw = rightUpperYaw + (+CELEB_ARM_YAW) * celeb;
+  }
 
   // Hit-reaction arm fling — both arms jerk forward from inertia when
   // the body is abruptly decelerated by the hit. Positive upper-arm

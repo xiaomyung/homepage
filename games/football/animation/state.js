@@ -20,8 +20,12 @@ export const STICKMAN_RUN_THRESHOLD = 1.2;
 export const STICKMAN_TILT_PER_SPEED = 0.09;
 export const STICKMAN_TILT_MAX = 0.45;
 
-// Celebrate rotation rate. ~25 ticks per jumping-jack cycle at 60Hz.
-export const CELEB_PHASE_RATE = 0.25;
+// Celebrate rotation rate. 50% slower than the original jumping-jack
+// tempo — the jump-cycle pose (crouch → launch → apex → land) needs
+// more time to read as a real hop, and the fist-pump cadence at the
+// new rate sits around one pump every ~0.8 s, which matches natural
+// celebration tempo better than the old frenetic beat.
+export const CELEB_PHASE_RATE = 0.125;
 
 // Grieve rotation rate — the loser's slow back-and-forth body rock
 // during a goal celebration (non-scorer reaction). Much slower than

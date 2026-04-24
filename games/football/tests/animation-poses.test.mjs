@@ -362,42 +362,58 @@ describe('animation/poses', () => {
   });
 
   describe('celebrate pose', () => {
-    it('celebrate sweeps arms toward ±π (jumping-jack extreme)', () => {
+    it('celebrate raises both arms (forward-up, same sign)', () => {
       const p = makePlayer();
       const anim = createAnimState(0, p);
       const pose = createPoseScratch();
       const s = scratches();
       let snap;
-      // 30 frames at STICKMAN_SMOOTH=0.15 converges celebrate → ~1.
-      for (let t = 1; t <= 30; t++) {
+      // 60 frames at STICKMAN_SMOOTH=0.15 + CELEB_PHASE_RATE=0.125
+      // converges celebrate → ~1 and steps through at least one full
+      // cycle so the arms settle into the raised pose.
+      for (let t = 1; t <= 60; t++) {
         snap = advanceAnimState(anim, p, t, true, {});
         composeStickmanPose(snap, p, pose, s.kick, s.push);
       }
       assert.ok(snap.celebrate > 0.95);
-      // Arms reach near ±π (straight up overhead).
-      assert.ok(Math.abs(pose.lArmUpper) > 2.5, `lArmUpper=${pose.lArmUpper} should be near π`);
-      assert.ok(Math.abs(pose.rArmUpper) > 2.5, `rArmUpper=${pose.rArmUpper} should be near π`);
-      // Arms are opposite signs (one +π, one −π).
-      assert.ok(pose.lArmUpper * pose.rArmUpper < 0);
+      // Both arms are raised forward-up (positive angle), NOT mirrored.
+      // The old jumping-jack had one +π and one −π which described a
+      // motion path a human shoulder can't execute; new celebrate uses
+      // a V-shape with a lateral yaw spread.
+      assert.ok(pose.lArmUpper > 2.0, `lArmUpper=${pose.lArmUpper} should be raised forward-up`);
+      assert.ok(pose.rArmUpper > 2.0, `rArmUpper=${pose.rArmUpper} should be raised forward-up`);
+      assert.ok(pose.lArmUpper * pose.rArmUpper > 0,
+        `both arms should have same sign, got l=${pose.lArmUpper} r=${pose.rArmUpper}`);
     });
 
-    it('celebrate jumpY raises hipBaseY above idle', () => {
+    it('celebrate V-spreads the raised arms via yaw', () => {
+      const p = makePlayer();
+      const anim = createAnimState(0, p);
+      const pose = createPoseScratch();
+      const s = scratches();
+      for (let t = 1; t <= 60; t++) {
+        const snap = advanceAnimState(anim, p, t, true, {});
+        composeStickmanPose(snap, p, pose, s.kick, s.push);
+      }
+      // Left yaw outward = negative, right yaw outward = positive.
+      assert.ok(pose.lArmUpperYaw < -0.1,
+        `lArmUpperYaw=${pose.lArmUpperYaw} should be negative (outward)`);
+      assert.ok(pose.rArmUpperYaw > 0.1,
+        `rArmUpperYaw=${pose.rArmUpperYaw} should be positive (outward)`);
+    });
+
+    it('celebrate jumpY raises hipBaseY above idle at the apex', () => {
       const p = makePlayer();
       const { pose: idlePose } = runFrame(p);
 
       const anim = createAnimState(0, p);
       const pose = createPoseScratch();
       const s = scratches();
-      for (let t = 1; t <= 30; t++) {
-        const snap = advanceAnimState(anim, p, t, true, {});
-        composeStickmanPose(snap, p, pose, s.kick, s.push);
-      }
-      // Celebrate jumpY sinusoid peaks when celebratePhase sits around π/2.
-      // Over 30 frames (celebratePhase = 7.5 rad ≈ 1.22π), sin(phase) swings
-      // so hipBaseY may be above or at idle level — the max over several
-      // consecutive frames must exceed idle.
-      let maxHip = pose.hipBaseY;
-      for (let t = 30; t <= 50; t++) {
+      // Phase rate 0.125/tick → full cycle ≈ 50 ticks, apex at ≈13.
+      // Run long enough to include at least one apex AND capture the
+      // maximum hipBaseY seen across every tick.
+      let maxHip = -Infinity;
+      for (let t = 1; t <= 80; t++) {
         const snap = advanceAnimState(anim, p, t, true, {});
         composeStickmanPose(snap, p, pose, s.kick, s.push);
         if (pose.hipBaseY > maxHip) maxHip = pose.hipBaseY;

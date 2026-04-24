@@ -1271,66 +1271,163 @@ function resolvePlayerGoalBox(p, pw, box) {
 }
 
 /**
- * Ball-vs-goal-box collision. Ball is a sphere approximated as a
- * cube of side 2*BALL_RADIUS for AABB math (the 2D game uses
- * radius-around-center collisions everywhere else, so the inflation
- * is consistent). Runs AFTER the scoring check so a ball legitimately
- * crossing the open mouth is frozen as a goal and skips this path.
- * On collision, the ball is pushed out along the minimum-penetration
- * axis and the velocity component on that axis flips with a bounce
- * damping, producing a believable rebound off any face of the goal.
+ * Sphere-vs-capsule (finite cylinder with hemispherical caps, in the
+ * geometric sense that clamp-to-segment naturally handles the ends).
+ * The goal frame consists of thin cylindrical bars whose geometry
+ * does NOT fit an AABB — an AABB approximation produces phantom
+ * x-axis bounces for balls grazing a post side or the crossbar top.
+ * This helper solves the real sphere-segment contact and bounces
+ * along the true contact normal.
+ *
+ * Returns true on contact. The ball is pushed out along the normal
+ * and its velocity reflected (with BOUNCE_RETAIN damping) only if
+ * the ball is moving INTO the cylinder at the contact point.
  */
-function resolveBallGoalBox(state, box) {
+function resolveBallVsCylinder(state, ax, ay, az, bx, by, bz, radius) {
+  const ball = state.ball;
+  if (ball.frozen) return false;
+
+  // Parametric projection of ball center onto axis segment A→B, clamped
+  // to [0,1]. Gives the nearest point on the segment.
+  const dx = bx - ax, dy = by - ay, dz = bz - az;
+  const len2 = dx * dx + dy * dy + dz * dz;
+  const rx = ball.x - ax, ry = ball.y - ay, rz = ball.z - az;
+  let t = len2 > 0 ? (rx * dx + ry * dy + rz * dz) / len2 : 0;
+  if (t < 0) t = 0; else if (t > 1) t = 1;
+  const nx = ax + t * dx, ny = ay + t * dy, nz = az + t * dz;
+
+  // Vector from nearest axis point to ball center → contact normal.
+  const vx = ball.x - nx, vy = ball.y - ny, vz = ball.z - nz;
+  const dist2 = vx * vx + vy * vy + vz * vz;
+  const contact = BALL_RADIUS + radius;
+  if (dist2 >= contact * contact) return false;
+
+  const dist = Math.sqrt(dist2);
+  const penetration = contact - dist;
+
+  // Normal = unit vector from axis to ball. Degenerate case (ball
+  // center coincident with axis) uses the negated velocity direction
+  // so the ball rebounds the way it came.
+  let normX, normY, normZ;
+  if (dist > 1e-6) {
+    const inv = 1 / dist;
+    normX = vx * inv; normY = vy * inv; normZ = vz * inv;
+  } else {
+    const vmag = Math.hypot(ball.vx, ball.vy, ball.vz);
+    if (vmag > 1e-6) {
+      normX = -ball.vx / vmag;
+      normY = -ball.vy / vmag;
+      normZ = -ball.vz / vmag;
+    } else {
+      normX = 1; normY = 0; normZ = 0;
+    }
+  }
+
+  // Push ball out of interpenetration along the normal. Floor clamp
+  // stops a crossbar-top bounce from dropping ball.z negative.
+  ball.x += normX * penetration;
+  ball.y += normY * penetration;
+  ball.z += normZ * penetration;
+  if (ball.z < 0) ball.z = 0;
+
+  // Reflect the velocity component along the normal if the ball is
+  // heading INTO the cylinder (vDotN < 0). Tangential components are
+  // preserved — this is what gives glancing hits their proper
+  // deflection instead of a pure-axis rebound.
+  const vDotN = ball.vx * normX + ball.vy * normY + ball.vz * normZ;
+  if (vDotN < 0) {
+    const k = (1 + BOUNCE_RETAIN) * vDotN;
+    ball.vx -= k * normX;
+    ball.vy -= k * normY;
+    ball.vz -= k * normZ;
+    const absNx = Math.abs(normX), absNy = Math.abs(normY), absNz = Math.abs(normZ);
+    const axis = absNx >= absNy && absNx >= absNz
+      ? 'x' : absNy >= absNz ? 'y' : 'z';
+    recordBounce(state, axis, Math.abs(vDotN));
+  }
+  return true;
+}
+
+/**
+ * Ball vs the three bars at one goal's mouth: left post, right post,
+ * crossbar. Each is a thin cylinder. Any contact produces a bounce
+ * along the real cylinder normal; a clean shot through the open mouth
+ * touches none of them and is promoted to a goal by the preceding
+ * scoring check.
+ *
+ * Bar geometry (left goal uses mouthX = goalLineL; right goal uses
+ * goalLineR — the ball approaches from the opposite side in each case,
+ * but the cylinder math is symmetric):
+ *   • left post   — vertical, axis (mouthX, mouthYMin, 0→mouthZMax)
+ *   • right post  — vertical, axis (mouthX, mouthYMax, 0→mouthZMax)
+ *   • crossbar    — horizontal, axis (mouthX, mouthYMin→mouthYMax, mouthZMax)
+ *
+ * Also resolves the goal's BACK-WALL plane against balls that have
+ * somehow ended up behind the goal (off-field, between the back wall
+ * and the touchline). Real gameplay rarely produces this, but the
+ * collider has to stay solid from outside or a ball spawned / knocked
+ * behind the goal would tunnel forward through the net and score.
+ *
+ * Runs AFTER the scoring check so a ball fully in the mouth freezes
+ * as a goal without a bounce. The inner net (back + sides + roof
+ * from inside) is handled by resolveBallInsideGoal once inGoal=true.
+ */
+function resolveBallVsGoalBars(state, box) {
+  const isLeft = box === state.field.goalBoxLeft;
+  const mouthX = isLeft ? box.maxX : box.minX;
+  const mouthZ = box.maxZ;
+  // Left post.
+  resolveBallVsCylinder(state,
+    mouthX, box.minY, 0,
+    mouthX, box.minY, mouthZ,
+    GOAL_POST_RADIUS);
+  // Right post.
+  resolveBallVsCylinder(state,
+    mouthX, box.maxY, 0,
+    mouthX, box.maxY, mouthZ,
+    GOAL_POST_RADIUS);
+  // Crossbar.
+  resolveBallVsCylinder(state,
+    mouthX, box.minY, mouthZ,
+    mouthX, box.maxY, mouthZ,
+    GOAL_POST_RADIUS);
+
+  // Back-wall plane. Fires for a ball arriving from outside the goal
+  // (behind the back wall, in the strip between back wall and touchline)
+  // and moving toward the mouth — without this, a fast ball can sweep
+  // across the plane in one substep and tunnel through the net. Only
+  // runs on the outer path (caller already routed inGoal=true to
+  // resolveBallInsideGoal), so inside-net bounces are unaffected.
+  //
+  // "Arriving from outside" is detected by velocity direction + sphere
+  // proximity to the plane — not by center position, which after a
+  // sweep can already be past the plane.
   const ball = state.ball;
   if (ball.frozen) return;
-
-  // Open-mouth exemption: a legitimate shot entering through the
-  // front face must NOT bounce — the scoring check on the next tick
-  // promotes it to a goal once the whole sphere clears the line.
-  //
-  // Limit the exemption to the front-face neighborhood only; otherwise
-  // a ball inside the box (including one coming from BEHIND the back
-  // wall) also skips resolution and tunnels through the net. The
-  // front-face plane is box.maxX for the left goal (mouth opens to
-  // +x) and box.minX for the right goal (mouth opens to -x).
-  const isLeftGoal = box === state.field.goalBoxLeft;
-  const frontX = isLeftGoal ? box.maxX : box.minX;
-  const nearFront = Math.abs(ball.x - frontX) < BALL_RADIUS + GOAL_POST_RADIUS;
-
-  const inMouthY =
-    ball.y - BALL_RADIUS >= box.minY + GOAL_POST_RADIUS
-    && ball.y + BALL_RADIUS <= box.maxY - GOAL_POST_RADIUS;
-  const inMouthZ = ball.z + BALL_RADIUS <= box.maxZ - GOAL_POST_RADIUS;
-  if (inMouthY && inMouthZ && nearFront) return;
-
-  const ent = _scratchEnt3D;
-  ent.minX = ball.x - BALL_RADIUS; ent.maxX = ball.x + BALL_RADIUS;
-  ent.minY = ball.y - BALL_RADIUS; ent.maxY = ball.y + BALL_RADIUS;
-  ent.minZ = ball.z - BALL_RADIUS; ent.maxZ = ball.z + BALL_RADIUS;
-  const push = minPenetrationPush(ent, box, true, ball);
-  if (!push) return;
-  if (push.axis === 'x') {
-    ball.x += push.delta;
-    if (ball.vx * push.delta < 0) {
-      const preVx = Math.abs(ball.vx);
-      ball.vx = -ball.vx * BOUNCE_RETAIN;
-      recordBounce(state, 'x', preVx);
-    }
-  } else if (push.axis === 'y') {
-    ball.y += push.delta;
-    if (ball.vy * push.delta < 0) {
-      const preVy = Math.abs(ball.vy);
-      ball.vy = -ball.vy * BOUNCE_RETAIN;
-      recordBounce(state, 'y', preVy);
-    }
+  const backX = isLeft ? box.minX : box.maxX;
+  const inwardVx = isLeft ? ball.vx : -ball.vx;  // >0 means moving toward mouth
+  if (inwardVx <= 0) return;
+  // Sphere still overlaps the plane? Ball fully past the plane (sphere
+  // clear on the interior side) is a shot on net inside the goal box,
+  // not a behind-goal approach.
+  const fullyPast = isLeft
+    ? ball.x - BALL_RADIUS >= backX
+    : ball.x + BALL_RADIUS <= backX;
+  if (fullyPast) return;
+  // Require sphere to be within the back-wall rectangle's y/z extent.
+  if (ball.y + BALL_RADIUS <= box.minY) return;
+  if (ball.y - BALL_RADIUS >= box.maxY) return;
+  if (ball.z - BALL_RADIUS >= box.maxZ) return;
+  if (isLeft) {
+    ball.x = backX - BALL_RADIUS;
+    const preVx = ball.vx;
+    ball.vx = -preVx * BOUNCE_RETAIN;
+    recordBounce(state, 'x', preVx);
   } else {
-    ball.z += push.delta;
-    if (ball.z < 0) ball.z = 0;
-    if (ball.vz * push.delta < 0) {
-      const preVz = Math.abs(ball.vz);
-      ball.vz = -ball.vz * BOUNCE_RETAIN;
-      recordBounce(state, 'z', preVz);
-    }
+    ball.x = backX + BALL_RADIUS;
+    const preVx = -ball.vx;
+    ball.vx = preVx * BOUNCE_RETAIN;
+    recordBounce(state, 'x', preVx);
   }
 }
 
@@ -1971,8 +2068,8 @@ function updateBall(state) {
       resolveBallInsideGoal(state, field.goalBoxLeft);
       resolveBallInsideGoal(state, field.goalBoxRight);
     } else {
-      resolveBallGoalBox(state, field.goalBoxLeft);
-      resolveBallGoalBox(state, field.goalBoxRight);
+      resolveBallVsGoalBars(state, field.goalBoxLeft);
+      resolveBallVsGoalBars(state, field.goalBoxRight);
     }
     if (ball.frozen) return;
     // Ball vs player bodies — cushion + deflect trap on torso/head.
@@ -2016,9 +2113,9 @@ function checkBallScoreOrOut(state) {
 
   // Goal requires the whole ball past the line AND the ball fully
   // inside the goal mouth opening (between posts, below crossbar).
-  // Everything else — bouncing off the posts, crossbar, back wall,
-  // roof, or side walls — is handled by resolveBallGoalBox running
-  // immediately after this check.
+  // Post / crossbar contact is resolved by resolveBallVsGoalBars
+  // (sphere-cylinder); inner back / roof / side nets by
+  // resolveBallInsideGoal once inGoal=true.
   //
   // The "ball.x ± BALL_RADIUS inside the back wall" clause prevents
   // a false score for a ball that was never actually kicked into the

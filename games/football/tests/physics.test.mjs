@@ -296,15 +296,15 @@ test('ball past the OOB margin triggers out, not goal', () => {
   assert.equal(state.scoreR, 0);
 });
 
-test('ball grazing the crossbar from above bounces off the top', () => {
+test('ball dropping onto the crossbar from above bounces up', () => {
   const state = freshState();
   const f = state.field;
-  // Ball center inside the goal x/y, altitude just above the crossbar
-  // so the sphere overlaps the box z range and the unified collision
-  // fires on the z axis, flipping vz.
-  state.ball.x = f.goalLineR + 2;
+  // Ball centred above the crossbar axis (x = mouthX = goalLineR), z just
+  // above the crossbar so it contacts the top of the cylinder as gravity
+  // pulls it down. Normal points straight up → vz flips cleanly.
+  state.ball.x = f.goalLineR;
   state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
-  state.ball.z = f.goalMouthZMax + 0.5;
+  state.ball.z = f.goalMouthZMax + BALL_RADIUS + 0.05;
   state.ball.vx = 0;
   state.ball.vy = 0;
   state.ball.vz = -2; // descending onto the crossbar
@@ -313,19 +313,19 @@ test('ball grazing the crossbar from above bounces off the top', () => {
   for (let i = 0; i < 4; i++) tick(state, NOOP, NOOP);
 
   assert.equal(state.scoreL, 0, 'ball grazing crossbar must not score');
-  assert.ok(state.ball.vz >= 0, `expected vz to flip to non-negative, got ${state.ball.vz}`);
+  assert.ok(state.ball.vz > 0, `expected vz to flip positive, got ${state.ball.vz}`);
 });
 
 test('ball clipping the post from outside the mouth bounces back', () => {
   const state = freshState();
   const f = state.field;
-  // y just outside the mouth edge by less than BALL_RADIUS so the
-  // ball sphere overlaps the mouth y range and collides with the
-  // post cylinder, but the center is NOT inside the mouth.
-  state.ball.x = f.goalLineR + 2;
+  // Ball approaching the right goal from the FIELD side at a y just
+  // outside the mouth — sphere overlaps the post cylinder on the way
+  // in. Must deflect back toward the field (vx reverses).
+  state.ball.x = f.goalLineR - 10;
   state.ball.y = f.goalMouthYMin - 0.5;
   state.ball.z = 0;
-  state.ball.vx = 4;
+  state.ball.vx = 4;  // moving toward the post
   state.ball.vy = 0;
   state.ball.vz = 0;
   state.ball.frozen = false;
@@ -718,6 +718,107 @@ test('shot over the crossbar with no dip does not score', () => {
     !scoredEarly,
     'ball above the crossbar should not register a goal while still above it',
   );
+});
+
+/* ── Sphere-cylinder bar collisions ────────────────────────────
+ *
+ * The goal frame is drawn as thin cylinders (2 posts + 1 crossbar per
+ * side). The physics approximates each bar as a sphere-cylinder
+ * collider rather than the old AABB box. These tests pin the
+ * physically-correct deflection directions the cylinder resolver
+ * produces, and guard against two regressions from the cylinder
+ * rewrite: (1) pure x-axis bounces at the goal line when the real
+ * normal should deflect sideways or vertically, (2) phantom bounces
+ * for balls well clear of the frame.
+ */
+
+test('wide shot flies past the post without a phantom goal-line bounce', () => {
+  const state = freshState();
+  const f = state.field;
+  // y well below the lower post — ball sphere does not overlap the
+  // post cylinder. Before the cylinder rewrite, the AABB resolver
+  // fired on Y-shadow overlap and bounced the ball back in X.
+  state.ball.x = f.goalLineL + 20;
+  state.ball.y = 4;     // mouthYMin=13, BALL_R+POST_R ≈ 5.4 → y=4 is clear
+  state.ball.z = 1;
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  for (let i = 0; i < 10; i++) tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vx < 0, `wide shot must keep negative vx, got ${state.ball.vx}`);
+  assert.equal(state.scoreR, 0);
+});
+
+test('high shot flies over the crossbar without a phantom goal-line bounce', () => {
+  const state = freshState();
+  const f = state.field;
+  // z well above the crossbar cylinder. Without the cylinder rewrite
+  // the AABB's Z-overlap fired and produced an X-bounce at the mouth.
+  state.ball.x = f.goalLineL + 30;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = f.goalMouthZMax + 20;  // 20 units above crossbar axis
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 1;  // slight lift
+  state.ball.frozen = false;
+  for (let i = 0; i < 6; i++) tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vx < 0, `high fly-by must keep negative vx, got ${state.ball.vx}`);
+});
+
+test('post side-graze deflects laterally (y-dominant), not straight back', () => {
+  const state = freshState();
+  const f = state.field;
+  // Ball approaches on a line that clips the post cylinder from the
+  // field side, offset in y below the post axis. A correct
+  // cylinder bounce deflects the ball in -y (away from the post),
+  // not a pure x rebound.
+  state.ball.x = f.goalLineL + 30;
+  state.ball.y = f.goalMouthYMin - 2;  // inside sphere reach of the post
+  state.ball.z = 1;
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  // Run until contact — fairly short.
+  for (let i = 0; i < 8; i++) tick(state, NOOP, NOOP);
+  // After the post hit, lateral velocity should dominate the return
+  // and the ball should have moved away from the post line.
+  assert.ok(
+    Math.abs(state.ball.vy) > Math.abs(state.ball.vx),
+    `post side-graze must deflect in y (|vy|=${Math.abs(state.ball.vy).toFixed(2)}, |vx|=${Math.abs(state.ball.vx).toFixed(2)})`,
+  );
+  assert.ok(state.ball.y < f.goalMouthYMin, 'ball should end up on the outside-y side of the post');
+  assert.equal(state.scoreR, 0);
+});
+
+test('crossbar top-drop deflects vertically (z-dominant)', () => {
+  const state = freshState();
+  const f = state.field;
+  // Ball centred directly above the crossbar axis, falling onto it.
+  // Cylinder normal is +z; the bounce flips vz with vx barely
+  // disturbed.
+  state.ball.x = f.goalLineL;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = f.goalMouthZMax + BALL_RADIUS + 0.05;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = -3;
+  state.ball.frozen = false;
+  for (let i = 0; i < 4; i++) tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vz > 0, `crossbar top-drop must flip vz positive, got ${state.ball.vz}`);
+  assert.equal(state.scoreR, 0);
+});
+
+test('head-on post hit at the centre of the post bounces straight back', () => {
+  const state = freshState();
+  const f = state.field;
+  // Ball and post aligned on y (ball.y = mouthYMin), coming straight
+  // at the post from the field side. Normal is purely +x → pure x-bounce.
+  state.ball.x = f.goalLineL + 30;
+  state.ball.y = f.goalMouthYMin;
+  state.ball.z = 1;
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  for (let i = 0; i < 15; i++) tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vx > 0, `head-on post hit must flip vx, got ${state.ball.vx}`);
+  assert.ok(
+    Math.abs(state.ball.vy) < 0.2,
+    `head-on hit must have minimal y deflection, got vy=${state.ball.vy}`,
+  );
+  assert.equal(state.scoreR, 0);
 });
 
 /* ── Lateral-reach bug fixes: push and kick must only fire when

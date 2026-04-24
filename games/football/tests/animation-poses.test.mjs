@@ -212,6 +212,46 @@ describe('animation/poses', () => {
       assert.ok(absYaw > 0 || Math.abs(pose.rArmUpper) > 0.2,
         `push right arm should be driven by IK (yaw=${absYaw}, upper=${pose.rArmUpper})`);
     });
+
+    it('push squat bends the rear leg harder than the front leg', () => {
+      // Right-arm push → rear leg is right, front leg is left. During
+      // the windup phase the rear thigh tilts forward more than the
+      // front thigh, and each shin tilts back by the same magnitude so
+      // the foot plants under the hip.
+      const p = makePlayer({ pushTimer: 800, pushArm: 'right', pushType: 'jab' });
+      p.pushTargetX = 30; p.pushTargetY = 30; p.pushTargetZ = 0;
+      // Run far enough for pushProgress to land in the windup-peak
+      // window (~tick 22 of 63 at PUSH_WINDUP_T=0.35).
+      const { pose } = runFrame(p, { ticks: 22 });
+      assert.ok(pose.rLegUpper > 0.2,
+        `rear (right) thigh should be forward, got ${pose.rLegUpper}`);
+      assert.ok(pose.rLegUpper > pose.lLegUpper,
+        `rear thigh flex (${pose.rLegUpper}) should exceed front (${pose.lLegUpper})`);
+      assert.ok(pose.rLegLower < 0,
+        `rear shin should tilt back to plant the foot, got ${pose.rLegLower}`);
+    });
+
+    it('left-arm push mirrors the squat — left leg is rear', () => {
+      const p = makePlayer({ pushTimer: 800, pushArm: 'left', pushType: 'jab' });
+      p.pushTargetX = 30; p.pushTargetY = 30; p.pushTargetZ = 0;
+      const { pose } = runFrame(p, { ticks: 22 });
+      assert.ok(pose.lLegUpper > pose.rLegUpper,
+        `left-arm push: rear (left) thigh should flex harder than right`);
+    });
+
+    it('push legs return to neutral by the end of the strike phase', () => {
+      // pushLegCrouchAt returns 0 for t ≥ PUSH_STRIKE_T (0.50). The
+      // legs should be back to walking-base neutral (≈0 for a
+      // stationary pusher) when the strike has ended.
+      const p = makePlayer({ pushTimer: 400, pushArm: 'right', pushType: 'jab' });
+      p.pushTargetX = 30; p.pushTargetY = 30; p.pushTargetZ = 0;
+      // Tick 33 of 63 → pushProgress ≈ 0.52, just past STRIKE_T.
+      const { pose } = runFrame(p, { ticks: 33 });
+      assert.ok(Math.abs(pose.rLegUpper) < 0.05,
+        `rear thigh should unload by strike end, got ${pose.rLegUpper}`);
+      assert.ok(Math.abs(pose.rLegLower) < 0.05,
+        `rear shin should unload by strike end, got ${pose.rLegLower}`);
+    });
   });
 
   describe('celebrate pose', () => {

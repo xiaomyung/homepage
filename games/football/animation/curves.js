@@ -89,6 +89,26 @@ export function pushHopAt(t) {
 }
 
 /**
+ * Leg crouch amplitude during a push. 0 at rest, ramps up during
+ * the raise/windup loading phase, peaks at the end of windup, then
+ * eases back to 0 by the end of the strike (when the legs are
+ * fully extended under the hop). Unit-amplitude [0,1]; poses.js
+ * scales the rear vs front leg differently.
+ */
+export function pushLegCrouchAt(t) {
+  if (t < PUSH_RAISE_T) return 0;
+  if (t < PUSH_WINDUP_T) {
+    const p = (t - PUSH_RAISE_T) / (PUSH_WINDUP_T - PUSH_RAISE_T);
+    return easeOut(p);
+  }
+  if (t < PUSH_STRIKE_T) {
+    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
+    return 1 - p * p;
+  }
+  return 0;
+}
+
+/**
  * Body lean along the player's heading as a signed "forward amount":
  * negative = lean back (windup loading), positive = lean forward
  * (strike release). Added directly to the walk-tilt term because

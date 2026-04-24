@@ -45,7 +45,7 @@ import {
   PUSH_TOTAL_TICKS,
   kickArmAngleAt, kickDipAt, kickTiltAt, airkickTiltAt,
   kickHipTwistAt, kickSupportCrouchAt,
-  pushBodyDipAt, pushHopAt, pushBodyTiltAt,
+  pushBodyDipAt, pushHopAt, pushBodyTiltAt, pushLegCrouchAt,
 } from './curves.js';
 
 // Celebration shape — jumping-jack height + leg spread. Imported
@@ -285,6 +285,38 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     leftLowerAngle = shinAngleFor(leftLegAngle) - KICK_SUPPORT_SHIN_RATIO * kickSupportCrouch;
     leftArmAngle  = kickArmAngle;
     rightArmAngle = -kickArmAngle * KICK_ARM_OPP_FRAC;
+  }
+
+  // Push leg squat: rear leg (opposite the striking arm) loads with a
+  // deep knee bend during windup and extends on the strike; front leg
+  // mirrors at reduced amplitude. Thigh tilts forward, shin tilts back
+  // by the same magnitude so the foot plants directly under the hip
+  // (approximating a symmetric two-bone squat on a rig where
+  // STICKMAN_UPPER_LEG ≈ STICKMAN_LOWER_LEG). Physics guarantees
+  // push and kick never overlap, so no ordering conflict with the
+  // kick block above.
+  if (pushing > 0 && celeb < 0.001 && !isKicking) {
+    const pushT = Math.min(pushProgress / PUSH_TOTAL_TICKS, 1);
+    const legLoad = pushLegCrouchAt(pushT);
+    if (legLoad > 0.001) {
+      const PUSH_REAR_THIGH_MAX  = 0.50;   // rad at full load
+      const PUSH_FRONT_THIGH_MAX = 0.28;
+      const rearThigh  = PUSH_REAR_THIGH_MAX  * legLoad;
+      const frontThigh = PUSH_FRONT_THIGH_MAX * legLoad;
+      if (player.pushArm === 'right') {
+        // Rear = right, front = left.
+        rightUpperAngle = rightLegAngle + rearThigh;
+        rightLowerAngle = -rearThigh;
+        leftUpperAngle  = leftLegAngle + frontThigh;
+        leftLowerAngle  = -frontThigh;
+      } else {
+        // Rear = left, front = right.
+        leftUpperAngle  = leftLegAngle + rearThigh;
+        leftLowerAngle  = -rearThigh;
+        rightUpperAngle = rightLegAngle + frontThigh;
+        rightLowerAngle = -frontThigh;
+      }
+    }
   }
 
   // ── Per-arm (upper, lower) base: cosmetic elbow follow-through ─

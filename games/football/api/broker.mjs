@@ -966,7 +966,10 @@ function handleStats(req, res) {
     avg_fitness: avg,
     top_fitness: top,
     total_matches: state.totalMatches,
-    fallback_win_rate: fbMatches > 0 ? fbWins / fbMatches : 0,
+    // `null` when there are no fallback matches yet this generation —
+    // the client treats non-finite as "hold the last good value"
+    // instead of blinking to 0.0% on every breed.
+    fallback_win_rate: fbMatches > 0 ? fbWins / fbMatches : null,
     runtime_ms: runtimeNowMs(),
     match_distribution: {
       total:                   mcTotal,

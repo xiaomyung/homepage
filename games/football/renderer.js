@@ -529,6 +529,12 @@ export class Renderer {
     // across both stickmen since each frame's writes are consumed
     // before the next _placeTorso call overwrites it.
     this._staminaColorBuf = [0, 0, 0];
+    // Scratch state for updateStaminaClipPlane + disc orientation. Each
+    // call fills `_staminaClipOut` in place; _discLocalY is the static
+    // up-vector the disc geometry was pre-rotated to face.
+    this._staminaClipOut = { cx:0, cy:0, cz:0, dx:0, dy:1, dz:0, axialFromMid:0 };
+    this._discLocalY = new THREE.Vector3(0, 1, 0);
+    this._scratchDiscDir = new THREE.Vector3();
 
     this._resizeObserver = null;
     this._lastW = 0;
@@ -1385,27 +1391,29 @@ export class Renderer {
     const tint = staminaColorInto(this._staminaColorBuf, staminaFrac);
     this._orientBetween(outline, ax, ay, az, bx, by, bz, color);
     this._orientBetween(fill,    ax, ay, az, bx, by, bz, tint);
-    // The fill capsule is inset by the shell thickness on both caps,
-    // so its y-extent is shorter than the hip→neck distance. Clip the
-    // stamina range over the fill's actual range, not the outline's,
-    // so stamina=0 maps to the fill's bottom and stamina=1 maps to
-    // its top.
-    const hipY  = ay < by ? ay : by;
-    const neckY = ay < by ? by : ay;
-    const insetHipY  = hipY  + STICKMAN_TORSO_SHELL_THICKNESS;
-    const insetNeckY = neckY - STICKMAN_TORSO_SHELL_THICKNESS;
-    const fillWorldY = updateStaminaClipPlane(plane, insetHipY, insetNeckY, staminaFrac);
+    // Clip plane perpendicular to the torso axis at the stamina
+    // fraction. The fill capsule is inset by shell thickness on both
+    // caps (its ends sit `shellThickness` inside the outline), so the
+    // helper shrinks the range it maps 0/1 over accordingly.
+    const info = updateStaminaClipPlane(
+      plane, ax, ay, az, bx, by, bz,
+      STICKMAN_TORSO_SHELL_THICKNESS, staminaFrac, this._staminaClipOut,
+    );
 
     const disc = this._stickmanTorsoDisc[idx];
-    const midY = (ay + by) * 0.5;
     const discR = staminaDiscRadius(
-      fillWorldY - midY,
+      info.axialFromMid,
       this._fillBodyHalf,
       this._fillCapRadius,
     );
     if (discR > 0) {
       disc.visible = true;
-      disc.position.set((ax + bx) * 0.5, fillWorldY, (az + bz) * 0.5);
+      disc.position.set(info.cx, info.cy, info.cz);
+      // Orient the flat disc so its normal tracks the torso axis —
+      // otherwise an inclined torso would have a horizontal lid
+      // poking sideways through the shell.
+      this._scratchDiscDir.set(info.dx, info.dy, info.dz);
+      disc.quaternion.setFromUnitVectors(this._discLocalY, this._scratchDiscDir);
       const s = (discR / this._fillCapRadius) * 0.995;
       disc.scale.set(s, 1, s);
       disc.material.color.setRGB(tint[0], tint[1], tint[2]);

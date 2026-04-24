@@ -16,14 +16,56 @@ export function staminaDiscRadius(yLocalOffset, bodyHalf, capRadius) {
   return rSq > 0 ? Math.sqrt(rSq) : 0;
 }
 
-export function updateStaminaClipPlane(plane, ay, by, staminaFrac) {
-  const hipY  = ay < by ? ay : by;
-  const neckY = ay < by ? by : ay;
+/**
+ * Write a stamina-fill clipping plane perpendicular to the torso axis
+ * (hip → neck), at a position that is `staminaFrac` of the way along
+ * the capsule (inset by `shellThickness` on each end so the fill
+ * capsule — which is shorter than the outline — maps 0/1 to its own
+ * bottom/top, not the outline's).
+ *
+ * The plane is perpendicular to the torso axis, NOT horizontal — so a
+ * tilted torso (incline during a slump, grieve, or kick body-english)
+ * still has its fill and cap disc aligned with the body instead of
+ * shearing through the shell.
+ *
+ * Fills and returns `out` with:
+ *   cx, cy, cz          — clip point in world space
+ *   dx, dy, dz          — normalised hip→neck axis (disc's surface normal)
+ *   axialFromMid        — signed axial distance from capsule midpoint to
+ *                         clip point, for `staminaDiscRadius(...)`.
+ */
+export function updateStaminaClipPlane(
+  plane, ax, ay, az, bx, by, bz, shellThickness, staminaFrac, out,
+) {
+  const rx = bx - ax, ry = by - ay, rz = bz - az;
+  const len = Math.sqrt(rx * rx + ry * ry + rz * rz);
+  // Degenerate case — zero-length torso. Fall back to world-up.
+  const dx = len > 0 ? rx / len : 0;
+  const dy = len > 0 ? ry / len : 1;
+  const dz = len > 0 ? rz / len : 0;
+  // Clamp fraction to the allowed range.
   const clamped = staminaFrac < STAMINA_FLOOR ? STAMINA_FLOOR
                 : staminaFrac > 1 ? 1 : staminaFrac;
-  const fillWorldY = hipY + (neckY - hipY) * clamped;
-  plane.setComponents(0, -1, 0, fillWorldY);
-  return fillWorldY;
+  // Step from hip along d by `shellThickness`, then `insetLen * clamped`.
+  const insetAx = ax + dx * shellThickness;
+  const insetAy = ay + dy * shellThickness;
+  const insetAz = az + dz * shellThickness;
+  const insetLen = len - 2 * shellThickness;
+  const cx = insetAx + dx * insetLen * clamped;
+  const cy = insetAy + dy * insetLen * clamped;
+  const cz = insetAz + dz * insetLen * clamped;
+  // Plane equation: `-d · p + (d · c) = 0`. three.js treats points
+  // with `n·p + w ≥ 0` as visible, so the "hip side" (d·p ≤ d·c)
+  // stays rendered and the part past the clip point is hidden.
+  const dc = dx * cx + dy * cy + dz * cz;
+  plane.setComponents(-dx, -dy, -dz, dc);
+  // Axial offset from capsule midpoint — used by `staminaDiscRadius`.
+  const midX = (ax + bx) * 0.5, midY = (ay + by) * 0.5, midZ = (az + bz) * 0.5;
+  const axialFromMid = (cx - midX) * dx + (cy - midY) * dy + (cz - midZ) * dz;
+  out.cx = cx; out.cy = cy; out.cz = cz;
+  out.dx = dx; out.dy = dy; out.dz = dz;
+  out.axialFromMid = axialFromMid;
+  return out;
 }
 
 // Easing helpers. Normalized domain/range (0..1 → 0..1).

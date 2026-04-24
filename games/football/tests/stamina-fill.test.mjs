@@ -1,10 +1,9 @@
 /**
  * Unit tests for the torso stamina clipping-plane math.
  *
- * `updateStaminaClipPlane` interpolates between the two torso
- * endpoint y-values according to the stamina fraction, clamps the
- * fraction to [STAMINA_FLOOR, 1], and writes the result into the
- * clipping plane's components. Pure JS, no three.js needed — the
+ * `updateStaminaClipPlane` writes a plane perpendicular to the hip→neck
+ * axis at a position that is `staminaFrac` of the way along the torso,
+ * inset by `shellThickness` on each end. Pure JS, no three.js — the
  * test uses a stub plane with a recording `setComponents`.
  */
 
@@ -18,95 +17,116 @@ function stubPlane() {
     setComponents(x, y, z, w) { this.components = [x, y, z, w]; },
   };
 }
+function out() {
+  return { cx: 0, cy: 0, cz: 0, dx: 0, dy: 1, dz: 0, axialFromMid: 0 };
+}
 
-/* ── Plane equation shape ──────────────────────────────────── */
+// Shorthand: vertical torso from y=ay to y=by at x=z=0, no shell inset.
+function clipV(plane, ay, by, frac, shell = 0) {
+  return updateStaminaClipPlane(plane, 0, ay, 0, 0, by, 0, shell, frac, out());
+}
 
-test('plane uses world-horizontal normal (0, -1, 0)', () => {
+/* ── Plane equation shape for a vertical torso ─────────────── */
+
+test('vertical torso → plane normal is (0, -1, 0)', () => {
   const p = stubPlane();
-  updateStaminaClipPlane(p, 10, 20, 0.5);
-  assert.equal(p.components[0], 0);
+  clipV(p, 10, 20, 0.5);
+  assert.ok(Math.abs(p.components[0]) < 1e-12);
   assert.equal(p.components[1], -1);
-  assert.equal(p.components[2], 0);
+  assert.ok(Math.abs(p.components[2]) < 1e-12);
 });
 
-/* ── Interpolation ─────────────────────────────────────────── */
+/* ── Interpolation along the torso axis ────────────────────── */
 
-test('stamina = 0.5 puts fill line at the midpoint', () => {
+test('stamina = 0.5 puts the fill line at the midpoint', () => {
   const p = stubPlane();
-  const fillY = updateStaminaClipPlane(p, 10, 20, 0.5);
-  assert.equal(fillY, 15);
+  const info = clipV(p, 10, 20, 0.5);
+  assert.equal(info.cy, 15);
   assert.equal(p.components[3], 15);
 });
 
-test('stamina = 1.0 puts fill line at the top', () => {
+test('stamina = 1.0 puts the fill line at the top', () => {
   const p = stubPlane();
-  const fillY = updateStaminaClipPlane(p, 10, 20, 1.0);
-  assert.equal(fillY, 20);
+  const info = clipV(p, 10, 20, 1.0);
+  assert.equal(info.cy, 20);
 });
 
 test('stamina = 0 clamps to STAMINA_FLOOR (not the bottom)', () => {
-  // STAMINA_FLOOR is a small positive sliver so exhausted players
-  // still show a tiny cap of solid fill at the hip. The exact floor
-  // is a tuning constant inside renderer.js; the behavioral
-  // contract this test pins is "stamina=0 never lands at the bottom".
   const p = stubPlane();
-  const fillY = updateStaminaClipPlane(p, 10, 20, 0);
-  assert.ok(fillY > 10, `expected fill above hip, got ${fillY}`);
-  assert.ok(fillY < 11, `expected floor sliver <1 unit, got ${fillY}`);
+  const info = clipV(p, 10, 20, 0);
+  assert.ok(info.cy > 10, `expected fill above hip, got ${info.cy}`);
+  assert.ok(info.cy < 11, `expected floor sliver <1 unit, got ${info.cy}`);
 });
 
-test('negative stamina clamps to STAMINA_FLOOR', () => {
+test('negative stamina also clamps to STAMINA_FLOOR', () => {
   const p = stubPlane();
-  const fillY = updateStaminaClipPlane(p, 10, 20, -5);
-  assert.ok(fillY > 10 && fillY < 11);
+  const info = clipV(p, 10, 20, -5);
+  assert.ok(info.cy > 10 && info.cy < 11);
 });
 
 test('stamina > 1 clamps to 1.0', () => {
   const p = stubPlane();
-  const fillY = updateStaminaClipPlane(p, 10, 20, 1.7);
-  assert.equal(fillY, 20);
+  const info = clipV(p, 10, 20, 1.7);
+  assert.equal(info.cy, 20);
 });
 
-/* ── Endpoint order doesn't matter ─────────────────────────── */
+/* ── Tilted torso — plane follows the body axis ────────────── */
 
-test('inverted ay/by (torso upside down) still interpolates correctly', () => {
+test('tilted torso: plane normal points along the reverse hip→neck axis', () => {
   const p = stubPlane();
-  // Pass neck-Y first, hip-Y second. Function auto-sorts.
-  const fillY = updateStaminaClipPlane(p, 20, 10, 0.5);
-  assert.equal(fillY, 15);
+  // Hip at (0,0,0), neck at (3,4,0) → axis = (0.6, 0.8, 0).
+  // Plane normal is -d = (-0.6, -0.8, 0).
+  updateStaminaClipPlane(p, 0, 0, 0, 3, 4, 0, 0, 0.5, out());
+  assert.ok(Math.abs(p.components[0] - -0.6) < 1e-9);
+  assert.ok(Math.abs(p.components[1] - -0.8) < 1e-9);
+  assert.ok(Math.abs(p.components[2]) < 1e-12);
 });
 
-test('equal endpoints produce a flat plane at that y', () => {
+test('tilted torso: clip point lies ON the axis at `frac` of its length', () => {
   const p = stubPlane();
-  const fillY = updateStaminaClipPlane(p, 17, 17, 0.5);
-  assert.equal(fillY, 17);
+  const info = updateStaminaClipPlane(p, 0, 0, 0, 6, 8, 0, 0, 0.5, out());
+  // axis length = 10, midpoint at (3, 4, 0).
+  assert.ok(Math.abs(info.cx - 3) < 1e-9);
+  assert.ok(Math.abs(info.cy - 4) < 1e-9);
+  assert.equal(info.cz, 0);
 });
 
-/* ── Return value ──────────────────────────────────────────── */
-
-test('returns the computed fillWorldY for caller inspection', () => {
+test('tilted torso: axialFromMid is signed distance along axis', () => {
   const p = stubPlane();
-  const ret = updateStaminaClipPlane(p, 0, 100, 0.3);
-  assert.equal(ret, 30);
+  // stamina 0.75 on a length-10 axis → clip 2.5 units past midpoint.
+  const info = updateStaminaClipPlane(p, 0, 0, 0, 6, 8, 0, 0, 0.75, out());
+  assert.ok(Math.abs(info.axialFromMid - 2.5) < 1e-9);
 });
 
-/* ── Regression: real torso scale ──────────────────────────── */
+test('shellThickness insets both endpoints along the axis', () => {
+  const p = stubPlane();
+  // 10-unit vertical torso, 1-unit shell on each end → effective span 8.
+  const info = clipV(p, 0, 10, 0.5, 1);
+  // mid of inset span = 1 + 4 = 5. Same as un-inset midpoint here.
+  assert.equal(info.cy, 5);
+  // stamina 1.0 now caps at 9 (= 1 + 8 * 1.0), not 10.
+  const top = clipV(p, 0, 10, 1.0, 1);
+  assert.equal(top.cy, 9);
+});
+
+/* ── Degenerate input ──────────────────────────────────────── */
+
+test('equal endpoints produce a flat plane at that point', () => {
+  const p = stubPlane();
+  const info = clipV(p, 17, 17, 0.5);
+  assert.equal(info.cy, 17);
+});
+
+/* ── Regression: realistic torso span ──────────────────────── */
 
 test('realistic torso span and mid-stamina lands inside the span', () => {
-  // The in-game torso runs roughly from hipBaseY (~hips in world y)
-  // to hipBaseY + SHOULDER_OFY (~neck). Typical values during a
-  // standing pose are hipY≈20, neckY≈40. This test just pins the
-  // obvious expected behavior for a mid-field upright stickman.
   const p = stubPlane();
-  const fillY = updateStaminaClipPlane(p, 20, 40, 0.75);
-  assert.equal(fillY, 35);  // 75% of the way up
+  const info = clipV(p, 20, 40, 0.75);
+  assert.equal(info.cy, 35);  // 75% of the way up
 });
 
 /* ── staminaDiscRadius ─────────────────────────────────────── */
 
-// For the torso: bodyHalf = half the cylindrical body length,
-// capRadius = hemispherical cap radius. Numbers below are the
-// in-game values (SHOULDER_OFY=20.24 split into bodyHalf+capRadius).
 const BODY_HALF = 6.82;
 const CAP_R     = 3.3;
 
@@ -118,9 +138,6 @@ test('disc radius equals capRadius in the cylindrical middle', () => {
 });
 
 test('disc radius shrinks inside the top hemispherical cap', () => {
-  // At bodyHalf the cross-section is still capRadius (cylinder→cap
-  // join). At bodyHalf + capRadius it's 0 (very tip). Quarter way
-  // into the cap: sqrt(r² - (r/4)²) = r * sqrt(15/16) ≈ 0.968 * r.
   const quarterIntoCap = BODY_HALF + CAP_R * 0.25;
   const r = staminaDiscRadius(quarterIntoCap, BODY_HALF, CAP_R);
   const expected = CAP_R * Math.sqrt(1 - 0.25 * 0.25);
@@ -147,10 +164,9 @@ test('disc radius is 0 outside the capsule entirely', () => {
 });
 
 test('disc radius never exceeds capRadius', () => {
-  // Sweep the whole axis at 100 samples; radius must stay in [0, capR].
   const halfLen = BODY_HALF + CAP_R;
   for (let i = -100; i <= 100; i++) {
-    const y = (i / 100) * halfLen * 1.2; // slightly past tips
+    const y = (i / 100) * halfLen * 1.2;
     const r = staminaDiscRadius(y, BODY_HALF, CAP_R);
     assert.ok(r >= 0 && r <= CAP_R, `at y=${y}: r=${r} out of [0, ${CAP_R}]`);
   }

@@ -188,11 +188,13 @@ describe('animation/poses', () => {
       pusher.pushTargetY = 30;
       pusher.pushTargetZ = 0;
       // Advance far enough that pushProgress hits the STRIKE hop window.
+      // With PUSH_TOTAL_TICKS = 63 (1000 ms / 16 ms), STRIKE_T is at
+      // 63 * 0.50 = 31 ticks, so run past that.
       const anim = createAnimState(0, pusher);
       const pose = createPoseScratch();
       const s = scratches();
       let snap;
-      for (let t = 1; t <= 10; t++) {
+      for (let t = 1; t <= 35; t++) {
         snap = advanceAnimState(anim, pusher, t, false, {});
         composeStickmanPose(snap, pusher, pose, s.kick, s.push);
       }

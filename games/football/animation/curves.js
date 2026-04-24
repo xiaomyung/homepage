@@ -16,9 +16,9 @@ import {
 } from '../physics.js';
 
 // ── Push body-english constants + sub-stage boundaries ───────
-// PUSH_TOTAL_TICKS = PUSH_ANIM_MS (300) / TICK_MS (16) = ~18.
+// PUSH_TOTAL_TICKS = ceil(PUSH_ANIM_MS (1000) / TICK_MS (16)) = 63.
 // All Ts below are fractions of that window.
-export const PUSH_TOTAL_TICKS  = 18;
+export const PUSH_TOTAL_TICKS  = 63;
 export const PUSH_RAISE_T      = 0.15;
 export const PUSH_WINDUP_T     = 0.35;
 export const PUSH_STRIKE_T     = 0.50;

@@ -125,7 +125,7 @@ const PUSH_APPLY = 0.12;
 const PUSH_VEL_THRESHOLD = 0.5;
 const PUSH_VEL_THRESHOLD_SQ = PUSH_VEL_THRESHOLD * PUSH_VEL_THRESHOLD;
 const MIN_PUSH_STAMINA = 0.2;
-export const PUSH_ANIM_MS = 300;
+export const PUSH_ANIM_MS = 1000;
 const PUSH_STAMINA_COST = 0.15;
 const PUSH_VICTIM_STAMINA_MULT = 3;
 
@@ -501,7 +501,7 @@ export const NN_OUTPUT_SIZE    = 9;
  *  the victim at `t = PUSH_WINDUP_FRAC` of the animation; pushTimer
  *  counts DOWN from PUSH_ANIM_MS, so the strike fires when the timer
  *  first drops to (or past) PUSH_ANIM_MS * (1 - PUSH_WINDUP_FRAC). */
-const PUSH_STRIKE_TIMER = 195; // PUSH_ANIM_MS * (1 - PUSH_WINDUP_FRAC) = 300 * 0.65
+const PUSH_STRIKE_TIMER = 650; // PUSH_ANIM_MS * (1 - PUSH_WINDUP_FRAC) = 1000 * 0.65
 
 /** Tick a push cooldown forward. Returns true if the player is still
  *  mid-push and should not accept new actions this tick — mirrors

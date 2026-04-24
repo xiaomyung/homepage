@@ -126,8 +126,9 @@ test('player pushed while standing still is still charged for displacement', () 
 
   // p1 pushes, p2 does nothing
   tick(state, pushAction(1), NOOP);
-  // Run push physics for several ticks to let pushVx decay
-  for (let i = 0; i < 20; i++) {
+  // Run physics through the full push cycle (PUSH_ANIM_MS=1000ms at
+  // 16ms/tick → ~63 ticks, strike lands ~tick 22) plus impulse decay.
+  for (let i = 0; i < 60; i++) {
     tick(state, NOOP, NOOP);
   }
 
@@ -243,10 +244,9 @@ test('push lands when players are in contact range', () => {
   );
   assert.ok(state.p1.pushTimer > 0, 'pusher should have cooldown');
 
-  // Impulse itself is deferred to the strike tick (mid-animation).
-  // Tick forward through the strike window and verify the victim
-  // is actually displaced — the contract the user cares about.
-  for (let i = 0; i < 10; i++) tick(state, NOOP, NOOP);
+  // Impulse itself is deferred to the strike tick (mid-animation,
+  // ~tick 22 of 63). Tick through and verify displacement.
+  for (let i = 0; i < 40; i++) tick(state, NOOP, NOOP);
   assert.ok(
     state.p2.x > startX,
     `push did not displace victim: p2.x=${state.p2.x}, startX=${startX}`,
@@ -274,15 +274,15 @@ test('push impulse is deferred to the strike tick, not applied on windup', () =>
     `victim must not move on tick 1, moved to ${state.p2.x}`,
   );
 
-  // Strike fires somewhere in ticks 2-7 (strike threshold = 195 ms,
-  // timer decrements 16 ms per tick). Keep ticking until pushVx
-  // becomes non-zero — this is the strike moment.
+  // Strike fires when pushTimer first drops <= PUSH_STRIKE_TIMER (650
+  // ms). pushTimer starts at 1000 ms and decrements 16 ms/tick, so
+  // strike ≈ tick 22 of the push.
   let strikeTick = -1;
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 30; i++) {
     tick(state, NOOP, NOOP);
     if (state.p2.pushVx !== 0 && strikeTick === -1) strikeTick = i + 2;
   }
-  assert.ok(strikeTick >= 2 && strikeTick <= 8,
+  assert.ok(strikeTick >= 20 && strikeTick <= 25,
     `strike tick out of expected range: ${strikeTick}`);
 });
 
@@ -976,8 +976,8 @@ test('push lands when players overlap in depth (touching)', () => {
   tick(state, pushAction(1), NOOP);
   assert.ok(state.events.some(e => e.type === 'push'), 'push event expected on touch');
 
-  // Strike tick is mid-animation — tick through it to see displacement.
-  for (let i = 0; i < 10; i++) tick(state, NOOP, NOOP);
+  // Strike tick is mid-animation (~tick 22) — tick well past it.
+  for (let i = 0; i < 40; i++) tick(state, NOOP, NOOP);
   assert.ok(
     state.p2.x !== startX,
     `push should displace victim on contact: p2.x=${state.p2.x}`,

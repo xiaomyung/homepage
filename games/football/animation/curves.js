@@ -89,13 +89,31 @@ export function pushHopAt(t) {
 }
 
 /**
- * Leg crouch amplitude during a push. 0 at rest, ramps up during
- * the raise/windup loading phase, peaks at the end of windup, then
- * eases back to 0 by the end of the strike (when the legs are
- * fully extended under the hop). Unit-amplitude [0,1]; poses.js
- * scales the rear vs front leg differently.
+ * Split-stance magnitude during a push: one leg forward, one leg
+ * behind. 0 at rest, eases up to 1 during the raise phase, holds
+ * through windup + strike (feet stay planted while the body loads
+ * and thrusts), eases back to 0 during settle. Unit-amplitude [0,1].
  */
-export function pushLegCrouchAt(t) {
+export function pushLegStanceAt(t) {
+  if (t < PUSH_RAISE_T) {
+    return easeOut(t / PUSH_RAISE_T);
+  }
+  if (t < PUSH_STRIKE_T) return 1;
+  if (t < PUSH_SETTLE_T) {
+    const p = (t - PUSH_STRIKE_T) / (PUSH_SETTLE_T - PUSH_STRIKE_T);
+    return 1 - easeOut(p);
+  }
+  return 0;
+}
+
+/**
+ * Knee flex (squat) magnitude added on top of the stance: both knees
+ * bend as the body loads, then extend as the strike fires. 0 at rest
+ * and during the raise, ramps up through windup, peaks at the end of
+ * windup, eases back to 0 by the end of the strike. Unit-amplitude
+ * [0,1].
+ */
+export function pushLegSquatAt(t) {
   if (t < PUSH_RAISE_T) return 0;
   if (t < PUSH_WINDUP_T) {
     const p = (t - PUSH_RAISE_T) / (PUSH_WINDUP_T - PUSH_RAISE_T);

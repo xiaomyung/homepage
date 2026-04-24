@@ -45,7 +45,8 @@ import {
   PUSH_TOTAL_TICKS,
   kickArmAngleAt, kickDipAt, kickTiltAt, airkickTiltAt,
   kickHipTwistAt, kickSupportCrouchAt,
-  pushBodyDipAt, pushHopAt, pushBodyTiltAt, pushLegCrouchAt,
+  pushBodyDipAt, pushHopAt, pushBodyTiltAt,
+  pushLegStanceAt, pushLegSquatAt,
 } from './curves.js';
 
 // Celebration shape — jumping-jack height + leg spread. Imported
@@ -287,34 +288,41 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     rightArmAngle = -kickArmAngle * KICK_ARM_OPP_FRAC;
   }
 
-  // Push leg squat: rear leg (opposite the striking arm) loads with a
-  // deep knee bend during windup and extends on the strike; front leg
-  // mirrors at reduced amplitude. Thigh tilts forward, shin tilts back
-  // by the same magnitude so the foot plants directly under the hip
-  // (approximating a symmetric two-bone squat on a rig where
-  // STICKMAN_UPPER_LEG ≈ STICKMAN_LOWER_LEG). Physics guarantees
-  // push and kick never overlap, so no ordering conflict with the
-  // kick block above.
+  // Push legs: boxing-stance split (one leg forward, one back) during
+  // windup + strike, with a knee-flex squat layered on top that peaks
+  // at the end of windup and unloads as the body thrusts forward into
+  // the hop. Recovery eases the stance split back to a normal stance.
+  //
+  // - Front leg (opposite striking arm) tilts forward.
+  // - Rear leg (same side as striking arm) tilts backward.
+  // - Squat tips both thighs forward and both shins back by the same
+  //   amount, dropping the hip over the stance without moving the feet.
+  //
+  // Physics guarantees push and kick never overlap, so there's no
+  // ordering conflict with the kick block above.
   if (pushing > 0 && celeb < 0.001 && !isKicking) {
-    const pushT = Math.min(pushProgress / PUSH_TOTAL_TICKS, 1);
-    const legLoad = pushLegCrouchAt(pushT);
-    if (legLoad > 0.001) {
-      const PUSH_REAR_THIGH_MAX  = 0.50;   // rad at full load
-      const PUSH_FRONT_THIGH_MAX = 0.28;
-      const rearThigh  = PUSH_REAR_THIGH_MAX  * legLoad;
-      const frontThigh = PUSH_FRONT_THIGH_MAX * legLoad;
+    const pushT  = Math.min(pushProgress / PUSH_TOTAL_TICKS, 1);
+    const stance = pushLegStanceAt(pushT);
+    const squat  = pushLegSquatAt(pushT);
+    if (stance > 0.001 || squat > 0.001) {
+      const PUSH_FRONT_THIGH = 0.28;  // rad forward at full stance
+      const PUSH_REAR_THIGH  = 0.35;  // rad backward at full stance
+      const PUSH_SQUAT_FLEX  = 0.35;  // rad thigh-forward / shin-back at peak
+      const frontBase =  PUSH_FRONT_THIGH * stance;
+      const rearBase  = -PUSH_REAR_THIGH  * stance;
+      const flex      =  PUSH_SQUAT_FLEX  * squat;
       if (player.pushArm === 'right') {
         // Rear = right, front = left.
-        rightUpperAngle = rightLegAngle + rearThigh;
-        rightLowerAngle = -rearThigh;
-        leftUpperAngle  = leftLegAngle + frontThigh;
-        leftLowerAngle  = -frontThigh;
+        leftUpperAngle  = frontBase + flex;
+        leftLowerAngle  = frontBase - flex;
+        rightUpperAngle = rearBase  + flex;
+        rightLowerAngle = rearBase  - flex;
       } else {
         // Rear = left, front = right.
-        leftUpperAngle  = leftLegAngle + rearThigh;
-        leftLowerAngle  = -rearThigh;
-        rightUpperAngle = rightLegAngle + frontThigh;
-        rightLowerAngle = -frontThigh;
+        rightUpperAngle = frontBase + flex;
+        rightLowerAngle = frontBase - flex;
+        leftUpperAngle  = rearBase  + flex;
+        leftLowerAngle  = rearBase  - flex;
       }
     }
   }

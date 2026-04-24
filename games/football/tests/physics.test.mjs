@@ -284,6 +284,35 @@ test('push writes hit-reaction state on the victim at the strike tick', () => {
   }
 });
 
+test('push contact tick is per-type: uppercut earliest, jab latest', () => {
+  // Each punch type commits its impulse at a different strike tick
+  // because the fist engages the target at a different moment of
+  // the arm's windup→strike blend. Uppercut connects at t≈0.42,
+  // hook at ≈0.46, jab at ≈0.50 — longer throws land later.
+  const measure = (p2X) => {
+    const s = freshState();
+    s.p1.x = s.field.midX - 10;
+    s.p2.x = s.field.midX + p2X;   // distance from p1 picks pushType
+    s.p1.y = s.p2.y = FIELD_HEIGHT / 2;
+    tick(s, pushAction(1), NOOP);
+    for (let i = 0; i < 40; i++) {
+      tick(s, NOOP, NOOP);
+      if (s.p2.pushVx !== 0) return i + 2;
+    }
+    return -1;
+  };
+  // p2.x offsets chosen so fwdDist falls in each type's range.
+  const uppercutTick = measure(-6);    // fwdDist = 4 → uppercut
+  const hookTick     = measure(+8);    // fwdDist = 18 → hook
+  const jabTick      = measure(+18);   // fwdDist = 28 → jab
+  assert.ok(uppercutTick > 0 && hookTick > 0 && jabTick > 0,
+    `all types should strike; got uppercut=${uppercutTick}, hook=${hookTick}, jab=${jabTick}`);
+  assert.ok(uppercutTick < hookTick,
+    `uppercut (${uppercutTick}) should fire BEFORE hook (${hookTick})`);
+  assert.ok(hookTick < jabTick,
+    `hook (${hookTick}) should fire BEFORE jab (${jabTick})`);
+});
+
 test('push impulse is deferred to the strike tick, not applied on windup', () => {
   // Pushed player should NOT move during the windup phase — the
   // impulse only lands at the animation's strike tick (mid-

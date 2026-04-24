@@ -137,12 +137,17 @@ const PUSH_WINDUP_FRAC = 0.35;   // windup → strike transition
 const PUSH_STRIKE_FRAC = 0.50;   // strike → recover transition;
                                  //   pose blends WINDUP→STRIKE end
                                  //   here; arm at peak forward.
-// Contact fraction — when the fist FIRST meets the target in flight,
-// not when the arm reaches its absolute peak. Fist is already ~50%
-// of the way from the windup keyframe to the strike keyframe, so
-// for most pair distances (especially closer hooks/uppercuts) this
-// lines up with the visual contact moment.
-const PUSH_CONTACT_FRAC = 0.42;
+// Contact fraction per punch type — when the fist FIRST meets the
+// target. Different types engage at different pair distances
+// (uppercut PUSH_UPPERCUT_RANGE=14, hook <22, jab <PUSH_RANGE_X=30),
+// so the arm must extend further for a jab than an uppercut. Longer
+// throws land later in the WINDUP→STRIKE blend — closer to peak
+// extension — while close-range uppercuts connect early.
+const PUSH_CONTACT_FRAC = {
+  jab:      0.50,
+  hook:     0.46,
+  uppercut: 0.42,
+};
 const PUSH_WINDUP_PEAK_TEFF = 0.7;
 const PUSH_STAMINA_COST = 0.15;
 const PUSH_VICTIM_STAMINA_MULT = 3;
@@ -529,16 +534,17 @@ export const ACTION_PUSH_GATE  = 7;
 export const ACTION_PUSH_POWER = 8;
 export const NN_OUTPUT_SIZE    = 9;
 
-/** Strike threshold in ms of `pushTimer` remaining. Fires at
- *  `t = PUSH_CONTACT_FRAC` — the moment the fist first MEETS the
- *  target, not when the arm reaches its absolute peak. Chosen ~0.42
- *  so the victim's reaction lines up with the visual contact for
- *  all pair distances (jab / hook / uppercut), avoiding the "pusher
- *  body clips through the still-standing victim" artefact that
- *  happened when the impulse landed at the very end of the strike
- *  phase. pushTimer counts DOWN from PUSH_ANIM_MS, so the trigger
- *  is `PUSH_ANIM_MS * (1 - PUSH_CONTACT_FRAC)`. */
-const PUSH_STRIKE_TIMER = PUSH_ANIM_MS * (1 - PUSH_CONTACT_FRAC);
+/** Strike threshold in ms of `pushTimer` remaining, keyed by the
+ *  pusher's pushType. Jab fist has to extend furthest and connects
+ *  close to peak; uppercut engages at short range and connects
+ *  early in the strike blend. pushTimer counts DOWN from
+ *  PUSH_ANIM_MS, so the trigger for a type is
+ *  `PUSH_ANIM_MS * (1 - PUSH_CONTACT_FRAC[type])`. */
+const PUSH_STRIKE_TIMER = {
+  jab:      PUSH_ANIM_MS * (1 - PUSH_CONTACT_FRAC.jab),
+  hook:     PUSH_ANIM_MS * (1 - PUSH_CONTACT_FRAC.hook),
+  uppercut: PUSH_ANIM_MS * (1 - PUSH_CONTACT_FRAC.uppercut),
+};
 
 /** Tick a push cooldown forward. Returns true if the player is still
  *  mid-push and should not accept new actions this tick — mirrors
@@ -551,10 +557,12 @@ function advancePush(p) {
   p.pushTimer -= TICK_MS;
   if (p.pushTimer < 0) p.pushTimer = 0;
   // Strike fires on the single tick where pushTimer crosses the
-  // threshold. One-shot by construction: after committing, the
-  // pending pointer is nulled so subsequent ticks through the
-  // recovery phase do not re-apply the impulse.
-  if (p.pendingPushVictim && prevTimer > PUSH_STRIKE_TIMER && p.pushTimer <= PUSH_STRIKE_TIMER) {
+  // per-type threshold (jab extends further than uppercut, so it
+  // connects later in the strike blend). One-shot by construction:
+  // after committing, the pending pointer is nulled so subsequent
+  // ticks through the recovery phase do not re-apply the impulse.
+  const threshold = PUSH_STRIKE_TIMER[p.pushType] || PUSH_STRIKE_TIMER.jab;
+  if (p.pendingPushVictim && prevTimer > threshold && p.pushTimer <= threshold) {
     const victim = p.pendingPushVictim;
     victim.pushVx = p.pendingPushVx;
     victim.pushVy = p.pendingPushVy;

@@ -14,7 +14,8 @@ function makePlayer(overrides = {}) {
     kick: { active: false, kind: 'ground', timer: 0, stage: 'windup' },
     pushTimer: 0, pushArm: 'right', pushType: 'jab',
     pushTargetX: 0, pushTargetY: 0, pushTargetZ: 0,
-    reactTimer: 0, reactForce: 0, reactDirX: 0, reactDirZ: 0, reactType: 'jab',
+    reactTimer: 0, reactForce: 0, reactDirX: 0, reactDirZ: 0,
+    reactType: 'jab', reactLatSign: 1,
     ...overrides,
   };
 }
@@ -284,20 +285,36 @@ describe('animation/poses', () => {
         `jab from behind: neck should pitch forward, got neckX-baseX=${neckDx}`);
     });
 
-    it('hook reaction rolls the body sideways along the hit-side axis', () => {
-      // Heading 0 (facing +x); hit from the left side (impulse along
-      // +z). The hit should roll the torso laterally (neck shifts in
-      // +z direction vs no-react baseline).
+    it('hook reaction rolls the body sideways along reactLatSign (not impulse)', () => {
+      // Heading 0 (facing +x); axial impulse (face-to-face push).
+      // reactLatSign drives the body roll — the impulse's lateral
+      // component is ~0 for a head-on push. reactLatSign=+1 should
+      // roll the neck toward +lateral (victim's left, +z in world).
       const victim = makePlayer({
         reactTimer: 400,
         reactForce: 0.9,
-        reactDirX: 0, reactDirZ: 1,
+        reactDirX: -1, reactDirZ: 0,  // axial hit from the front
         reactType: 'hook',
+        reactLatSign: 1,
       });
       const { pose } = runFrame(victim, { ticks: 1 });
       const neckDz = pose.neckZ - pose.baseZ;
       assert.ok(neckDz > 0.5,
-        `hook from left: neck should roll sideways in +z, got neckZ-baseZ=${neckDz}`);
+        `hook reactLatSign=+1: neck should roll in +z, got neckZ-baseZ=${neckDz}`);
+    });
+
+    it('hook reactLatSign=-1 whips the body the other way', () => {
+      const victim = makePlayer({
+        reactTimer: 400,
+        reactForce: 0.9,
+        reactDirX: -1, reactDirZ: 0,
+        reactType: 'hook',
+        reactLatSign: -1,
+      });
+      const { pose } = runFrame(victim, { ticks: 1 });
+      const neckDz = pose.neckZ - pose.baseZ;
+      assert.ok(neckDz < -0.5,
+        `hook reactLatSign=-1: neck should roll in -z, got neckZ-baseZ=${neckDz}`);
     });
 
     it('uppercut reaction lifts the hip above neutral', () => {

@@ -225,17 +225,19 @@ export function advanceAnimState(
   // Victim hit-reaction passthrough (purely read-only from physics).
   // reactT is 0→1 over REACT_ANIM_MS; reactForce is normalized 0..1.
   if (player.reactTimer > 0) {
-    out.reactT      = 1 - (player.reactTimer / REACT_ANIM_MS);
-    out.reactForce  = player.reactForce || 0;
-    out.reactDirX   = player.reactDirX  || 0;
-    out.reactDirZ   = player.reactDirZ  || 0;
-    out.reactType   = player.reactType  || 'jab';
+    out.reactT       = 1 - (player.reactTimer / REACT_ANIM_MS);
+    out.reactForce   = player.reactForce  || 0;
+    out.reactDirX    = player.reactDirX   || 0;
+    out.reactDirZ    = player.reactDirZ   || 0;
+    out.reactType    = player.reactType   || 'jab';
+    out.reactLatSign = player.reactLatSign || 1;
   } else {
-    out.reactT      = 0;
-    out.reactForce  = 0;
-    out.reactDirX   = 0;
-    out.reactDirZ   = 0;
-    out.reactType   = 'jab';
+    out.reactT       = 0;
+    out.reactForce   = 0;
+    out.reactDirX    = 0;
+    out.reactDirZ    = 0;
+    out.reactType    = 'jab';
+    out.reactLatSign = 1;
   }
   return out;
 }

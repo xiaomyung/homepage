@@ -50,15 +50,22 @@ import {
 } from './curves.js';
 
 // Hit-reaction maxes — what a full-force punch of each type does.
-// Scaled by reactForce × reactIntensity(t) at apply time.
-const REACT_JAB_BODY_TILT     = 0.50;   // rad — body recoil along impulse axis
-const REACT_JAB_HEAD_BACK     = 0.45;   // rad — head snaps in impulse axis
-const REACT_HOOK_BODY_ROLL    = 0.45;   // rad — lateral torso sway for hooks
-const REACT_HOOK_BODY_TILT    = 0.25;   // rad — smaller forward component for hooks
-const REACT_HOOK_HEAD_SIDE    = 0.55;   // rad — head whips sideways more than body rolls
-const REACT_UPPER_BODY_TILT   = 0.35;   // rad — forward component (uppercuts drive back)
-const REACT_UPPER_HIP_LIFT    = 3.5;    // world units — hip lurches up on an uppercut
-const REACT_UPPER_HEAD_UP     = 0.55;   // rad — head jerks up and back
+// Scaled by sqrt(reactForce) × reactIntensity(t) at apply time. Each
+// variant's hero channel is amped so the three reactions read as
+// obviously different punches, not just "got nudged."
+//
+//   jab      — axial (forward/back) body snap + head whip on the same axis.
+//   hook     — LATERAL body roll + big lateral head whip, driven by the
+//              fist sweep direction (reactLatSign), not impulse direction.
+//   uppercut — VERTICAL — hip lurches up, head tilts way up and back.
+const REACT_JAB_BODY_TILT     = 0.70;   // rad — full-force jab tilt
+const REACT_JAB_HEAD_BACK     = 0.95;   // rad — head snaps back harder than body
+const REACT_HOOK_BODY_ROLL    = 0.80;   // rad — dominant lateral torso roll
+const REACT_HOOK_BODY_TILT    = 0.20;   // rad — small axial follow
+const REACT_HOOK_HEAD_SIDE    = 1.30;   // rad — head whips sideways, huge
+const REACT_UPPER_BODY_BACK   = 0.50;   // rad — body rocks back from chin hit
+const REACT_UPPER_HIP_LIFT    = 7.0;    // world units — hip lurches up
+const REACT_UPPER_HEAD_UP     = 1.10;   // rad — head jerks up + back hard
 
 // Celebration shape — jumping-jack height + leg spread. Imported
 // here so the pose composer stays self-contained.
@@ -233,20 +240,21 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // normalized 0..1. Direction is the world-xz unit vector the
   // victim was knocked along; decompose into the victim's local
   // forward/lateral to pick the right axis per punch type.
-  const reactT      = animSnap.reactT     || 0;
-  const reactForce  = animSnap.reactForce || 0;
-  const reactType   = animSnap.reactType  || 'jab';
-  const rDirX       = animSnap.reactDirX  || 0;
-  const rDirZ       = animSnap.reactDirZ  || 0;
+  const reactT      = animSnap.reactT       || 0;
+  const reactForce  = animSnap.reactForce   || 0;
+  const reactType   = animSnap.reactType    || 'jab';
+  const rDirX       = animSnap.reactDirX    || 0;
+  const rDirZ       = animSnap.reactDirZ    || 0;
+  const reactLatSign = animSnap.reactLatSign || 1;
   // Intensity envelope. Force is compressed by sqrt so even a light
   // push (force ≈ 0.1) produces a visible recoil (intensity ≈ 0.3),
   // while full-force hits still top out at 1.0. Time decay is
   // quadratic — sharp spike + gradual recovery.
   const reactInt    = Math.sqrt(reactForce) * (1 - reactT) * (1 - reactT);
   // `fwdDot` > 0 ⇒ impulse goes along the victim's heading (hit from
-  // behind). `latDot` sign picks which side the punch came from.
+  // behind). For a face-to-face push (the common case) fwdDot is
+  // negative so axial tilt goes BACK.
   const fwdDot = rDirX * forwardX + rDirZ * forwardZ;
-  const latDot = rDirX * lateralX + rDirZ * lateralZ;
   let reactBodyTilt   = 0;   // along heading axis — adds to upperTilt
   let reactBodyRoll   = 0;   // along lateral axis — adds a sideways sway
   let reactHipLift    = 0;   // vertical world-units added to upperHipY
@@ -254,16 +262,20 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   let reactHeadSide   = 0;   // rad — head pitch along lateral axis
   if (reactInt > 0.001) {
     if (reactType === 'hook') {
+      // Lateral dominant. Direction = reactLatSign (fist sweep), NOT
+      // impulse direction (which is axial for face-to-face pushes).
+      reactBodyRoll = REACT_HOOK_BODY_ROLL * reactLatSign * reactInt;
+      reactHeadSide = REACT_HOOK_HEAD_SIDE * reactLatSign * reactInt;
       reactBodyTilt = REACT_HOOK_BODY_TILT * fwdDot * reactInt;
-      reactBodyRoll = REACT_HOOK_BODY_ROLL * latDot * reactInt;
-      reactHeadSide = REACT_HOOK_HEAD_SIDE * latDot * reactInt;
-      reactHeadBack = REACT_HOOK_BODY_TILT * 0.6 * fwdDot * reactInt;
     } else if (reactType === 'uppercut') {
-      reactBodyTilt = REACT_UPPER_BODY_TILT * fwdDot * reactInt;
-      reactHipLift  = REACT_UPPER_HIP_LIFT  * reactInt;
-      reactHeadBack = REACT_UPPER_HEAD_UP   * -Math.sign(fwdDot || 1) * reactInt;
+      // Vertical dominant. Hip lurches up. Chin rises — head ALWAYS
+      // tilts back (up) because the uppercut rotates the skull around
+      // the neck regardless of which side the fist arrived from.
+      reactHipLift  = REACT_UPPER_HIP_LIFT * reactInt;
+      reactBodyTilt = REACT_UPPER_BODY_BACK * fwdDot * reactInt;
+      reactHeadBack = -REACT_UPPER_HEAD_UP * reactInt;
     } else {
-      // jab — pure axial recoil
+      // Jab — clean axial recoil.
       reactBodyTilt = REACT_JAB_BODY_TILT * fwdDot * reactInt;
       reactHeadBack = REACT_JAB_HEAD_BACK * fwdDot * reactInt;
     }

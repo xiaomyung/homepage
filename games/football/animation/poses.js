@@ -72,10 +72,17 @@ const REACT_UPPER_HEAD_UP     = 1.10;   // rad — head jerks up + back hard
 // the arms pasted to the sides.
 const REACT_ARM_THROW         = Math.PI / 2.8;  // rad — ≈64° forward at peak
 
-// Celebration shape — jumping-jack height + leg spread. Imported
-// here so the pose composer stays self-contained.
-const CELEB_JUMP_PEAK  = 0.55 * STICKMAN_GLYPH_SIZE;
-const CELEB_LEG_SPREAD = 0.55;
+// Celebration shape — proper jump cycle: crouch → push-off → apex
+// → landing crouch, with the hip tracking through the cycle and
+// knees bending during the ground phases. Arms pump above the head
+// with a subtle alternate oscillation so the celebrate reads as
+// jubilation instead of a rigid "hands up" pose.
+const CELEB_JUMP_PEAK   = 0.55 * STICKMAN_GLYPH_SIZE;   // peak hip lift at apex
+const CELEB_CROUCH_DEPTH = 0.32 * STICKMAN_GLYPH_SIZE;  // hip drop at deepest crouch
+const CELEB_LEG_SQUAT    = 0.60;                        // rad thigh-fwd / shin-back at crouch
+const CELEB_ARM_RAISE_MAX = 0.95;                       // × π — at apex, arms almost straight up
+const CELEB_ARM_RAISE_REST = 0.80;                      // × π — between jumps (on ground)
+const CELEB_ARM_PUMP      = 0.12;                       // × π — alternate oscillation magnitude
 
 // STOP pose — subtle backward body lean when the player is
 // decelerating sharply (smoothed `stop` factor). Maxes out at this
@@ -198,8 +205,16 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   const pushProgress   = animSnap.pushProgress;
   const walkTilt       = animSnap.walkTilt;
 
-  const jumpY = Math.max(0, Math.sin(celebratePhase)) * CELEB_JUMP_PEAK * celeb;
-  const bob   = Math.abs(swing) * 0.08 * amplitude * celebInv;
+  // Celebrate jump cycle. First half of celebratePhase [0, π] is one
+  // jump (crouch at 0/π, apex at π/2); second half [π, 2π] is a
+  // short recovery standing on the ground so the figure doesn't
+  // hammer-spam jumps.
+  const inJump       = celebratePhase < Math.PI;
+  const celebJumpT   = inJump ? celebratePhase / Math.PI : 0;  // 0→1 during the jump, 0 during rest
+  const celebCrouch  = inJump ? (1 - Math.sin(Math.PI * celebJumpT)) : 0; // 1→0→1 during jump
+  const jumpY        = Math.max(0, Math.sin(celebratePhase)) * CELEB_JUMP_PEAK * celeb;
+  const celebHipDrop = CELEB_CROUCH_DEPTH * celebCrouch * celeb;
+  const bob          = Math.abs(swing) * 0.08 * amplitude * celebInv;
 
   // ── Push body-english ────────────────────────────────────
   let pushBodyDip    = 0;
@@ -296,7 +311,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // approximation is safe at these magnitudes (≤0.45 rad).
   const rollS = Math.sin(reactBodyRoll);
 
-  const hipBaseY  = STICKMAN_LIMB_FULL_H + bob * STICKMAN_GLYPH_SIZE + jumpY + airLift - turnHipDip + reactHipLift;
+  const hipBaseY  = STICKMAN_LIMB_FULL_H + bob * STICKMAN_GLYPH_SIZE + jumpY + airLift - turnHipDip - celebHipDrop + reactHipLift;
   const upperHipY = hipBaseY + pushBodyDip + kickBodyDip;
 
   const torsoH     = STICKMAN_SHOULDER_OFY;
@@ -341,13 +356,19 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   let leftLegAngle  =  legSwing;
   let rightLegAngle = -legSwing;
 
-  // Celebrate interp: arms → ±π, legs → ±legSpread (jumping jack).
+  // Celebrate arms — both raised, with subtle alternate pumping.
+  // During the jump itself the raise climbs from rest-level toward
+  // max at apex; during the on-ground rest phase, a small sinusoidal
+  // pump alternates the arms so the pose doesn't freeze.
   if (celeb > 0.001) {
-    const legSpread = Math.max(0, Math.sin(celebratePhase)) * CELEB_LEG_SPREAD;
-    leftArmAngle  = leftArmAngle  * celebInv +  Math.PI   * celeb;
-    rightArmAngle = rightArmAngle * celebInv + -Math.PI   * celeb;
-    leftLegAngle  = leftLegAngle  * celebInv + -legSpread * celeb;
-    rightLegAngle = rightLegAngle * celebInv +  legSpread * celeb;
+    const restT = inJump ? 0 : (celebratePhase - Math.PI) / Math.PI;  // 0..1 during rest half
+    const jumpRaise = CELEB_ARM_RAISE_REST
+                    + (CELEB_ARM_RAISE_MAX - CELEB_ARM_RAISE_REST) * Math.sin(Math.PI * celebJumpT);
+    const baseRaise = inJump ? jumpRaise : CELEB_ARM_RAISE_REST;
+    // Alternate pump — only during rest so the jump itself stays clean.
+    const pump = inJump ? 0 : Math.sin(restT * Math.PI * 2) * CELEB_ARM_PUMP;
+    leftArmAngle  = leftArmAngle  * celebInv +  Math.PI * (baseRaise + pump) * celeb;
+    rightArmAngle = rightArmAngle * celebInv + -Math.PI * (baseRaise - pump) * celeb;
   }
 
   // ── Per-leg (upper, lower) base: cosmetic knee follow-through ─
@@ -355,6 +376,19 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   let leftLowerAngle  = shinAngleFor(leftLegAngle);
   let rightUpperAngle = rightLegAngle;
   let rightLowerAngle = shinAngleFor(rightLegAngle);
+
+  // Celebrate legs — symmetric squat that drives the jump. Peaks at
+  // full flex when the hip is at its lowest (crouch) and fully
+  // extends (0 flex) at the apex of the jump. Same thigh-fwd /
+  // shin-back shape as the push squat so the foot plants under the
+  // hip. Blended over whatever the walk base produced.
+  if (celeb > 0.001) {
+    const legFlex = CELEB_LEG_SQUAT * celebCrouch * celeb;
+    leftUpperAngle  = leftUpperAngle  * celebInv + (+legFlex) * celeb;
+    leftLowerAngle  = leftLowerAngle  * celebInv + (-legFlex) * celeb;
+    rightUpperAngle = rightUpperAngle * celebInv + (+legFlex) * celeb;
+    rightLowerAngle = rightLowerAngle * celebInv + (-legFlex) * celeb;
+  }
 
   // Kick override: right leg → IK to kick.footTarget; support leg
   // (left) micro-crouches; arms swap to the kick counter-swing.

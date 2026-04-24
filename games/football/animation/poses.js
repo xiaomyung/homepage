@@ -49,6 +49,17 @@ import {
   pushLegStanceAt, pushLegSquatAt,
 } from './curves.js';
 
+// Hit-reaction maxes — what a full-force punch of each type does.
+// Scaled by reactForce × reactIntensity(t) at apply time.
+const REACT_JAB_BODY_TILT     = 0.50;   // rad — body recoil along impulse axis
+const REACT_JAB_HEAD_BACK     = 0.45;   // rad — head snaps in impulse axis
+const REACT_HOOK_BODY_ROLL    = 0.45;   // rad — lateral torso sway for hooks
+const REACT_HOOK_BODY_TILT    = 0.25;   // rad — smaller forward component for hooks
+const REACT_HOOK_HEAD_SIDE    = 0.55;   // rad — head whips sideways more than body rolls
+const REACT_UPPER_BODY_TILT   = 0.35;   // rad — forward component (uppercuts drive back)
+const REACT_UPPER_HIP_LIFT    = 3.5;    // world units — hip lurches up on an uppercut
+const REACT_UPPER_HEAD_UP     = 0.55;   // rad — head jerks up and back
+
 // Celebration shape — jumping-jack height + leg spread. Imported
 // here so the pose composer stays self-contained.
 const CELEB_JUMP_PEAK  = 0.55 * STICKMAN_GLYPH_SIZE;
@@ -217,24 +228,71 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // MATCHEND loser adds a moderate forward slump to the body.
   const matchLoseTiltOffset = MATCH_LOSE_TILT * matchLose;
 
+  // ── Hit reaction (victim) ─────────────────────────────────
+  // Spikes at impact (reactT=0) and decays quadratically. Force is
+  // normalized 0..1. Direction is the world-xz unit vector the
+  // victim was knocked along; decompose into the victim's local
+  // forward/lateral to pick the right axis per punch type.
+  const reactT      = animSnap.reactT     || 0;
+  const reactForce  = animSnap.reactForce || 0;
+  const reactType   = animSnap.reactType  || 'jab';
+  const rDirX       = animSnap.reactDirX  || 0;
+  const rDirZ       = animSnap.reactDirZ  || 0;
+  const reactInt    = reactForce * (1 - reactT) * (1 - reactT);
+  // `fwdDot` > 0 ⇒ impulse goes along the victim's heading (hit from
+  // behind). `latDot` sign picks which side the punch came from.
+  const fwdDot = rDirX * forwardX + rDirZ * forwardZ;
+  const latDot = rDirX * lateralX + rDirZ * lateralZ;
+  let reactBodyTilt   = 0;   // along heading axis — adds to upperTilt
+  let reactBodyRoll   = 0;   // along lateral axis — adds a sideways sway
+  let reactHipLift    = 0;   // vertical world-units added to upperHipY
+  let reactHeadBack   = 0;   // rad — head pitch along heading axis
+  let reactHeadSide   = 0;   // rad — head pitch along lateral axis
+  if (reactInt > 0.001) {
+    if (reactType === 'hook') {
+      reactBodyTilt = REACT_HOOK_BODY_TILT * fwdDot * reactInt;
+      reactBodyRoll = REACT_HOOK_BODY_ROLL * latDot * reactInt;
+      reactHeadSide = REACT_HOOK_HEAD_SIDE * latDot * reactInt;
+      reactHeadBack = REACT_HOOK_BODY_TILT * 0.6 * fwdDot * reactInt;
+    } else if (reactType === 'uppercut') {
+      reactBodyTilt = REACT_UPPER_BODY_TILT * fwdDot * reactInt;
+      reactHipLift  = REACT_UPPER_HIP_LIFT  * reactInt;
+      reactHeadBack = REACT_UPPER_HEAD_UP   * -Math.sign(fwdDot || 1) * reactInt;
+    } else {
+      // jab — pure axial recoil
+      reactBodyTilt = REACT_JAB_BODY_TILT * fwdDot * reactInt;
+      reactHeadBack = REACT_JAB_HEAD_BACK * fwdDot * reactInt;
+    }
+  }
+
   // ── Body anchors (hip → neck → head) ─────────────────────
-  const upperTilt = walkTilt + pushTiltOffset + kickTiltOffset + stopTiltOffset + matchLoseTiltOffset;
+  const upperTilt = walkTilt + pushTiltOffset + kickTiltOffset + stopTiltOffset + matchLoseTiltOffset + reactBodyTilt;
   const tiltC = Math.cos(upperTilt);
   const tiltS = Math.sin(upperTilt);
+  // Lateral roll adds a sideways offset to the neck/head — small-angle
+  // approximation is safe at these magnitudes (≤0.45 rad).
+  const rollS = Math.sin(reactBodyRoll);
 
-  const hipBaseY  = STICKMAN_LIMB_FULL_H + bob * STICKMAN_GLYPH_SIZE + jumpY + airLift - turnHipDip;
+  const hipBaseY  = STICKMAN_LIMB_FULL_H + bob * STICKMAN_GLYPH_SIZE + jumpY + airLift - turnHipDip + reactHipLift;
   const upperHipY = hipBaseY + pushBodyDip + kickBodyDip;
 
   const torsoH     = STICKMAN_SHOULDER_OFY;
   const neckFwdOfs = torsoH * tiltS;
-  const neckX = baseX + forwardX * neckFwdOfs;
-  const neckZ = baseZ + forwardZ * neckFwdOfs;
-  const neckY = upperHipY + torsoH * tiltC;
+  const neckLatOfs = torsoH * rollS;
+  const neckX = baseX + forwardX * neckFwdOfs + lateralX * neckLatOfs;
+  const neckZ = baseZ + forwardZ * neckFwdOfs + lateralZ * neckLatOfs;
+  const neckY = upperHipY + torsoH * tiltC * Math.cos(reactBodyRoll);
 
-  const headFwdOfs = STICKMAN_HEAD_GAP_Y * tiltS;
-  const headX = neckX + forwardX * headFwdOfs;
-  const headZ = neckZ + forwardZ * headFwdOfs;
-  const headY = neckY + STICKMAN_HEAD_GAP_Y * tiltC + STICKMAN_HEAD_RADIUS;
+  // Head pitches further forward/back on a jab or uppercut (reactHeadBack)
+  // and sideways on a hook (reactHeadSide). Both add to the normal tilt
+  // so the head leads the torso into the whip.
+  const headPitchS = Math.sin(reactHeadBack);
+  const headSideS  = Math.sin(reactHeadSide);
+  const headFwdOfs = STICKMAN_HEAD_GAP_Y * (tiltS + headPitchS);
+  const headLatOfs = STICKMAN_HEAD_GAP_Y * (rollS + headSideS);
+  const headX = neckX + forwardX * headFwdOfs + lateralX * headLatOfs;
+  const headZ = neckZ + forwardZ * headFwdOfs + lateralZ * headLatOfs;
+  const headY = neckY + STICKMAN_HEAD_GAP_Y * tiltC * Math.cos(reactBodyRoll) * Math.cos(reactHeadBack) + STICKMAN_HEAD_RADIUS;
 
   // Shoulders: lateral from neck. Hips: lateral from hip centre,
   // rotated around the vertical axis by kickHipTwist during a kick.
@@ -338,7 +396,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // Push override: striking arm → IK to player.pushTarget via the
   // variant-specific scripted trajectory. Only overrides the
   // striking side; the other arm keeps its cosmetic swing.
-  const shoulderY = upperHipY + torsoH * tiltC;
+  const shoulderY = upperHipY + torsoH * tiltC * Math.cos(reactBodyRoll);
   if (player.pushTimer > 0 && celeb < 0.001) {
     pushArmPose(player, scratchPushPose);
     if (player.pushArm === 'right') {

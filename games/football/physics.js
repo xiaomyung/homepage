@@ -126,6 +126,10 @@ const PUSH_VEL_THRESHOLD = 0.5;
 const PUSH_VEL_THRESHOLD_SQ = PUSH_VEL_THRESHOLD * PUSH_VEL_THRESHOLD;
 const MIN_PUSH_STAMINA = 0.2;
 export const PUSH_ANIM_MS = 1000;
+// Victim's hit-reaction animation length. Independent of the pusher's
+// PUSH_ANIM_MS; intentionally shorter because a punch reaction is a
+// quick spike + recovery, not a full choreographed thrust.
+export const REACT_ANIM_MS = 550;
 // Sub-stage boundaries of the push animation as fractions of
 // PUSH_ANIM_MS. Used by pushArmExtension + pushArmPose (arm blend)
 // and by advancePush (strike commit).
@@ -289,6 +293,15 @@ function initPlayer(p, side, field) {
   p.pendingPushVictim = null;
   p.pendingPushVx = 0;
   p.pendingPushVy = 0;
+  // Hit-reaction state. Written on the VICTIM when a push lands so the
+  // pose layer can play a recoil animation keyed to the hit type,
+  // knockback direction, and force. Purely cosmetic — the physics
+  // impulse is still pushVx/pushVy.
+  p.reactTimer = 0;
+  p.reactForce = 0;     // normalized 0..1
+  p.reactDirX = 0;      // world xz unit vector, knockback direction
+  p.reactDirZ = 0;
+  p.reactType = 'jab';  // copied from pusher.pushType
   p.heading = side === 'left' ? 0 : Math.PI;
   p.prevTargetDirX = 0;
   p.prevTargetDirY = 0;
@@ -447,6 +460,8 @@ export function tick(state, p1Act, p2Act) {
 
   applyPushPhysics(state.p1);
   applyPushPhysics(state.p2);
+  advanceReactTimer(state.p1);
+  advanceReactTimer(state.p2);
 
   clampAndCollide(state, state.p1);
   clampAndCollide(state, state.p2);
@@ -533,11 +548,39 @@ function advancePush(p) {
     const victim = p.pendingPushVictim;
     victim.pushVx = p.pendingPushVx;
     victim.pushVy = p.pendingPushVy;
+    // Hit-reaction state. Stored on the victim so the pose composer
+    // can play a recoil animation keyed to the punch type, hit
+    // direction (in world xz), and force magnitude.
+    const impulseWX = p.pendingPushVx;
+    const impulseWZ = p.pendingPushVy * Z_STRETCH;
+    const impulseMag = Math.sqrt(impulseWX * impulseWX + impulseWZ * impulseWZ);
+    if (impulseMag > 1e-6) {
+      victim.reactDirX = impulseWX / impulseMag;
+      victim.reactDirZ = impulseWZ / impulseMag;
+    } else {
+      victim.reactDirX = 0;
+      victim.reactDirZ = 0;
+    }
+    victim.reactForce = Math.min(1, impulseMag / MAX_PUSH_FORCE);
+    victim.reactTimer = REACT_ANIM_MS;
+    victim.reactType = p.pushType;
     p.pendingPushVictim = null;
     p.pendingPushVx = 0;
     p.pendingPushVy = 0;
   }
   return true;
+}
+
+/** Tick the victim's hit-reaction timer down. Purely cosmetic — does
+ *  NOT lock the victim's action, so they can retaliate while still
+ *  playing the reaction animation. */
+function advanceReactTimer(p) {
+  if (p.reactTimer <= 0) return;
+  p.reactTimer -= TICK_MS;
+  if (p.reactTimer <= 0) {
+    p.reactTimer = 0;
+    p.reactForce = 0;
+  }
 }
 
 function applyAction(state, p, out) {
@@ -2290,6 +2333,10 @@ function resetToKickoff(state) {
     p.pendingPushVictim = null;
     p.pendingPushVx = 0;
     p.pendingPushVy = 0;
+    p.reactTimer = 0;
+    p.reactForce = 0;
+    p.reactDirX = 0;
+    p.reactDirZ = 0;
     p.kick.active = false;
     p.kick.timer = 0;
     p.kick.fired = false;

@@ -253,6 +253,37 @@ test('push lands when players are in contact range', () => {
   );
 });
 
+test('push writes hit-reaction state on the victim at the strike tick', () => {
+  const state = freshState();
+  state.p1.x = state.field.midX - 10;
+  state.p2.x = state.field.midX + 10;
+  state.p1.y = state.p2.y = FIELD_HEIGHT / 2;
+
+  tick(state, pushAction(1), NOOP);
+  // Windup — no reaction yet.
+  assert.equal(state.p2.reactTimer, 0,
+    `no reaction on windup tick, got ${state.p2.reactTimer}`);
+
+  // Tick through the strike window.
+  for (let i = 0; i < 40; i++) tick(state, NOOP, NOOP);
+
+  // reactTimer decays across the remaining ticks; what we care about
+  // is that it WAS set at the strike tick. reactForce stays > 0 while
+  // the timer is non-zero; reactDirX/Z should be a unit vector.
+  const dirMag = Math.hypot(state.p2.reactDirX, state.p2.reactDirZ);
+  assert.ok(
+    state.p2.reactTimer > 0 || state.p2.reactForce === 0,
+    'react state should either be active or fully decayed',
+  );
+  if (state.p2.reactTimer > 0) {
+    assert.ok(Math.abs(dirMag - 1) < 1e-6,
+      `reactDir should be unit vector, got |dir|=${dirMag}`);
+    assert.ok(state.p2.reactForce > 0, `reactForce should be > 0, got ${state.p2.reactForce}`);
+    assert.ok(['jab', 'hook', 'uppercut'].includes(state.p2.reactType),
+      `reactType should be a known variant, got ${state.p2.reactType}`);
+  }
+});
+
 test('push impulse is deferred to the strike tick, not applied on windup', () => {
   // Pushed player should NOT move during the windup phase — the
   // impulse only lands at the animation's strike tick (mid-

@@ -14,6 +14,7 @@ function makePlayer(overrides = {}) {
     kick: { active: false, kind: 'ground', timer: 0, stage: 'windup' },
     pushTimer: 0, pushArm: 'right', pushType: 'jab',
     pushTargetX: 0, pushTargetY: 0, pushTargetZ: 0,
+    reactTimer: 0, reactForce: 0, reactDirX: 0, reactDirZ: 0, reactType: 'jab',
     ...overrides,
   };
 }
@@ -263,6 +264,70 @@ describe('animation/poses', () => {
         `stance still on: front thigh should be forward, got ${pose.lLegUpper}`);
       assert.ok(Math.abs(pose.lLegUpper - pose.lLegLower) < 0.05,
         `straight front leg at strike end: upper=${pose.lLegUpper} lower=${pose.lLegLower}`);
+    });
+
+    it('jab reaction tilts body in the impulse direction + snaps head along it', () => {
+      // Victim: heading 0 (facing +x). Punch lands from behind so
+      // impulse is +x (forward for victim). reactBodyTilt should be
+      // positive (tilt forward, pushed from behind). reactHeadBack
+      // matches axis sign.
+      const victim = makePlayer({
+        reactTimer: 400,      // mid-intensity
+        reactForce: 0.9,
+        reactDirX: 1, reactDirZ: 0,
+        reactType: 'jab',
+      });
+      const { pose } = runFrame(victim, { ticks: 1 });
+      // Neck should pitch forward (+x component) relative to the hip.
+      const neckDx = pose.neckX - pose.baseX;
+      assert.ok(neckDx > 0.5,
+        `jab from behind: neck should pitch forward, got neckX-baseX=${neckDx}`);
+    });
+
+    it('hook reaction rolls the body sideways along the hit-side axis', () => {
+      // Heading 0 (facing +x); hit from the left side (impulse along
+      // +z). The hit should roll the torso laterally (neck shifts in
+      // +z direction vs no-react baseline).
+      const victim = makePlayer({
+        reactTimer: 400,
+        reactForce: 0.9,
+        reactDirX: 0, reactDirZ: 1,
+        reactType: 'hook',
+      });
+      const { pose } = runFrame(victim, { ticks: 1 });
+      const neckDz = pose.neckZ - pose.baseZ;
+      assert.ok(neckDz > 0.5,
+        `hook from left: neck should roll sideways in +z, got neckZ-baseZ=${neckDz}`);
+    });
+
+    it('uppercut reaction lifts the hip above neutral', () => {
+      const idle = makePlayer();
+      const { pose: idlePose } = runFrame(idle);
+      const victim = makePlayer({
+        reactTimer: 400,
+        reactForce: 0.9,
+        reactDirX: -1, reactDirZ: 0, // impulse back along heading (hit from front)
+        reactType: 'uppercut',
+      });
+      const { pose } = runFrame(victim, { ticks: 1 });
+      assert.ok(pose.hipBaseY > idlePose.hipBaseY + 0.5,
+        `uppercut should lift the hip above idle, got ${pose.hipBaseY} vs ${idlePose.hipBaseY}`);
+    });
+
+    it('reaction fully decays after REACT_ANIM_MS (~34 ticks)', () => {
+      const victim = makePlayer({
+        reactTimer: 100,         // nearly expired
+        reactForce: 0.9,
+        reactDirX: 1, reactDirZ: 0,
+        reactType: 'jab',
+      });
+      // Let the decorator approach decay — the pose intensity is
+      // (1-t)^2 × force, so at reactT ≈ (1 - 100/550) = 0.82 the
+      // intensity is already ~0.03 × force; the tilt should be small.
+      const { pose } = runFrame(victim, { ticks: 1 });
+      const neckDx = pose.neckX - pose.baseX;
+      assert.ok(Math.abs(neckDx) < 2.5,
+        `late-reaction tilt should have decayed, got neckX-baseX=${neckDx}`);
     });
 
     it('legs are fully neutral after the settle phase', () => {

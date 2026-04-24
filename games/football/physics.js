@@ -144,7 +144,7 @@ const PUSH_STRIKE_FRAC = 0.50;   // strike → recover transition;
 // throws land later in the WINDUP→STRIKE blend — closer to peak
 // extension — while close-range uppercuts connect early.
 const PUSH_CONTACT_FRAC = {
-  jab:      0.50,
+  jab:      0.47,
   hook:     0.46,
   uppercut: 0.42,
 };

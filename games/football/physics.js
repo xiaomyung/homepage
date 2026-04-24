@@ -1863,26 +1863,34 @@ const _lerp = (a, b, t) => a + (b - a) * t;
 // Yaw magnitudes are unsigned; `pushArm` supplies the sign at
 // assembly time (right arm swings from right-outward to cross-body;
 // left arm mirrors).
+// Arm-angle convention: 0 = straight down, π/2 = forward horizontal
+// (fist at shoulder height), π = straight up. With UPPER_ARM +
+// LOWER_ARM = 20 and the shoulder 6.9 units below the head, landing
+// a fist at head level needs the arm tilted ≈20° above horizontal
+// → angle-from-vertical ≈ π/2 + 0.35 ≈ 1.92 rad.
+
 const JAB_REST   = [0,    0,    0, 0];
 const JAB_WINDUP = [-0.25, 2.4, 0, 0];
-const JAB_STRIKE = [Math.PI / 2, Math.PI / 2, 0, 0];
+// Jab strike: straight arm angled up to head height.
+const JAB_STRIKE = [1.92, 1.92, 0, 0];
 
 const HOOK_REST   = [0,          0,           0,           0];
-// Windup: arm raised horizontal, yawed outward to the striking side;
+// Windup: arm raised to head-height, yawed outward to the striking side;
 // forearm bent 90° inward (pointing forward relative to body).
-const HOOK_WINDUP = [Math.PI / 2, Math.PI / 2, Math.PI / 2, 0];
-// Strike: upper arm swept across body (yaw flips sign, small
-// magnitude); forearm extends past to continue the arc.
-const HOOK_STRIKE = [Math.PI / 2, Math.PI / 2, -0.35,      -1.2];
+const HOOK_WINDUP = [1.92, 1.92, Math.PI / 2, 0];
+// Strike: upper arm swept across body at head-height; yaw flips to a
+// small cross-body sign; forearm extends past to continue the arc.
+const HOOK_STRIKE = [1.92, 1.92, -0.35,      -1.2];
 
 const UPPERCUT_REST   = [0,          0,           0, 0];
-// Windup: elbow drops low and tucks, forearm rotated forward near
-// the belly — classic cocked-uppercut stance.
+// Windup: elbow drops low and tucks, forearm rotated forward near the
+// belly — classic cocked-uppercut stance.
 const UPPERCUT_WINDUP = [-0.3,       1.7,         0, 0];
-// Strike: upper arm rises forward-and-up (elbow above shoulder),
-// forearm whips up past horizontal so the fist ends clearly above
-// the shoulder — chin-height punch driving up through the target.
-const UPPERCUT_STRIKE = [1.8,        2.8,         0, 0];
+// Strike: upper arm rises forward-and-up (elbow well above shoulder),
+// forearm whips almost straight up so the fist ends clearly above the
+// head, tucked toward the pusher's centerline — a chin-height punch
+// driving up through the target.
+const UPPERCUT_STRIKE = [2.0,        3.0,         0, 0];
 
 function writePose(out, kf, armSign) {
   out.upperAngle = kf[0];
@@ -2123,13 +2131,14 @@ function tryPush(state, pusher, victim, powerNorm) {
   if (fwdDist < PUSH_UPPERCUT_RANGE) pusher.pushType = 'uppercut';
   else if (fwdDist < PUSH_HOOK_RANGE) pusher.pushType = 'hook';
   else pusher.pushType = 'jab';
-  // Target height varies by punch type so the arm's strike arc
-  // looks right: uppercut rises to the chin, jab/hook hit the
-  // sternum. All three aim at the victim's body-axis in xz.
-  const chestY = HIP_BASE_Z + STICKMAN_SHOULDER_OFY * 0.5;
-  const chinY  = HEAD_CENTER_Z - STICKMAN_HEAD_RADIUS * 0.4;
+  // Target height: jab/hook aim at the centre of the head; uppercut
+  // aims slightly above so the strike arc sweeps UP through the
+  // chin and lands with the fist over the crown. All three use the
+  // victim's body-axis in xz.
+  const headY      = HEAD_CENTER_Z;
+  const aboveHeadY = HEAD_CENTER_Z + STICKMAN_HEAD_RADIUS * 0.5;
   pusher.pushTargetX = victimCenterWX;
-  pusher.pushTargetY = pusher.pushType === 'uppercut' ? chinY : chestY;
+  pusher.pushTargetY = pusher.pushType === 'uppercut' ? aboveHeadY : headY;
   pusher.pushTargetZ = victimCenterWZ;
 
   pusher.stamina = Math.max(0, pusher.stamina - PUSH_STAMINA_COST * power01);

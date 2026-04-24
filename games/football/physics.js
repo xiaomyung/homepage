@@ -135,9 +135,14 @@ export const REACT_ANIM_MS = 550;
 // and by advancePush (strike commit).
 const PUSH_WINDUP_FRAC = 0.35;   // windup → strike transition
 const PUSH_STRIKE_FRAC = 0.50;   // strike → recover transition;
-                                 //   this is where the arm + body
-                                 //   reach peak forward extension,
-                                 //   so contact lands here.
+                                 //   pose blends WINDUP→STRIKE end
+                                 //   here; arm at peak forward.
+// Contact fraction — when the fist FIRST meets the target in flight,
+// not when the arm reaches its absolute peak. Fist is already ~50%
+// of the way from the windup keyframe to the strike keyframe, so
+// for most pair distances (especially closer hooks/uppercuts) this
+// lines up with the visual contact moment.
+const PUSH_CONTACT_FRAC = 0.42;
 const PUSH_WINDUP_PEAK_TEFF = 0.7;
 const PUSH_STAMINA_COST = 0.15;
 const PUSH_VICTIM_STAMINA_MULT = 3;
@@ -524,14 +529,16 @@ export const ACTION_PUSH_GATE  = 7;
 export const ACTION_PUSH_POWER = 8;
 export const NN_OUTPUT_SIZE    = 9;
 
-/** Strike threshold in ms of `pushTimer` remaining. Peak contact in
- *  the animation is at `t = PUSH_STRIKE_FRAC`: that's when the
- *  windup→strike arm blend finishes (arm at full forward extension),
- *  the hop reaches maximum forward, and the body tilt flips from
- *  back-lean to full forward-lean. pushTimer counts DOWN from
- *  PUSH_ANIM_MS, so the strike fires when the timer first drops
- *  to (or past) PUSH_ANIM_MS * (1 - PUSH_STRIKE_FRAC). */
-const PUSH_STRIKE_TIMER = PUSH_ANIM_MS * (1 - PUSH_STRIKE_FRAC);
+/** Strike threshold in ms of `pushTimer` remaining. Fires at
+ *  `t = PUSH_CONTACT_FRAC` — the moment the fist first MEETS the
+ *  target, not when the arm reaches its absolute peak. Chosen ~0.42
+ *  so the victim's reaction lines up with the visual contact for
+ *  all pair distances (jab / hook / uppercut), avoiding the "pusher
+ *  body clips through the still-standing victim" artefact that
+ *  happened when the impulse landed at the very end of the strike
+ *  phase. pushTimer counts DOWN from PUSH_ANIM_MS, so the trigger
+ *  is `PUSH_ANIM_MS * (1 - PUSH_CONTACT_FRAC)`. */
+const PUSH_STRIKE_TIMER = PUSH_ANIM_MS * (1 - PUSH_CONTACT_FRAC);
 
 /** Tick a push cooldown forward. Returns true if the player is still
  *  mid-push and should not accept new actions this tick — mirrors

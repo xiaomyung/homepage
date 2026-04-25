@@ -34,8 +34,9 @@ node_modules/
 *.log
 Thumbs.db
 
-# Dev scratch (debug tools, screenshots)
-games/football/debug/
+# Dev scratch — all debug screenshots land in this dir (created on
+# first run by the scripts in games/football/debug/).
+games/football/debug/screenshots/
 
 # Warm-start weights — regenerated on reset, not vendored
 games/football/warm_start_weights.json

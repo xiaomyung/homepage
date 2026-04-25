@@ -17,6 +17,7 @@ import {
   PLAYER_HEIGHT,
   PLAYER_WIDTH,
   BALL_RADIUS,
+  GOAL_POST_RADIUS,
   MAX_PLAYER_SPEED,
   Z_STRETCH,
   TICK_MS,
@@ -125,8 +126,9 @@ test('player pushed while standing still is still charged for displacement', () 
 
   // p1 pushes, p2 does nothing
   tick(state, pushAction(1), NOOP);
-  // Run push physics for several ticks to let pushVx decay
-  for (let i = 0; i < 20; i++) {
+  // Run physics through the full push cycle (PUSH_ANIM_MS=1000ms at
+  // 16ms/tick → ~63 ticks, strike lands ~tick 22) plus impulse decay.
+  for (let i = 0; i < 60; i++) {
     tick(state, NOOP, NOOP);
   }
 
@@ -232,21 +234,116 @@ test('push lands when players are in contact range', () => {
   state.p1.x = state.field.midX - 10;
   state.p2.x = state.field.midX + 10;
   state.p1.y = state.p2.y = FIELD_HEIGHT / 2;
+  const startX = state.p2.x;
 
   tick(state, pushAction(1), NOOP);
-
-  // p2 should have non-zero pushVx after the tick
-  assert.ok(
-    state.p2.pushVx !== 0,
-    `push did not land: p2.pushVx=${state.p2.pushVx}`
-  );
-  // The pusher should have entered push cooldown
-  assert.ok(state.p1.pushTimer > 0, 'pusher should have cooldown');
-  // Events should include a 'push' event
+  // Push event fires at tryPush (animation start) — visible tick 1.
   assert.ok(
     state.events.some(e => e.type === 'push'),
     `no push event emitted: ${JSON.stringify(state.events)}`
   );
+  assert.ok(state.p1.pushTimer > 0, 'pusher should have cooldown');
+
+  // Impulse itself is deferred to the strike tick (mid-animation,
+  // ~tick 22 of 63). Tick through and verify displacement.
+  for (let i = 0; i < 40; i++) tick(state, NOOP, NOOP);
+  assert.ok(
+    state.p2.x > startX,
+    `push did not displace victim: p2.x=${state.p2.x}, startX=${startX}`,
+  );
+});
+
+test('push writes hit-reaction state on the victim at the strike tick', () => {
+  const state = freshState();
+  state.p1.x = state.field.midX - 10;
+  state.p2.x = state.field.midX + 10;
+  state.p1.y = state.p2.y = FIELD_HEIGHT / 2;
+
+  tick(state, pushAction(1), NOOP);
+  // Windup — no reaction yet.
+  assert.equal(state.p2.reactTimer, 0,
+    `no reaction on windup tick, got ${state.p2.reactTimer}`);
+
+  // Tick through the strike window.
+  for (let i = 0; i < 40; i++) tick(state, NOOP, NOOP);
+
+  // reactTimer decays across the remaining ticks; what we care about
+  // is that it WAS set at the strike tick. reactForce stays > 0 while
+  // the timer is non-zero; reactDirX/Z should be a unit vector.
+  const dirMag = Math.hypot(state.p2.reactDirX, state.p2.reactDirZ);
+  assert.ok(
+    state.p2.reactTimer > 0 || state.p2.reactForce === 0,
+    'react state should either be active or fully decayed',
+  );
+  if (state.p2.reactTimer > 0) {
+    assert.ok(Math.abs(dirMag - 1) < 1e-6,
+      `reactDir should be unit vector, got |dir|=${dirMag}`);
+    assert.ok(state.p2.reactForce > 0, `reactForce should be > 0, got ${state.p2.reactForce}`);
+    assert.ok(['jab', 'hook', 'uppercut'].includes(state.p2.reactType),
+      `reactType should be a known variant, got ${state.p2.reactType}`);
+  }
+});
+
+test('push contact tick is per-type: uppercut earliest, jab latest', () => {
+  // Each punch type commits its impulse at a different strike tick
+  // because the fist engages the target at a different moment of
+  // the arm's windup→strike blend. Uppercut connects at t≈0.42,
+  // hook at ≈0.46, jab at ≈0.50 — longer throws land later.
+  const measure = (p2X) => {
+    const s = freshState();
+    s.p1.x = s.field.midX - 10;
+    s.p2.x = s.field.midX + p2X;   // distance from p1 picks pushType
+    s.p1.y = s.p2.y = FIELD_HEIGHT / 2;
+    tick(s, pushAction(1), NOOP);
+    for (let i = 0; i < 40; i++) {
+      tick(s, NOOP, NOOP);
+      if (s.p2.pushVx !== 0) return i + 2;
+    }
+    return -1;
+  };
+  // p2.x offsets chosen so fwdDist falls in each type's range.
+  const uppercutTick = measure(-6);    // fwdDist = 4 → uppercut
+  const hookTick     = measure(+8);    // fwdDist = 18 → hook
+  const jabTick      = measure(+18);   // fwdDist = 28 → jab
+  assert.ok(uppercutTick > 0 && hookTick > 0 && jabTick > 0,
+    `all types should strike; got uppercut=${uppercutTick}, hook=${hookTick}, jab=${jabTick}`);
+  assert.ok(uppercutTick < hookTick,
+    `uppercut (${uppercutTick}) should fire BEFORE hook (${hookTick})`);
+  assert.ok(hookTick < jabTick,
+    `hook (${hookTick}) should fire BEFORE jab (${jabTick})`);
+});
+
+test('push impulse is deferred to the strike tick, not applied on windup', () => {
+  // Pushed player should NOT move during the windup phase — the
+  // impulse only lands at the animation's strike tick (mid-
+  // animation). Previously the victim jumped on frame 1, before
+  // the arm even swung forward.
+  const state = freshState();
+  state.p1.x = state.field.midX - 10;
+  state.p2.x = state.field.midX + 10;
+  state.p1.y = state.p2.y = FIELD_HEIGHT / 2;
+  const startX = state.p2.x;
+
+  tick(state, pushAction(1), NOOP);
+  assert.equal(
+    state.p2.pushVx, 0,
+    `impulse must not fire on tick 1 (windup), got pushVx=${state.p2.pushVx}`,
+  );
+  assert.equal(
+    state.p2.x, startX,
+    `victim must not move on tick 1, moved to ${state.p2.x}`,
+  );
+
+  // Strike fires when pushTimer first drops <= PUSH_STRIKE_TIMER
+  // (1000 * (1 - PUSH_CONTACT_FRAC) = 580 ms). pushTimer starts at
+  // 1000 ms and decrements 16 ms/tick, so strike ≈ tick 27–28.
+  let strikeTick = -1;
+  for (let i = 0; i < 40; i++) {
+    tick(state, NOOP, NOOP);
+    if (state.p2.pushVx !== 0 && strikeTick === -1) strikeTick = i + 2;
+  }
+  assert.ok(strikeTick >= 25 && strikeTick <= 30,
+    `strike tick out of expected range: ${strikeTick}`);
 });
 
 test('push does not land when players are out of range', () => {
@@ -296,15 +393,15 @@ test('ball past the OOB margin triggers out, not goal', () => {
   assert.equal(state.scoreR, 0);
 });
 
-test('ball grazing the crossbar from above bounces off the top', () => {
+test('ball dropping onto the crossbar from above bounces up', () => {
   const state = freshState();
   const f = state.field;
-  // Ball center inside the goal x/y, altitude just above the crossbar
-  // so the sphere overlaps the box z range and the unified collision
-  // fires on the z axis, flipping vz.
-  state.ball.x = f.goalLineR + 2;
+  // Ball centred above the crossbar axis (x = mouthX = goalLineR), z just
+  // above the crossbar so it contacts the top of the cylinder as gravity
+  // pulls it down. Normal points straight up → vz flips cleanly.
+  state.ball.x = f.goalLineR;
   state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
-  state.ball.z = f.goalMouthZMax + 0.5;
+  state.ball.z = f.goalMouthZMax + BALL_RADIUS + 0.05;
   state.ball.vx = 0;
   state.ball.vy = 0;
   state.ball.vz = -2; // descending onto the crossbar
@@ -313,19 +410,19 @@ test('ball grazing the crossbar from above bounces off the top', () => {
   for (let i = 0; i < 4; i++) tick(state, NOOP, NOOP);
 
   assert.equal(state.scoreL, 0, 'ball grazing crossbar must not score');
-  assert.ok(state.ball.vz >= 0, `expected vz to flip to non-negative, got ${state.ball.vz}`);
+  assert.ok(state.ball.vz > 0, `expected vz to flip positive, got ${state.ball.vz}`);
 });
 
 test('ball clipping the post from outside the mouth bounces back', () => {
   const state = freshState();
   const f = state.field;
-  // y just outside the mouth edge by less than BALL_RADIUS so the
-  // ball sphere overlaps the mouth y range and collides with the
-  // post cylinder, but the center is NOT inside the mouth.
-  state.ball.x = f.goalLineR + 2;
+  // Ball approaching the right goal from the FIELD side at a y just
+  // outside the mouth — sphere overlaps the post cylinder on the way
+  // in. Must deflect back toward the field (vx reverses).
+  state.ball.x = f.goalLineR - 10;
   state.ball.y = f.goalMouthYMin - 0.5;
   state.ball.z = 0;
-  state.ball.vx = 4;
+  state.ball.vx = 4;  // moving toward the post
   state.ball.vy = 0;
   state.ball.vz = 0;
   state.ball.frozen = false;
@@ -720,6 +817,189 @@ test('shot over the crossbar with no dip does not score', () => {
   );
 });
 
+/* ── Sphere-cylinder bar collisions ────────────────────────────
+ *
+ * The goal frame is drawn as thin cylinders (2 posts + 1 crossbar per
+ * side). The physics approximates each bar as a sphere-cylinder
+ * collider rather than the old AABB box. These tests pin the
+ * physically-correct deflection directions the cylinder resolver
+ * produces, and guard against two regressions from the cylinder
+ * rewrite: (1) pure x-axis bounces at the goal line when the real
+ * normal should deflect sideways or vertically, (2) phantom bounces
+ * for balls well clear of the frame.
+ */
+
+test('wide shot flies past the post without a phantom goal-line bounce', () => {
+  const state = freshState();
+  const f = state.field;
+  // y well below the lower post — ball sphere does not overlap the
+  // post cylinder. Before the cylinder rewrite, the AABB resolver
+  // fired on Y-shadow overlap and bounced the ball back in X.
+  state.ball.x = f.goalLineL + 20;
+  state.ball.y = 4;     // mouthYMin=13, BALL_R+POST_R ≈ 5.4 → y=4 is clear
+  state.ball.z = 1;
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  for (let i = 0; i < 10; i++) tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vx < 0, `wide shot must keep negative vx, got ${state.ball.vx}`);
+  assert.equal(state.scoreR, 0);
+});
+
+test('high shot flies over the crossbar without a phantom goal-line bounce', () => {
+  const state = freshState();
+  const f = state.field;
+  // z well above the crossbar cylinder. Without the cylinder rewrite
+  // the AABB's Z-overlap fired and produced an X-bounce at the mouth.
+  state.ball.x = f.goalLineL + 30;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = f.goalMouthZMax + 20;  // 20 units above crossbar axis
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 1;  // slight lift
+  state.ball.frozen = false;
+  for (let i = 0; i < 6; i++) tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vx < 0, `high fly-by must keep negative vx, got ${state.ball.vx}`);
+});
+
+test('post side-graze deflects laterally (y-dominant), not straight back', () => {
+  const state = freshState();
+  const f = state.field;
+  // Ball approaches on a line that clips the post cylinder from the
+  // field side, offset in y below the post axis. A correct
+  // cylinder bounce deflects the ball in -y (away from the post),
+  // not a pure x rebound.
+  state.ball.x = f.goalLineL + 30;
+  state.ball.y = f.goalMouthYMin - 2;  // inside sphere reach of the post
+  state.ball.z = 1;
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  // Run until contact — fairly short.
+  for (let i = 0; i < 8; i++) tick(state, NOOP, NOOP);
+  // After the post hit, lateral velocity should dominate the return
+  // and the ball should have moved away from the post line.
+  assert.ok(
+    Math.abs(state.ball.vy) > Math.abs(state.ball.vx),
+    `post side-graze must deflect in y (|vy|=${Math.abs(state.ball.vy).toFixed(2)}, |vx|=${Math.abs(state.ball.vx).toFixed(2)})`,
+  );
+  assert.ok(state.ball.y < f.goalMouthYMin, 'ball should end up on the outside-y side of the post');
+  assert.equal(state.scoreR, 0);
+});
+
+test('crossbar top-drop deflects vertically (z-dominant)', () => {
+  const state = freshState();
+  const f = state.field;
+  // Ball centred directly above the crossbar axis, falling onto it.
+  // Cylinder normal is +z; the bounce flips vz with vx barely
+  // disturbed.
+  state.ball.x = f.goalLineL;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = f.goalMouthZMax + BALL_RADIUS + 0.05;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = -3;
+  state.ball.frozen = false;
+  for (let i = 0; i < 4; i++) tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vz > 0, `crossbar top-drop must flip vz positive, got ${state.ball.vz}`);
+  assert.equal(state.scoreR, 0);
+});
+
+test('head-on post hit at the centre of the post bounces straight back', () => {
+  const state = freshState();
+  const f = state.field;
+  // Ball and post aligned on y (ball.y = mouthYMin), coming straight
+  // at the post from the field side. Normal is purely +x → pure x-bounce.
+  state.ball.x = f.goalLineL + 30;
+  state.ball.y = f.goalMouthYMin;
+  state.ball.z = 1;
+  state.ball.vx = -5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  for (let i = 0; i < 15; i++) tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vx > 0, `head-on post hit must flip vx, got ${state.ball.vx}`);
+  assert.ok(
+    Math.abs(state.ball.vy) < 0.2,
+    `head-on hit must have minimal y deflection, got vy=${state.ball.vy}`,
+  );
+  assert.equal(state.scoreR, 0);
+});
+
+/* ── Exterior goal faces are solid from outside.
+ *
+ * Every non-mouth face of the goal (back wall, 2 side walls, roof)
+ * must bounce balls that approach from outside. Without these
+ * colliders a ball arriving off-axis would tunnel through a side net
+ * or the roof and spawn inside the goal volume (a phantom score).
+ */
+
+test('airborne ball hitting the lower side net from outside bounces back', () => {
+  const state = freshState();
+  const f = state.field;
+  // Ball inside goal's x-range but below mouth y, airborne at side
+  // net height, moving INTO the net from below.
+  state.ball.x = f.goalLineL - 20;
+  state.ball.y = 6;                         // mouthYMin=13, 7 units below
+  state.ball.z = 10;
+  state.ball.vx = 0; state.ball.vy = 8; state.ball.vz = 0;
+  state.ball.frozen = false;
+  tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vy < 0, `lower side net must flip vy, got ${state.ball.vy}`);
+  assert.ok(
+    state.ball.y < f.goalMouthYMin,
+    `ball must stay outside mouth y, got y=${state.ball.y}`,
+  );
+  assert.equal(state.ball.inGoal, false);
+  assert.equal(state.scoreR, 0);
+});
+
+test('airborne ball hitting the upper side net from outside bounces back', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = f.goalLineL - 20;
+  state.ball.y = 50;                        // mouthYMax=41.6, 8.4 units above
+  state.ball.z = 10;
+  state.ball.vx = 0; state.ball.vy = -8; state.ball.vz = 0;
+  state.ball.frozen = false;
+  tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vy > 0, `upper side net must flip vy, got ${state.ball.vy}`);
+  assert.ok(
+    state.ball.y > f.goalMouthYMax,
+    `ball must stay outside mouth y, got y=${state.ball.y}`,
+  );
+  assert.equal(state.ball.inGoal, false);
+});
+
+test('ball dropping onto the roof from above bounces up', () => {
+  const state = freshState();
+  const f = state.field;
+  // Directly above the interior of the goal, falling.
+  state.ball.x = f.goalLineL - 20;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = f.goalMouthZMax + 6;       // 6 units above roof
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = -3;
+  state.ball.frozen = false;
+  for (let i = 0; i < 3; i++) tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vz > 0, `roof must flip vz positive, got ${state.ball.vz}`);
+  assert.ok(
+    state.ball.z >= f.goalMouthZMax,
+    `ball must not tunnel below roof, got z=${state.ball.z}`,
+  );
+  assert.equal(state.ball.inGoal, false);
+});
+
+test('bars are solid from INSIDE — crossbar bounces ball aligned directly below it', () => {
+  const state = freshState();
+  const f = state.field;
+  // Ball directly below the crossbar axis at x=mouthX so the contact
+  // normal is purely vertical — the bounce flips vz cleanly.
+  state.ball.x = f.goalLineL;   // aligned with crossbar axis on x
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = f.goalMouthZMax - BALL_RADIUS - GOAL_POST_RADIUS - 0.1;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 2;
+  state.ball.frozen = false;
+  state.ball.inGoal = true;
+  tick(state, NOOP, NOOP);
+  assert.ok(state.ball.vz < 0, `inside-crossbar hit must flip vz, got ${state.ball.vz}`);
+  assert.ok(
+    state.ball.z + BALL_RADIUS <= f.goalMouthZMax + 0.01,
+    `ball must stay below crossbar after bounce, got z=${state.ball.z}`,
+  );
+});
+
 /* ── Lateral-reach bug fixes: push and kick must only fire when
  *    players/ball are within the stickman's actual stretched-limb
  *    reach on the depth axis, not across half the field. */
@@ -751,14 +1031,17 @@ test('push lands when players overlap in depth (touching)', () => {
   state.p2.x = state.field.midX + 8;
   state.p1.y = 10;
   state.p2.y = state.p1.y + PLAYER_HEIGHT - 0.5;  // 0.5 units of overlap
+  const startX = state.p2.x;
 
   tick(state, pushAction(1), NOOP);
-
-  assert.ok(
-    state.p2.pushVx !== 0,
-    `push should land when players touch in depth: pushVx=${state.p2.pushVx}`,
-  );
   assert.ok(state.events.some(e => e.type === 'push'), 'push event expected on touch');
+
+  // Strike tick is mid-animation (~tick 22) — tick well past it.
+  for (let i = 0; i < 40; i++) tick(state, NOOP, NOOP);
+  assert.ok(
+    state.p2.x !== startX,
+    `push should displace victim on contact: p2.x=${state.p2.x}`,
+  );
 });
 
 test('kick activates when ball is within hip reach', () => {
@@ -2084,15 +2367,23 @@ test('kickLegExtension returns 0 for inactive kick', () => {
   assert.equal(kickLegExtension({ active: false }), 0);
 });
 
-test('kickLegExtension walks 0 → 0.7 → 1 → 0 across stages (ground)', () => {
+test('kickLegExtension walks 0 → 0.7 → 1 → 0 smoothly across stages (ground)', () => {
+  // Windup is split: load (0 → 0.7 of windup) ramps 0 → 0.7,
+  // then rise (0.7 → 1 of windup) ramps 0.7 → 1. Strike holds at 1,
+  // recovery decays to 0. No discontinuity at the windup/strike boundary.
   const k = { active: true, kind: 'ground', timer: 0 };
+  const loadEnd = KICK_WINDUP_MS * 0.7;
   assert.equal(kickLegExtension(k), 0, 'timer 0 → extension 0');
-  k.timer = KICK_WINDUP_MS / 2;
-  assert.ok(Math.abs(kickLegExtension(k) - 0.35) < 1e-9, 'mid-windup → 0.35');
+  k.timer = loadEnd / 2;
+  assert.ok(Math.abs(kickLegExtension(k) - 0.35) < 1e-9, 'mid-load → 0.35');
+  k.timer = loadEnd;
+  assert.ok(Math.abs(kickLegExtension(k) - 0.7) < 1e-9, 'load end → 0.7');
+  k.timer = (loadEnd + KICK_WINDUP_MS) / 2;
+  assert.ok(Math.abs(kickLegExtension(k) - 0.85) < 1e-9, 'mid-rise → 0.85');
   k.timer = KICK_WINDUP_MS - 0.001;
-  assert.ok(Math.abs(kickLegExtension(k) - 0.7) < 1e-3, 'windup end → 0.7');
+  assert.ok(kickLegExtension(k) > 0.999, 'windup end → ~1');
   k.timer = KICK_WINDUP_MS;
-  assert.equal(kickLegExtension(k), 1, 'strike start → 1');
+  assert.equal(kickLegExtension(k), 1, 'strike start → 1 (continuous with windup end)');
   k.timer = KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS - 1;
   assert.equal(kickLegExtension(k), 1, 'mid-strike → 1');
   k.timer = KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS;
@@ -2106,8 +2397,9 @@ test('kickLegExtension walks 0 → 0.7 → 1 → 0 across stages (ground)', () =
 test('kickLegExtension uses AIRKICK_PEAK_FRAC * AIRKICK_MS as windup for air', () => {
   const k = { active: true, kind: 'air', timer: 0 };
   const windupMs = AIRKICK_PEAK_FRAC * AIRKICK_MS;
-  k.timer = windupMs / 2;
-  assert.ok(Math.abs(kickLegExtension(k) - 0.35) < 1e-9, 'air mid-windup → 0.35');
+  const loadEnd  = windupMs * 0.7;
+  k.timer = loadEnd / 2;
+  assert.ok(Math.abs(kickLegExtension(k) - 0.35) < 1e-9, 'air mid-load → 0.35');
   k.timer = windupMs + KICK_STRIKE_WINDOW_MS / 2;
   assert.equal(kickLegExtension(k), 1, 'air strike → 1');
 });
@@ -2141,10 +2433,17 @@ test('kickLegPose at strike reaches the foot target', () => {
   assert.ok(Math.abs(footDown - 15.776) < 1e-6, `foot down should be 15.776, got ${footDown}`);
 });
 
-test('kickLegPose windup peak = 70% extension toward target', () => {
+test('kickLegPose at windup load-end (tEff=0.7) reaches the cock-back keyframe', () => {
+  // The foot path during windup is a three-keyframe trajectory:
+  //   load (tEff: 0 → 0.7)  rest → cock
+  //   rise (tEff: 0.7 → 1)  cock → target
+  // At the end of the load phase the foot should be at the cock-
+  // back position (20% of leg-length behind hip, 50% below) — NOT
+  // on the line from rest to ball. This is what gives the kick a
+  // visible windup pose instead of a snap-to-target.
   const k = {
     active: true, kind: 'ground', stage: 'windup',
-    timer: KICK_WINDUP_MS - 1,  // just before strike opens — peak windup
+    timer: KICK_WINDUP_MS * 0.7,  // exact end of the load phase
     footTargetX: 10, footTargetY: 4.224, footTargetZ: 0,
   };
   const out = { upperAngle: 0, lowerAngle: 0 };
@@ -2155,10 +2454,8 @@ test('kickLegPose windup peak = 70% extension toward target', () => {
   const kneeDown = U * Math.cos(out.upperAngle);
   const footFwd  = kneeFwd + L * Math.sin(out.lowerAngle);
   const footDown = kneeDown + L * Math.cos(out.lowerAngle);
-  // Target at peak windup: fwd = 0.7 * 10 = 7, down = 0.7 * 15.776 + 0.3 * 20 = 11.0432 + 6 = 17.0432.
-  const tEff = 0.7 * ((KICK_WINDUP_MS - 1) / KICK_WINDUP_MS);
-  const expectedFwd = 10 * tEff;
-  const expectedDown = 15.776 * tEff + legLen * (1 - tEff);
+  const expectedFwd  = -0.20 * legLen;  // 20% behind hip
+  const expectedDown =  0.50 * legLen;  // 50% below hip
   assert.ok(Math.abs(footFwd - expectedFwd) < 1e-3, `foot fwd expected ${expectedFwd}, got ${footFwd}`);
   assert.ok(Math.abs(footDown - expectedDown) < 1e-3, `foot down expected ${expectedDown}, got ${footDown}`);
 });

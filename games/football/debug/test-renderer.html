@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>renderer diagnostic — 8 harnesses</title>
+<link rel="stylesheet" href="../../../style.css?v=136">
+<style>
+  body {
+    padding: 1rem 2rem 4rem;
+    max-width: 1800px;
+    margin: 0 auto;
+  }
+  h1, h2 {
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 0.95rem;
+    margin: 1.4rem 0 0.4rem;
+    letter-spacing: 0.02em;
+  }
+  .note {
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    margin-bottom: 0.5rem;
+  }
+  .strip {
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 0.4rem;
+    margin-bottom: 1.2rem;
+  }
+  canvas.strip-main {
+    display: block;
+    width: 100%;
+    height: 600px;
+    background: #000;
+  }
+  .log {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    margin: 0.2rem 0 0.6rem;
+  }
+  .log .ok   { color: var(--green); }
+  .log .err  { color: var(--red); }
+  .harness-header {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    margin: 1.4rem 0 0.4rem;
+  }
+  .harness-header h2 { margin: 0; }
+  .scenario-select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--rule);
+    padding: 0.15rem 0.4rem;
+    font: inherit;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+  }
+  /* Global animation-speed slider. Fixed to the right edge, always
+     vertically centered in the viewport regardless of scroll. */
+  .speed-slider {
+    position: fixed;
+    right: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.7rem 0.45rem 0.55rem;
+    background: rgba(0, 0, 0, 0.72);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    user-select: none;
+  }
+  .speed-slider .value {
+    font-size: 0.82rem;
+    color: var(--text);
+    letter-spacing: 0.03em;
+  }
+  /* Vertical range input — WebKit accepts slider-vertical, other
+     engines need writing-mode. Both set for portability. */
+  .speed-slider input[type="range"] {
+    -webkit-appearance: slider-vertical;
+    appearance: slider-vertical;
+    writing-mode: vertical-lr;
+    direction: rtl;   /* puts 0 at the bottom, max at the top */
+    width: 22px;
+    height: 280px;
+    margin: 0.2rem 0;
+  }
+  .speed-slider .tick-max,
+  .speed-slider .tick-mid,
+  .speed-slider .tick-min { opacity: 0.65; }
+</style>
+</head>
+<body>
+
+<h1>~/football/renderer diagnostic · 8 harnesses</h1>
+<div class="note">
+  One harness per animation-concept. Each canvas shows N scenarios in a line, all ticking in parallel.
+  Freecam is on — drag to orbit, WASD pan, Q/E raise/lower, wheel zoom, R reset.
+</div>
+<div class="log" id="boot-log"></div>
+
+<div class="speed-slider" role="group" aria-label="Global animation speed">
+  <div class="tick-max">2×</div>
+  <div class="value" id="speed-value">1.00×</div>
+  <input type="range" id="speed-slider-input"
+         min="0" max="2" step="0.05" value="1"
+         aria-label="Animation speed (0 = stop, 1 = normal, 2 = double)">
+  <div class="tick-min">0×</div>
+  <div>speed</div>
+</div>
+
+<div class="harness-header"><h2>1 · locomotion</h2></div>
+<div class="note">Idle, walk, run, turns, hard stop, stamina drain.</div>
+<div class="strip"><canvas class="strip-main" id="s-loco"></canvas></div>
+
+<div class="harness-header"><h2>2 · ground kick</h2></div>
+<div class="note">Ground kicks at different foot-target angles around the compass.</div>
+<div class="strip"><canvas class="strip-main" id="s-ground-kick"></canvas></div>
+
+<div class="harness-header"><h2>3 · airkick</h2></div>
+<div class="note">Airborne volleys: ball height × approach speed grid.</div>
+<div class="strip"><canvas class="strip-main" id="s-airkick"></canvas></div>
+
+<div class="harness-header"><h2>4 · airborne ball</h2></div>
+<div class="note">Ball trajectories and bounces with no active players.</div>
+<div class="strip"><canvas class="strip-main" id="s-airball"></canvas></div>
+
+<div class="harness-header"><h2>5 · pushing</h2></div>
+<div class="note">Jab, hook, and uppercut — left and right arm for each type.</div>
+<div class="strip"><canvas class="strip-main" id="s-pushing"></canvas></div>
+
+<div class="harness-header"><h2>6 · ball contact (non-kick)</h2></div>
+<div class="note">Torso trap, head trap, shoulder clearance, dribble-into-ball.</div>
+<div class="strip"><canvas class="strip-main" id="s-contact"></canvas></div>
+
+<div class="harness-header"><h2>7 · collisions</h2></div>
+<div class="note">Pair-walk, pair-sprint, side-body steal.</div>
+<div class="strip"><canvas class="strip-main" id="s-collisions"></canvas></div>
+
+<div class="harness-header"><h2>8 · dead-ball</h2></div>
+<div class="note">Scorer celebration vs loser grim pose.</div>
+<div class="strip"><canvas class="strip-main" id="s-deadball"></canvas></div>
+
+<script type="module">
+import {
+  CONTEXT_CAP,
+  PLAYER_WIDTH,
+  Z_STRETCH,
+  freshState, lineupX, makeHarness, startLazyMount,
+} from './harness.js';
+import {
+  AIRKICK_MS, AIRKICK_PEAK_FRAC,
+  BALL_RADIUS,
+  KICK_DURATION_MS, KICK_WINDUP_MS,
+  STICKMAN_TORSO_RADIUS,
+  TICK_MS,
+  tick,
+} from '../physics.js';
+
+const log = document.getElementById('boot-log');
+
+// Global animation-speed multiplier driven by the right-side slider.
+// harness.js reads window.__animSpeed each frame; 0 pauses physics
+// while still rendering, 2 runs two physics steps per rAF.
+window.__animSpeed = 1;
+const speedSlider = document.getElementById('speed-slider-input');
+const speedValue  = document.getElementById('speed-value');
+function updateSpeed() {
+  const v = parseFloat(speedSlider.value);
+  window.__animSpeed = isFinite(v) ? v : 1;
+  speedValue.textContent = `${window.__animSpeed.toFixed(2)}×`;
+}
+speedSlider.addEventListener('input', updateSpeed);
+updateSpeed();
+// Keyboard shortcuts:
+//   Space — toggle pause (speed 0 ↔ last-nonzero speed)
+//   R     — reset speed to 1.00× (camera reset is handled by the
+//           renderer's own debug-cam handler on the same keydown,
+//           so R now snaps BOTH the camera and the speed back to
+//           defaults at once)
+let _prevSpeed = 1;
+window.addEventListener('keydown', (e) => {
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+  if (e.code === 'Space') {
+    e.preventDefault();
+    const current = parseFloat(speedSlider.value);
+    if (current > 0) {
+      _prevSpeed = current;
+      speedSlider.value = '0';
+    } else {
+      speedSlider.value = String(_prevSpeed);
+    }
+    updateSpeed();
+  } else if (e.code === 'KeyR') {
+    // Do NOT preventDefault — the renderer's own R handler also
+    // listens on window for camera reset, and we want both to fire.
+    speedSlider.value = '1';
+    updateSpeed();
+  }
+});
+
+// Camera preset for "line of N stickmen spanning field width" —
+// looks down at the center of the line. Tuned to make leg-swings
+// and arm arcs clearly readable.
+const LINE_CAM = {
+  targetX: 450, targetY: 28, targetZ: 24 * Z_STRETCH,
+  distance: 420, pitchDeg: 18, yawDeg: 0,
+};
+// Tighter camera for pair-based harnesses (pushing, collisions) —
+// closer in, more yaw so arm/leg contact reads in depth.
+const PAIR_CAM = {
+  targetX: 450, targetY: 30, targetZ: 24 * Z_STRETCH,
+  distance: 340, pitchDeg: 14, yawDeg: 18,
+};
+// Pushing uses a tight 2×3 grid — camera pulled in close, straight-on
+// (yaw 0) so the three rows stack cleanly bottom-to-top on screen
+// and each left/right pair reads as one cluster.
+const PUSH_GRID_CAM = {
+  targetX: 450, targetY: 30, targetZ: 27 * Z_STRETCH,
+  distance: 300, pitchDeg: 22, yawDeg: 0,
+};
+function write(cls, msg) {
+  const span = document.createElement('span');
+  span.className = cls;
+  span.textContent = msg + '\n';
+  log.appendChild(span);
+  span.style.whiteSpace = 'pre';
+}
+
+// ── Action-vector helper ─────────────────────────────────────
+// 9-element action as defined in physics.js:
+// [moveX, moveY, kickGate, kickDx, kickDy, kickDz, kickPower, pushGate, pushPower]
+function act({
+  moveX = 0, moveY = 0,
+  kickGate = 0, kickDx = 1, kickDy = 0, kickDz = 0, kickPower = 0,
+  pushGate = 0, pushPower = 0,
+} = {}) {
+  return [moveX, moveY, kickGate, kickDx, kickDy, kickDz, kickPower, pushGate, pushPower];
+}
+const NOOP = act();
+
+// Y-coordinate used to "park" the unused player off-screen in
+// single-player scenarios, so they don't render or collide.
+const OFFSCREEN_Y = -500;
+
+// Pause-state clearer: used by scenarios to swallow goal/oob pauses
+// so they don't halt the loop (harnesses aren't real matches).
+function clearPause(state) {
+  state.pauseState = null;
+  state.pauseTimer = 0;
+  state.graceFrames = 0;
+  state.matchOver = false;
+  state.winner = null;
+}
+
+try {
+  // ──────────────────────────────────────────────────────────
+  // 1 · Locomotion — 7 in a line
+  // ──────────────────────────────────────────────────────────
+  // Lane geometry: 7 scenarios spaced ~90 units apart inside the
+  // field (margin 180). Zone half-width 36 leaves an 18-unit gap
+  // between adjacent zones — generous enough that a sprinter
+  // overshooting its inside cushion still doesn't reach the
+  // neighbour.
+  //
+  // Single control pattern shared across scenarios:
+  //   `locoBounceDir(p, cx)` — sticky linear direction. Holds
+  //   +1 or -1 until the player crosses an inside cushion at
+  //   ±0.75 × zone, then flips. Stable: no per-tick re-evaluation
+  //   of intent, so the motion-input dead zone (0.15) and the
+  //   direction-change stamina drain (0.02 per flip) both fire
+  //   at most once per lane traversal.
+  //
+  // Every scenario commands at most one direction flip per
+  // traversal, so stamina stays ≥ regen rate and the walk
+  // animation is steady-state under a stable target.
+  const LOCO_ZONE_HALF_X = 36;
+  const LOCO_FLIP_X      = LOCO_ZONE_HALF_X * 0.75;
+  const LOCO_BRAKE_X     = LOCO_ZONE_HALF_X * 0.35;
+  const LOCO_CY          = 27;
+  // Stagger lanes across two depth rows so adjacent runners are
+  // 14u apart on the y-axis. Without this, neighbouring linear-
+  // bouncer scenarios at the edges of their x-zones look like they
+  // run THROUGH each other; with it, even at maximum overlap on x
+  // they're rendered at clearly different depths on screen.
+  const LOCO_LANE_Y = (i) => i % 2 === 0 ? LOCO_CY - 7 : LOCO_CY + 7;
+  function locoBounceDir(p, cx) {
+    if (p._locoDir === undefined) p._locoDir = 1;
+    if (p._locoDir > 0 && p.x > cx + LOCO_FLIP_X)      p._locoDir = -1;
+    else if (p._locoDir < 0 && p.x < cx - LOCO_FLIP_X) p._locoDir = 1;
+    return p._locoDir;
+  }
+  function linearScenario(label, force) {
+    return {
+      label,
+      step(state, i) {
+        const cx = lineupX(i, LOCO_N);
+        tick(state, act({ moveX: force * locoBounceDir(state.p1, cx) }), NOOP);
+      },
+    };
+  }
+  const LOCO_SCENARIOS = [
+    linearScenario('walk (slow)',   0.30),
+    linearScenario('walk (normal)', 0.55),
+    linearScenario('run (sprint)',  1.00),
+    {
+      // Curved-heading test: linear x bounce with a sinusoidal y
+      // bob layered on top. Target moveY peak ~0.4 — above the
+      // 0.15 dead zone so the y motion fires reliably, but small
+      // enough that the integrated y excursion (~peak / omega in
+      // physics units) stays comfortably inside the field.
+      label: 'zigzag',
+      step(state, i, frame) {
+        const cx = lineupX(i, LOCO_N);
+        const dirX = locoBounceDir(state.p1, cx);
+        const moveY = Math.sin(frame * 0.07) * 0.4;
+        tick(state, act({ moveX: 0.7 * dirX, moveY }), NOOP);
+      },
+    },
+    {
+      // Position-driven brake test: sprint to the outer 35 % of the
+      // lane, kill the input and let friction stop the player
+      // (STOP animation fires during the decel). When fully stopped,
+      // reverse and repeat. No frame counter, no teleport — bound
+      // by its lane.
+      label: 'hard stop',
+      step(state, i) {
+        const cx = lineupX(i, LOCO_N);
+        const p  = state.p1;
+        if (p._stopDir === undefined) p._stopDir = 1;
+        const inBrakeZone = p._stopDir > 0
+          ? (p.x > cx + LOCO_BRAKE_X)
+          : (p.x < cx - LOCO_BRAKE_X);
+        if (inBrakeZone) {
+          tick(state, act({ moveX: 0 }), NOOP);
+          if (Math.abs(p.vx) < 0.05) p._stopDir = -p._stopDir;
+        } else {
+          tick(state, act({ moveX: 1.0 * p._stopDir }), NOOP);
+        }
+      },
+    },
+    {
+      label: 'stamina sweep',
+      step(state, i, frame) {
+        const u = ((frame % 240) / 240) * 2;
+        state.p1.stamina = u <= 1 ? Math.max(0.05, u) : Math.max(0.05, 2 - u);
+        const cx = lineupX(i, LOCO_N);
+        tick(state, act({ moveX: 0.8 * locoBounceDir(state.p1, cx) }), NOOP);
+      },
+    },
+  ];
+  const LOCO_N = LOCO_SCENARIOS.length;
+  makeHarness({
+    id: 's-loco',
+    camera: LINE_CAM,
+    scenarios: LOCO_SCENARIOS.map((sc, i) => ({
+      ...sc,
+      players: 'p1',
+      showBall: false,
+      init(state) {
+        state.p1.x = lineupX(i, LOCO_N);
+        state.p1.y = LOCO_LANE_Y(i);
+        state.p1.heading = 0;
+        state.p1.stamina = 1;
+        state.p2.x = state.p1.x; state.p2.y = OFFSCREEN_Y;
+        state.ball.y = OFFSCREEN_Y; state.ball.frozen = true;
+      },
+    })),
+  });
+
+  // ──────────────────────────────────────────────────────────
+  // 2 · Ground kick — 10 angles, real physics
+  // ──────────────────────────────────────────────────────────
+  // Each stickman faces a different compass direction. Ball sits
+  // in front and gets re-positioned each frame after flying away,
+  // so the player keeps kicking the same ball repeatedly. Kick
+  // power is minimum so the ball doesn't blast across the field.
+  const KICK_ANGLES_DEG = [-135, -90, -45, 0, 45, 90, 135, 180, -22, 22];
+  const KICK_N = KICK_ANGLES_DEG.length;
+  function placeKickBall(state, angle) {
+    const fx = Math.cos(angle), fy = Math.sin(angle);
+    state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + fx * 8;
+    state.ball.y = state.p1.y + (fy * 8) / Z_STRETCH;
+    state.ball.z = BALL_RADIUS;
+    state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+    state.ball.frozen = false;
+    state.ball.inGoal = false;
+    state.lastKickTick = state.tick;
+  }
+  function resetKickScenario(state, i, angle) {
+    clearPause(state);
+    state.p1.x = lineupX(i, KICK_N); state.p1.y = 27;
+    state.p1.heading = angle;
+    state.p1.vx = 0; state.p1.vy = 0;
+    state.p1.stamina = 1;
+    state.p1.kick.active = false;
+    placeKickBall(state, angle);
+  }
+  makeHarness({
+    id: 's-ground-kick',
+    camera: LINE_CAM,
+    scenarios: KICK_ANGLES_DEG.map((deg, i) => {
+      const angle = (deg * Math.PI) / 180;
+      const fx = Math.cos(angle), fy = Math.sin(angle);
+      return {
+        label: `kick ${deg}°`,
+        players: 'p1',
+        init(state) {
+          state.p2.x = state.p1.x; state.p2.y = OFFSCREEN_Y;   // park off-screen
+          resetKickScenario(state, i, angle);
+        },
+        step(state) {
+          // Pin player to its lane — physics kick recoil can nudge
+          // the player; we snap them back so scenarios stay aligned.
+          state.p1.x = lineupX(i, KICK_N);
+          state.p1.y = 27;
+          state.p1.heading = angle;
+          state.p1.vx = 0; state.p1.vy = 0;
+          state.p1.stamina = 1;
+          // If ball went out or scored, re-seat in front of the
+          // player. Don't gate on kick.active — the kick window is
+          // very short relative to ball flight time, and re-seating
+          // while mid-strike just makes the follow-up pose snap
+          // which reads fine in the harness context.
+          const bdx = state.ball.x - (state.p1.x + PLAYER_WIDTH / 2);
+          const bdy = state.ball.y - state.p1.y;
+          const dist = Math.hypot(bdx, bdy * Z_STRETCH);
+          if (state.pauseState || state.ball.frozen || dist > 22) {
+            clearPause(state);
+            placeKickBall(state, angle);
+          }
+          // Fire kick continuously; tryStartKick only actually
+          // starts a kick if in range + facing + not already kicking.
+          // kickPower=-1 → minimum force, gentle so the kick reads
+          // clearly without the ball vanishing across the field.
+          const action = act({
+            kickGate: 1, kickDx: fx, kickDy: fy, kickDz: 0, kickPower: -1,
+          });
+          tick(state, action, NOOP);
+        },
+      };
+    }),
+  });
+
+  // ──────────────────────────────────────────────────────────
+  // 3 · Airkick — 10 stickmen, ball at different heights
+  // ──────────────────────────────────────────────────────────
+  // Stickmen face forward. Ball is placed airborne in front of each
+  // and re-seated after a kick so the airkick pose keeps firing.
+  const AIR_HEIGHTS = [22, 28, 34, 40, 46, 22, 28, 34, 40, 46];
+  const AIR_N = AIR_HEIGHTS.length;
+  function placeAirBall(state, i) {
+    const h = AIR_HEIGHTS[i];
+    state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 8;
+    state.ball.y = state.p1.y;
+    state.ball.z = h;
+    state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+    state.ball.frozen = false;
+    state.ball.inGoal = false;
+    state.lastKickTick = state.tick;
+  }
+  function resetAirkickScenario(state, i) {
+    clearPause(state);
+    state.p1.x = lineupX(i, AIR_N); state.p1.y = 27;
+    state.p1.heading = 0;
+    state.p1.vx = 0; state.p1.vy = 0;
+    state.p1.airZ = 0;
+    state.p1.stamina = 1;
+    state.p1.kick.active = false;
+    placeAirBall(state, i);
+  }
+  makeHarness({
+    id: 's-airkick',
+    camera: LINE_CAM,
+    scenarios: Array.from({ length: AIR_N }, (_, i) => ({
+      label: `airkick h=${AIR_HEIGHTS[i]}`,
+      players: 'p1',
+      init(state) {
+        state.p2.x = state.p1.x; state.p2.y = OFFSCREEN_Y;
+        resetAirkickScenario(state, i);
+      },
+      step(state) {
+        // Pin lane.
+        state.p1.x = lineupX(i, AIR_N);
+        state.p1.y = 27;
+        state.p1.heading = 0;
+        state.p1.vx = 0; state.p1.vy = 0;
+        state.p1.stamina = 1;
+        // Only respawn the ball when the player is NOT mid-kick.
+        // Otherwise the ball respawns mid-strike (gravity drops it
+        // through BALL_RADIUS in ~12 ticks, well within the 14-tick
+        // windup+strike window) and visibly teleports back to the
+        // spawn height while the foot is locked at its predicted
+        // strike position — reads as "ball jumped to the leg".
+        if (!state.p1.kick.active) {
+          const bdx = state.ball.x - (state.p1.x + PLAYER_WIDTH / 2);
+          const bdy = state.ball.y - state.p1.y;
+          const dist = Math.hypot(bdx, bdy * Z_STRETCH);
+          if (state.pauseState || state.ball.frozen || dist > 22 || state.ball.z <= BALL_RADIUS) {
+            clearPause(state);
+            placeAirBall(state, i);
+          }
+        }
+        const action = act({
+          kickGate: 1, kickDx: 1, kickDy: 0, kickDz: 1, kickPower: -1,
+        });
+        tick(state, action, NOOP);
+      },
+    })),
+  });
+
+  // ──────────────────────────────────────────────────────────
+  // 4 · Airborne ball — 5 balls at different launch configs
+  // ──────────────────────────────────────────────────────────
+  const AIRBALL_LAUNCHES = [
+    { label: 'low line drive', vx: 5, vz: 0.5, z0: 10 },
+    { label: 'medium arc',     vx: 4, vz: 2,   z0: 20 },
+    { label: 'high arc',       vx: 3, vz: 4,   z0: 30 },
+    { label: 'steep drop',     vx: 1, vz: 5,   z0: 40 },
+    { label: 'slow roll',      vx: 2, vz: 0,   z0: 0  },
+  ];
+  const AIRBALL_N = AIRBALL_LAUNCHES.length;
+  function resetAirball(state, i) {
+    clearPause(state);
+    const launch = AIRBALL_LAUNCHES[i];
+    // Park both players off-screen — this harness is pure ball physics.
+    state.p1.x = lineupX(i, AIRBALL_N); state.p1.y = OFFSCREEN_Y;
+    state.p2.x = lineupX(i, AIRBALL_N); state.p2.y = OFFSCREEN_Y;
+    state.ball.x = lineupX(i, AIRBALL_N) - 60;
+    state.ball.y = 27;
+    state.ball.z = launch.z0;
+    state.ball.vx = launch.vx;
+    state.ball.vy = 0;
+    state.ball.vz = launch.vz;
+    state.ball.frozen = false;
+    state.ball.inGoal = false;
+    state.lastKickTick = state.tick;
+  }
+  makeHarness({
+    id: 's-airball',
+    scenarios: AIRBALL_LAUNCHES.map((launch, i) => ({
+      label: launch.label,
+      players: 'none',
+      init(state) { resetAirball(state, i); },
+      step(state) {
+        const ballPastScene = state.ball.x > lineupX(i, AIRBALL_N) + 60;
+        if (state.pauseState || state.ball.frozen || ballPastScene) {
+          resetAirball(state, i);
+        }
+        tick(state, NOOP, NOOP);
+      },
+    })),
+  });
+
+  // ──────────────────────────────────────────────────────────
+  // 5 · Pushing — 6 pairs, real push contact
+  // ──────────────────────────────────────────────────────────
+  // Each pair stands exactly in push range. P1 continuously fires
+  // pushGate — physics picks jab/hook/uppercut based on approach
+  // distance + perp offset and computes a real impulse for P2.
+  // Both players are pinned to their lanes so the push cycle
+  // stays observable: push → P2 stumbles → snap back → push again.
+  // Six canonical pairs — one per (arm × punch-type) combination.
+  // Physics picks the type from fwd distance: <14 uppercut, <22 hook,
+  // ≥22 jab. Perp sign picks the arm: negative = victim on pusher's
+  // LEFT (pushArm = 'left'); positive = right.
+  const PUSH_OFFSETS = [
+    { label: '1 · left jab',       fwd: 26, perp: -3 },
+    { label: '2 · right jab',      fwd: 26, perp: +3 },
+    { label: '3 · left hook',      fwd: 18, perp: -5 },
+    { label: '4 · right hook',     fwd: 18, perp: +5 },
+    { label: '5 · left uppercut',  fwd: 10, perp: -2 },
+    { label: '6 · right uppercut', fwd: 10, perp: +2 },
+  ];
+  const PUSH_N = PUSH_OFFSETS.length;
+  // 2-column × 3-row grid. Columns are kept tight so each punch
+  // type's left/right pair reads as ONE cluster with their mirrors
+  // right next to each other. Indexing:
+  //   i=4,5  top row    (uppercuts — i/2=2)
+  //   i=2,3  middle row (hooks     — i/2=1)
+  //   i=0,1  bottom row (jabs      — i/2=0)
+  //   i%2=0  left column, i%2=1 right column
+  const PUSH_GRID_COLS_X = [390, 510];                   // ~120 units apart
+  const PUSH_GRID_ROWS_Y = [48, 27, 6];                  // bottom, middle, top — physics y, ~21 units apart
+  function pushCenter(i) {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    return { cx: PUSH_GRID_COLS_X[col], cy: PUSH_GRID_ROWS_Y[row] };
+  }
+  function pinPushPair(state, i) {
+    clearPause(state);
+    const cfg = PUSH_OFFSETS[i];
+    const { cx, cy } = pushCenter(i);
+    const halfPerpY = cfg.perp / (2 * Z_STRETCH);
+    state.p1.x = cx - cfg.fwd / 2;
+    state.p1.y = cy - halfPerpY;
+    state.p1.heading = 0;
+    state.p1.vx = 0; state.p1.vy = 0; state.p1.stamina = 1;
+    state.p2.x = cx + cfg.fwd / 2;
+    state.p2.y = cy + halfPerpY;
+    state.p2.heading = Math.PI;
+    state.p2.vx = 0; state.p2.vy = 0; state.p2.stamina = 1;
+    state.p2.pushVx = 0; state.p2.pushVy = 0;
+    state.ball.x = cx; state.ball.y = OFFSCREEN_Y; state.ball.z = 0;
+    state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+    state.ball.frozen = true;
+  }
+  // Resting / exhausted-recovery test — a lone stickman left of the
+  // push grid. Drains stamina to 0 whenever it tops out at 1.0 so
+  // the exhausted → spinning → recovered → idle loop replays as soon
+  // as stamina finishes regenerating.
+  const REST_TEST_X = 280;
+  const REST_TEST_Y = 27;
+  const restScenario = {
+    label: '7 · resting',
+    showBall: false,
+    players: 'p1',
+    init(state) {
+      clearPause(state);
+      state.p1.x = REST_TEST_X - PLAYER_WIDTH / 2;
+      state.p1.y = REST_TEST_Y;
+      state.p1.heading = 0;
+      state.p1.vx = 0; state.p1.vy = 0;
+      state.p1.stamina = 0;
+      state.p1.exhausted = true;
+      state.p2.x = -200; state.p2.y = OFFSCREEN_Y;
+    },
+    step(state) {
+      state.p1.x = REST_TEST_X - PLAYER_WIDTH / 2;
+      state.p1.y = REST_TEST_Y;
+      state.p1.heading = 0;
+      state.p1.vx = 0; state.p1.vy = 0;
+      // Re-drain when stamina has fully refilled so the cycle loops.
+      if (state.p1.stamina >= 1) {
+        state.p1.stamina = 0;
+        state.p1.exhausted = true;
+      }
+      tick(state, NOOP, NOOP);
+    },
+  };
+  makeHarness({
+    id: 's-pushing',
+    camera: PUSH_GRID_CAM,
+    scenarios: [
+      ...PUSH_OFFSETS.map((cfg, i) => ({
+        label: cfg.label,
+        showBall: false,
+        init(state) { pinPushPair(state, i); },
+        step(state) {
+          // Pin P1 every frame so the pusher never walks away.
+          const { cx, cy } = pushCenter(i);
+          const halfPerpY = cfg.perp / (2 * Z_STRETCH);
+          state.p1.x = cx - cfg.fwd / 2;
+          state.p1.y = cy - halfPerpY;
+          state.p1.heading = 0;
+          state.p1.vx = 0; state.p1.vy = 0;
+          state.p1.stamina = 1;
+          // If P2 got knocked back far, snap back so the next push
+          // lands. Keeps the loop readable — otherwise P2 flies away
+          // and we never see another punch.
+          const dp2x = state.p2.x - state.p1.x;
+          if (Math.abs(dp2x - cfg.fwd) > 6 || state.p2.pushTimer <= 0) {
+            if (state.p1.pushTimer <= 0 && state.p2.pushTimer <= 0) {
+              state.p2.x = cx + cfg.fwd / 2;
+              state.p2.y = cy + halfPerpY;
+              state.p2.heading = Math.PI;
+              state.p2.vx = 0; state.p2.vy = 0;
+              state.p2.pushVx = 0; state.p2.pushVy = 0;
+            }
+          }
+          // Fire push with light power so the victim only stumbles a
+          // few units while still showing a clear recoil pose.
+          // pushPower -0.5 → power01 ≈ 0.25. reactForce is compressed
+          // by sqrt in the pose layer, so the pose intensity is still
+          // about 0.5 × max — visible without flying off-screen.
+          const action1 = act({ pushGate: 1, pushPower: -0.5 });
+          tick(state, action1, NOOP);
+        },
+      })),
+      restScenario,
+    ],
+  });
+
+  // ──────────────────────────────────────────────────────────
+  // 6 · Ball contact (non-kick) — single stickman, three balls
+  //                                  in flight from three angles
+  // ──────────────────────────────────────────────────────────
+  // One stationary stickman in the centre of the field. Three
+  // independent shot CHANNELS run in parallel — each channel owns
+  // its own physics state (so its ball collides with its own copy
+  // of the stickman) and cycles through a queue of shots that
+  // differ by direction / radius / height / force / vz.
+  //
+  // Channel lifecycle: fire shot → ball plays out → after 2 ground
+  // bounces (or settling on ground, or a timeout) the ball is
+  // hidden and the channel advances to its next shot. Channels are
+  // independent, so 3 balls are always in the air at varied phases.
+  //
+  // Only the first channel renders its stickman (`players: 'p1'`);
+  // the other two declare `players: 'none'` so they contribute the
+  // ball but don't render duplicate overlapping bodies. Each
+  // channel's ball still collides with its own internal p1, which
+  // sits at the same world position as the visible stickman.
+  const CONTACT_CENTER_X = 450;
+  const CONTACT_CENTER_Y = 27;
+  const CONTACT_CAM = {
+    targetX: CONTACT_CENTER_X, targetY: 30, targetZ: CONTACT_CENTER_Y * Z_STRETCH,
+    distance: 380, pitchDeg: 16, yawDeg: 12,
+  };
+  const CONTACT_SHOT_TIMEOUT = 200;  // tick fallback if ball never bounces twice
+  // angleDeg: 0 = east (+x), 90 = "north" (+y, into screen depth).
+  // radius is visual units; speed is visual u/tick; z is launch
+  // height (vertical); vz is optional vertical velocity.
+  const CONTACT_CHANNELS = [
+    // Channel 0 — high arcs dropping in from above
+    [
+      { angleDeg:   90, radius: 40, speed: 3.0, z: 60, vz: -1 },
+      { angleDeg: -135, radius: 50, speed: 2.5, z: 55, vz: -1 },
+      { angleDeg:  135, radius: 60, speed: 3.0, z: 65, vz: -1 },
+    ],
+    // Channel 1 — hard line drives at chest / head height
+    [
+      { angleDeg:   45, radius: 50, speed: 4.5, z: 38, vz:  0 },
+      { angleDeg:    0, radius: 45, speed: 4.0, z: 50, vz:  0 },
+      { angleDeg:  -45, radius: 55, speed: 5.0, z: 32, vz:  0 },
+    ],
+    // Channel 2 — ground rolls + rising shots
+    [
+      { angleDeg:  180, radius: 35, speed: 2.5, z: BALL_RADIUS, vz: 0 },
+      { angleDeg:  -90, radius: 40, speed: 3.5, z: BALL_RADIUS, vz: 0 },
+      { angleDeg:  -45, radius: 60, speed: 4.0, z: 18,           vz: 1 },
+    ],
+    // Channel 3 — drops straight down from above the player
+    // (radius=0 puts the spawn directly over the head, speed=0
+    // gives no horizontal velocity, vz<0 makes the ball fall).
+    [
+      { angleDeg: 0, radius: 0, speed: 0, z: 80, vz: -2.5 },
+      { angleDeg: 0, radius: 0, speed: 0, z: 95, vz: -3.5 },
+      { angleDeg: 0, radius: 0, speed: 0, z: 70, vz: -1.5 },
+    ],
+  ];
+  function makeContactScenario(channel, channelIdx) {
+    return {
+      label: `contact ch${channelIdx}`,
+      // Channel 0 owns the visible stickman; others suppress their
+      // copy so the scene doesn't render three overlapping bodies.
+      players: channelIdx === 0 ? 'p1' : 'none',
+      init(state) {
+        state.p1.x = CONTACT_CENTER_X - PLAYER_WIDTH / 2;
+        state.p1.y = CONTACT_CENTER_Y;
+        state.p1.heading = 0;
+        state.p1.vx = 0; state.p1.vy = 0;
+        state.p1.stamina = 1;
+        state.p2.x = state.p1.x; state.p2.y = OFFSCREEN_Y;
+        state.p1._channelState = { idx: 0, fired: false, bounces: 0, lastZ: 0, startFrame: 0 };
+        state.ball.y = OFFSCREEN_Y; state.ball.z = BALL_RADIUS;
+        state.ball.frozen = true;
+      },
+      step(state, _i, frame) {
+        // Pin the stickman every tick — ball impacts shouldn't drag
+        // it off-centre across the cycle.
+        state.p1.x = CONTACT_CENTER_X - PLAYER_WIDTH / 2;
+        state.p1.y = CONTACT_CENTER_Y;
+        state.p1.heading = 0;
+        state.p1.vx = 0; state.p1.vy = 0;
+        state.p1.stamina = 1;
+
+        const cs = state.p1._channelState;
+        if (!cs.fired) {
+          const shot = channel[cs.idx % channel.length];
+          const ang  = shot.angleDeg * Math.PI / 180;
+          const cx   = state.p1.x + PLAYER_WIDTH / 2;
+          state.ball.x  = cx           + Math.cos(ang) * shot.radius;
+          state.ball.y  = state.p1.y   + Math.sin(ang) * shot.radius / Z_STRETCH;
+          state.ball.z  = shot.z;
+          state.ball.vx = -Math.cos(ang) * shot.speed;
+          state.ball.vy = -Math.sin(ang) * shot.speed / Z_STRETCH;
+          state.ball.vz = shot.vz || 0;
+          state.ball.frozen = false;
+          state.ball.inGoal = false;
+          state.lastKickTick = state.tick;
+          cs.fired = true;
+          cs.bounces = 0;
+          cs.lastZ = state.ball.z;
+          cs.startFrame = frame;
+        }
+
+        tick(state, null, null);
+
+        // Rising-edge ground-bounce detector: count crossings from
+        // above-ground to at-or-below-ground.
+        const z = state.ball.z;
+        if (z <= BALL_RADIUS + 0.1 && cs.lastZ > BALL_RADIUS + 0.1) {
+          cs.bounces++;
+        }
+        cs.lastZ = z;
+
+        // Advance once the ball has bounced twice, OR has bounced
+        // once and is now sitting still on the ground (no second
+        // bounce possible), OR after a timeout (rolled off-field).
+        const elapsed   = frame - cs.startFrame;
+        const settled   = z <= BALL_RADIUS + 0.5 && Math.abs(state.ball.vz) < 0.2;
+        const advance   = cs.bounces >= 2
+                       || (cs.bounces >= 1 && settled)
+                       || elapsed > CONTACT_SHOT_TIMEOUT;
+        if (advance) {
+          state.ball.frozen = true;
+          state.ball.y = OFFSCREEN_Y;
+          state.ball.z = BALL_RADIUS;
+          state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+          cs.fired = false;
+          cs.idx = (cs.idx + 1) % channel.length;
+        }
+      },
+    };
+  }
+  // Two dribblers in the side halves of the field — they share the
+  // strip with the central ball-contact rig but live in their own
+  // physics states, so neither their player nor their ball can
+  // collide with the central scene. Motion is teleport-driven (we
+  // assign player position each tick from a parametric path); ticks
+  // run with NOOP actions so physics doesn't fight the assignment.
+  // Walk amplitude reads cleanly because the renderer's anim derives
+  // speed from the per-tick position delta, which our path supplies.
+  const DRIBBLE_LINE_CX = 320;
+  const DRIBBLE_LINE_Y  = 14;
+  const DRIBBLE_LINE_HALF_X = 28;
+  // Lane cushion for the flip — the player still has momentum when
+  // the direction command flips, so we trigger the flip BEFORE the
+  // hard edge to leave room for `PLAYER_ACCEL_TICKS = 20`-bounded
+  // deceleration. With moveX = ±0.30 (vx target ≈ 3 visual u/tick),
+  // decel-then-accel-back covers ~10 forward units past the flip.
+  const DRIBBLE_LINE_FLIP_X = 18;
+  const DRIBBLE_LINE_MOVE   = 0.30;
+  const DRIBBLE_LINE = {
+    label: 'dribble line',
+    players: 'p1',
+    init(state) {
+      state.p1.x = DRIBBLE_LINE_CX - PLAYER_WIDTH / 2;
+      state.p1.y = DRIBBLE_LINE_Y;
+      state.p1.heading = 0;
+      state.p1.vx = 0; state.p1.vy = 0;
+      state.p1.stamina = 1;
+      state.p2.x = state.p1.x; state.p2.y = OFFSCREEN_Y;
+      state.p1._dribDir = 1;
+    },
+    step(state) {
+      const p = state.p1;
+      // Flip target direction at the cushion. From here on, physics
+      // owns the rest: vx ramps over PLAYER_ACCEL_TICKS, heading
+      // turns at PLAYER_TURN_RATE, and the TURN/STOP poses fire
+      // naturally as the body decelerates and pivots.
+      if (p._dribDir > 0 && p.x > DRIBBLE_LINE_CX + DRIBBLE_LINE_FLIP_X - PLAYER_WIDTH / 2) p._dribDir = -1;
+      else if (p._dribDir < 0 && p.x < DRIBBLE_LINE_CX - DRIBBLE_LINE_FLIP_X - PLAYER_WIDTH / 2) p._dribDir = 1;
+
+      // Pin Y so the dribbler stays in its depth lane (no Y motion
+      // commanded; vy zeroed before tick so physics doesn't drift).
+      p.y = DRIBBLE_LINE_Y;
+      p.vy = 0;
+      p.stamina = 1;
+
+      tick(state, act({ moveX: DRIBBLE_LINE_MOVE * p._dribDir }), NOOP);
+
+      // Ball pinned ~8 visual units ahead along the body's heading.
+      // The heading is now physics-driven, so during a 180° flip the
+      // ball naturally orbits the player's feet (drag-back read).
+      const fx = Math.cos(p.heading);
+      state.ball.x = p.x + PLAYER_WIDTH / 2 + 8 * fx;
+      state.ball.y = p.y;
+      state.ball.z = BALL_RADIUS;
+      state.ball.vx = p.vx;  // cosmetic — drives rolling spin
+      state.ball.vy = 0;
+      state.ball.vz = 0;
+      state.ball.frozen = true;
+      state.ball.inGoal = false;
+    },
+  };
+  const DRIBBLE_CIRCLE_CX = 580;
+  const DRIBBLE_CIRCLE_CY = 40;
+  const DRIBBLE_CIRCLE_R     = 18;
+  const DRIBBLE_CIRCLE_OMEGA = 0.06;  // rad/tick
+  const DRIBBLE_CIRCLE = {
+    label: 'dribble circle',
+    players: 'p1',
+    init(state) {
+      state.p1.x = DRIBBLE_CIRCLE_CX + DRIBBLE_CIRCLE_R - PLAYER_WIDTH / 2;
+      state.p1.y = DRIBBLE_CIRCLE_CY;
+      state.p1.heading = Math.PI / 2;
+      state.p1.vx = 0; state.p1.vy = 0;
+      state.p1.stamina = 1;
+      state.p2.x = state.p1.x; state.p2.y = OFFSCREEN_Y;
+    },
+    step(state, _i, frame) {
+      const theta = frame * DRIBBLE_CIRCLE_OMEGA;
+      const tanX  = -Math.sin(theta);
+      const tanY  =  Math.cos(theta);
+      const p = state.p1;
+      p.x = DRIBBLE_CIRCLE_CX + DRIBBLE_CIRCLE_R * Math.cos(theta) - PLAYER_WIDTH / 2;
+      p.y = DRIBBLE_CIRCLE_CY + DRIBBLE_CIRCLE_R * Math.sin(theta) / Z_STRETCH;
+      p.vx = 0; p.vy = 0;
+      // Heading along tangent direction.
+      p.heading = Math.atan2(tanY * Z_STRETCH, tanX);
+      p.stamina = 1;
+
+      // Ball pinned ~8 visual units along tangent ahead of player.
+      state.ball.x = p.x + PLAYER_WIDTH / 2 + tanX * 8;
+      state.ball.y = p.y + tanY * 8 / Z_STRETCH;
+      state.ball.z = BALL_RADIUS;
+      // Cosmetic velocity matching tangent for rolling spin.
+      const speed = DRIBBLE_CIRCLE_R * DRIBBLE_CIRCLE_OMEGA;
+      state.ball.vx = tanX * speed;
+      state.ball.vy = tanY * speed / Z_STRETCH;
+      state.ball.vz = 0;
+      state.ball.frozen = true;
+      state.ball.inGoal = false;
+
+      tick(state, NOOP, NOOP);
+    },
+  };
+  makeHarness({
+    id: 's-contact',
+    camera: CONTACT_CAM,
+    scenarios: [
+      ...CONTACT_CHANNELS.map((ch, i) => makeContactScenario(ch, i)),
+      DRIBBLE_LINE,
+      DRIBBLE_CIRCLE,
+    ],
+  });
+
+  // ──────────────────────────────────────────────────────────
+  // 7 · Collisions — pair-walk / pair-sprint / steal
+  // ──────────────────────────────────────────────────────────
+  const COLLISION_SCENARIOS = [
+    {
+      label: 'pair walk',
+      init(state) {
+        const cx = lineupX(0, 3);
+        state.p1.x = cx - 30; state.p1.y = 24; state.p1.heading = 0;
+        state.p2.x = cx + 30; state.p2.y = 24; state.p2.heading = Math.PI;
+      },
+      step(state, _i, frame) {
+        if (frame % 120 === 0) {
+          const cx = lineupX(0, 3);
+          state.p1.x = cx - 30; state.p1.vx = 0; state.p1.vy = 0;
+          state.p2.x = cx + 30; state.p2.vx = 0; state.p2.vy = 0;
+          state.p1.stamina = 1; state.p2.stamina = 1;
+        }
+        tick(state, act({ moveX:  0.5 }), act({ moveX: -0.5 }));
+      },
+    },
+    {
+      label: 'pair sprint',
+      init(state) {
+        const cx = lineupX(1, 3);
+        state.p1.x = cx - 80; state.p1.y = 24; state.p1.heading = 0;
+        state.p2.x = cx + 80; state.p2.y = 24; state.p2.heading = Math.PI;
+      },
+      step(state, _i, frame) {
+        if (frame % 90 === 0) {
+          const cx = lineupX(1, 3);
+          state.p1.x = cx - 80; state.p1.vx = 0; state.p1.vy = 0;
+          state.p2.x = cx + 80; state.p2.vx = 0; state.p2.vy = 0;
+          state.p1.stamina = 1; state.p2.stamina = 1;
+        }
+        tick(state, act({ moveX:  1 }), act({ moveX: -1 }));
+      },
+    },
+    {
+      label: 'side-body steal',
+      init(state) {
+        const cx = lineupX(2, 3);
+        state.p1.x = cx - 30; state.p1.y = 25; state.p1.heading = 0;
+        state.p2.x = cx + 30; state.p2.y = 24; state.p2.heading = Math.PI;
+        state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 10;
+        state.ball.y = state.p1.y;
+      },
+      step(state, _i, frame) {
+        if (frame % 70 === 0) {
+          const cx = lineupX(2, 3);
+          state.p1.x = cx - 30; state.p1.vx = 0; state.p1.vy = 0; state.p1.stamina = 1;
+          state.p2.x = cx + 30; state.p2.vx = 0; state.p2.vy = 0; state.p2.stamina = 1;
+          state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 10;
+          state.ball.y = state.p1.y; state.ball.z = 0;
+          state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+        }
+        tick(state, act({ moveX: 0.3 }), NOOP);
+      },
+    },
+  ];
+  makeHarness({ id: 's-collisions', camera: PAIR_CAM, scenarios: COLLISION_SCENARIOS });
+
+  // ──────────────────────────────────────────────────────────
+  // 8 · Dead-ball — scorer celebrating + loser's grim response
+  // ──────────────────────────────────────────────────────────
+  // Single pair: p1 scored (CELEBRATE pose — jump cycle + V-pump
+  // arms), p2 stands facing the scorer in the GRIEVE pose (kneeling,
+  // fists at face). Closer camera so both reactions read clearly.
+  const DEADBALL_CAM = {
+    targetX: 455, targetY: 22, targetZ: 24 * Z_STRETCH,
+    distance: 180, pitchDeg: 6, yawDeg: 35,
+  };
+  makeHarness({
+    id: 's-deadball',
+    camera: DEADBALL_CAM,
+    scenarios: [
+      {
+        label: 'goal · scorer vs loser',
+        init(state) {
+          state.p1.x = 430; state.p1.y = 27; state.p1.heading = 0;
+          state.p2.x = 480; state.p2.y = 27; state.p2.heading = Math.PI;
+          state.pauseState = 'celebrate';
+          state.pauseTimer = 999;
+          state.goalScorer = state.p1;
+          state.ball.y = OFFSCREEN_Y; state.ball.frozen = true;
+        },
+        step(state) {
+          state.pauseTimer = 999;
+        },
+      },
+    ],
+  });
+
+  startLazyMount();
+  write('ok', `all 8 harnesses registered (cap=${CONTEXT_CAP})`);
+} catch (e) {
+  write('err', `boot failed: ${e.message}`);
+  console.error(e);
+}
+</script>
+
+</body>
+</html>

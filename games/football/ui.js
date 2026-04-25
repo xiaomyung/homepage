@@ -236,20 +236,29 @@ export function createStatsPanel({ apiBase, pollIntervalMs = 2000 }) {
       if (!res.ok) return;
       const stats = await res.json();
       setIf(el.gen, stats.generation);
-      setIf(el.avg, Number.isFinite(stats.avg_fitness) ? stats.avg_fitness.toFixed(3) : null);
-      setIf(el.top, Number.isFinite(stats.top_fitness) ? stats.top_fitness.toFixed(3) : null);
       setIf(el.matches, stats.total_matches);
       setIf(el.pop, stats.population);
       setIf(el.fbwr, Number.isFinite(stats.fallback_win_rate)
         ? `${(stats.fallback_win_rate * 100).toFixed(1)}%`
         : null);
       const md = stats.match_distribution;
+      // avg_fitness / top_fitness are aggregated from pop[].fitness,
+      // which resets to 0 at every breed. During the window between
+      // rollover and the first new-gen /results POST they'd snap to
+      // '0.000' and blink the previous generation's number off the
+      // screen. Hold the last good value until there is at least one
+      // match in the new generation.
+      const genHasData = md && md.total > 0;
+      if (genHasData) {
+        setIf(el.avg, Number.isFinite(stats.avg_fitness) ? stats.avg_fitness.toFixed(3) : null);
+        setIf(el.top, Number.isFinite(stats.top_fitness) ? stats.top_fitness.toFixed(3) : null);
+      }
       // Only update match-distribution cells when we actually have a
       // match this generation. During the brief window between a
       // breed and the first new-gen /results POST, `md.total` is 0;
       // we leave the previous percentages visible instead of blanking
       // to '—'.
-      if (md && md.total > 0) {
+      if (genHasData) {
         // Missing fields (e.g., stall_rate from a broker on the old
         // build) must NOT render as 'NaN%' — we pass nothing to
         // setIf, which leaves the last-good value in place.

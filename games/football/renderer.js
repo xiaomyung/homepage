@@ -15,54 +15,40 @@
 
 import * as THREE from 'https://unpkg.com/three@0.164.0/build/three.module.js';
 import {
+  BALL_RADIUS,
+  FIELD_HEIGHT,
+  FIELD_WIDTH_REF,
+  GOAL_POST_RADIUS,
+  MAX_PLAYER_SPEED,
+  PLAYER_WIDTH,
+  STICKMAN_HEAD_RADIUS,
+  STICKMAN_LEG_RADIUS,
+  STICKMAN_LIMB_FULL_H,
+  STICKMAN_LOWER_ARM,
+  STICKMAN_LOWER_ARM_RADIUS,
+  STICKMAN_LOWER_LEG,
+  STICKMAN_SHOULDER_OFY,
+  STICKMAN_TORSO_RADIUS,
+  STICKMAN_UPPER_ARM,
+  STICKMAN_UPPER_ARM_RADIUS,
+  STICKMAN_UPPER_LEG,
+  Z_STRETCH,
+  createField,
+} from './physics.js';
+import { advanceAnimState, createAnimState } from './animation/state.js';
+import { composeStickmanPose, createPoseScratch } from './animation/poses.js';
+import {
   staminaDiscRadius,
   updateStaminaClipPlane,
 } from './renderer-math.js';
-import {
-  createField,
-  FIELD_HEIGHT,
-  FIELD_WIDTH_REF,
-  BALL_RADIUS,
-  GOAL_POST_RADIUS,
-  KICK_WINDUP_MS,
-  KICK_DURATION_MS,
-  AIRKICK_MS,
-  AIRKICK_PEAK_FRAC,
-  PLAYER_WIDTH,
-  Z_STRETCH,
-  STICKMAN_GLYPH_SIZE,
-  STICKMAN_SHOULDER_OFX,
-  STICKMAN_SHOULDER_OFY,
-  STICKMAN_HIP_OFX,
-  STICKMAN_HEAD_GAP_Y,
-  STICKMAN_LIMB_FULL_H,
-  STICKMAN_UPPER_LEG,
-  STICKMAN_LOWER_LEG,
-  STICKMAN_UPPER_ARM,
-  STICKMAN_LOWER_ARM,
-  STICKMAN_TORSO_RADIUS,
-  STICKMAN_HEAD_RADIUS,
-  STICKMAN_LEG_RADIUS,
-  STICKMAN_UPPER_ARM_RADIUS,
-  STICKMAN_LOWER_ARM_RADIUS,
-  kickLegPose,
-  pushArmPose,
-} from './physics.js';
 
 // Small margin so field edges don't touch the canvas boundary.
 const HORIZONTAL_MARGIN = 1.15;
 
-// Rig proportions (STICKMAN_GLYPH_SIZE, SHOULDER/HIP offsets, LIMB_FULL_H,
-// TORSO/HEAD/LEG/ARM radii) come from physics.js so the ball-body
-// collider and the rendered silhouette can't drift apart.
-// Per-frame LPF coefficient for smoothing animation state (tilt, amplitude).
-// ~0.15 → time constant ≈ 100ms at 60 fps.
-const STICKMAN_SMOOTH = 0.15;
-// Forward-lean tuning: the run threshold above which the body starts to
-// lean in the direction of motion, and the slope + clamp for the lean angle.
-const STICKMAN_RUN_THRESHOLD = 1.2;
-const STICKMAN_TILT_PER_SPEED = 0.09;
-const STICKMAN_TILT_MAX = 0.45;
+// Rig proportions (SHOULDER/HIP offsets, LIMB_FULL_H, TORSO/HEAD/LEG/
+// ARM radii) come from physics.js so the ball-body collider and the
+// rendered silhouette can't drift apart. Walk-cycle LPF + forward-
+// lean tuning constants live in `animation/state.js`.
 // Stamina fill capsule is inset inside the outline shell, creating a
 // visible "shell wall" (the outline appears thicker inward while the
 // outer silhouette is unchanged). Delta is in world units.
@@ -72,102 +58,16 @@ const STICKMAN_TORSO_FILL_RADIUS = STICKMAN_TORSO_RADIUS - STICKMAN_TORSO_SHELL_
 // shaft radius so they read as joint detail, not a growth.
 const STICKMAN_KNEE_RADIUS  = STICKMAN_LEG_RADIUS * 0.92;
 const STICKMAN_ELBOW_RADIUS = STICKMAN_LOWER_ARM_RADIUS * 0.92;
-// Sphere pool: 1 head + 2 elbows + 2 knees per stickman × 2 stickmen = 10
-// for upper-body, plus 2 knees per stickman × 2 stickmen = 4 for
-// knees, plus a spare. (Torso and limb pools are sized inline
-// alongside their geometries.)
+// Sphere pool: 1 head + 2 elbows + 2 knees = 5 per stickman × 2
+// stickmen = 10, plus 2 spare = 12. (Torso and limb pools are sized
+// inline alongside their geometries.)
 const STICKMAN_SPH_POOL     = 12;
 const TWO_PI = Math.PI * 2;
 
-// Shin's world-space swing angle given the thigh's. Mild "follow-
-// through" curve: shin tracks 1 − `flex` of the thigh's angle where
-// `flex` grows with the thigh's swing magnitude, capped at 0.5. So
-// a straight-down thigh gives a straight-down shin (no bend at rest),
-// a forward-swinging thigh gets a knee that bends +forward, and a
-// backward-swinging push-off thigh also bends the knee +forward —
-// knees only hinge one way, just like real ones. Applies to walk,
-// idle, and celebrate poses; the kicking leg's shin comes from real
-// 2-bone IK in `kickLegPose` instead.
-const STICKMAN_KNEE_FLEX_MAX   = 0.5;
-const STICKMAN_KNEE_FLEX_SLOPE = 0.4;
-function shinAngleFor(thighAngle) {
-  const flex = Math.min(STICKMAN_KNEE_FLEX_MAX, STICKMAN_KNEE_FLEX_SLOPE * Math.abs(thighAngle));
-  return thighAngle * (1 - flex);
-}
-
-// Elbow flex for the forearm during cosmetic (non-IK) arm swings.
-// Peaks at `|angle| = π/2` (arms horizontal — mid-swing or punching
-// forward) and smoothly tapers to zero at both `0` (neutral, arms
-// at rest) and `±π` (celebrate — arms straight overhead). The walk
-// anim uses small angles in the linear zone; celebrate reaches the
-// other zero so arms read as fully extended, not crumpled.
-// The punch pose is scripted per-variant in `pushArmPose`, not this curve.
-const STICKMAN_ELBOW_FLEX_MAX = 0.45;
-function forearmAngleFor(upperArmAngle) {
-  const mag = Math.min(Math.abs(upperArmAngle), Math.PI);
-  const flex = STICKMAN_ELBOW_FLEX_MAX * Math.sin(mag);
-  return upperArmAngle * (1 - flex);
-}
-
-// Celebration pose — jumping-jack with arms straight up.
-const CELEB_PHASE_RATE = 0.25;           // rad per tick; ~25 ticks per hop
-const CELEB_JUMP_PEAK  = 0.55 * STICKMAN_GLYPH_SIZE;
-const CELEB_LEG_SPREAD = 0.55;           // leg outward angle at jump apex (rad)
-// Push pose — a one-armed boxing punch (jab / hook / uppercut).
-// The striking arm follows a variant-specific keyframe trajectory
-// in `pushArmPose` (physics.js). These scripted curves drive the
-// SUPPORTING body english (crouch / tilt / hop / pivot) — they
-// animate the non-striking side of the rig only.
-// Phases over normalized progress t ∈ [0, 1]:
-//   [0,        RAISE_T]     raise:   body inits, pivot 0
-//   [RAISE_T,  WINDUP_T]    windup:  pivot slides 0 → -WINDUP_DIST
-//   [WINDUP_T, STRIKE_T]    strike:  pivot snaps -WINDUP → +STRIKE (explosive hop)
-//   [STRIKE_T, SETTLE_T]    settle:  pivot +STRIKE → 0
-//   [SETTLE_T, LOWER_T]     hold:    pivot 0
-//   [LOWER_T,  1]           lower:   body returns to neutral
-const PUSH_TOTAL_TICKS    = 18;             // matches physics PUSH_ANIM_MS (300ms / TICK_MS)
-const PUSH_RAISE_T        = 0.15;
-const PUSH_WINDUP_T       = 0.35;
-const PUSH_STRIKE_T       = 0.50;
-const PUSH_SETTLE_T       = 0.70;
-const PUSH_LOWER_T        = 0.85;
-const PUSH_WINDUP_DIST    = 0.70 * STICKMAN_GLYPH_SIZE;  // pivot pull-back
-const PUSH_CROUCH_DEPTH   = 0.30 * STICKMAN_GLYPH_SIZE;  // upper body dip during windup
-const PUSH_HOP_DIST       = 0.40 * STICKMAN_GLYPH_SIZE;  // whole body hop on strike
-const PUSH_BACK_TILT      = 0.28;                        // rad — body leans back during windup
-const PUSH_FWD_TILT       = 0.42;                        // rad — body leans forward on strike
-
-// Kick body-english cosmetics. The leg pose itself is IK'd by
-// `kickLegPose` from physics.js (target = ball); what's here are
-// the counter-balance arm swing, body dip, and back/forward tilt
-// that sell the weight transfer. `KICK_FIRE_T` / `KICK_STRIKE_END_T`
-// gate the arm / dip / tilt curves on normalized t ∈ [0, 1].
-const KICK_FIRE_T         = KICK_WINDUP_MS / KICK_DURATION_MS;
-const KICK_STRIKE_SPAN_T  = 0.15;
-const KICK_STRIKE_END_T   = Math.min(0.95, KICK_FIRE_T + KICK_STRIKE_SPAN_T);
-const KICK_ARM_SWING      =  Math.PI * 0.45;             // rad — counter-arm forward throw
-const KICK_ARM_OPP_FRAC   = 0.35;                        // same-side arm small back-swing
-const KICK_BACK_TILT      = 0.12;                        // rad — body lean back during windup
-const KICK_FWD_TILT       = 0.22;                        // rad — body lean forward on strike
-const KICK_CROUCH_DEPTH   = 0.12 * STICKMAN_GLYPH_SIZE;  // body dip during windup
-
-// Airkick body cosmetics. The leap lifts the figure via
-// `player.airZ`; the leg itself comes from IK. Tilt is a long back-
-// lean that holds through the strike window.
-const AIRKICK_STRIKE_SPAN_T = 0.20;
-const AIRKICK_STRIKE_END_T = Math.min(0.95, AIRKICK_PEAK_FRAC + AIRKICK_STRIKE_SPAN_T);
-const AIRKICK_BACK_TILT    = 0.55;                       // rad — body leans way back on volley
-
-// Whole-body kick motion: pelvis twists around the vertical axis
-// (right hip pulls back through windup, snaps forward on strike);
-// the planted (support) leg bends slightly during strike to absorb
-// the reaction force.
-const KICK_HIP_TWIST_MAX  = Math.PI * 0.11;              // ~20° at windup peak
-const KICK_SUPPORT_CROUCH = 0.2;                          // rad — upper-leg forward on support
-// Shin/thigh ratio for the knee-out crouch: with `lowerAngle = -N·upperAngle`
-// (for U=L legs) the foot lands directly under the hip when N=2. Keeps the
-// foot planted while the knee pokes forward.
-const KICK_SUPPORT_SHIN_RATIO = 2;
+// Shin/forearm follow-through helpers (shinAngleFor, forearmAngleFor)
+// live in renderer-math.js. Celebration / push / kick / airkick body-
+// english constants and curve functions live in animation/poses.js
+// and animation/curves.js — imported there, not here.
 // Ball visual radius comes straight from physics.js so the rendered
 // sphere and the collision envelope are the same object — no drift.
 const BALL_VISUAL_RADIUS = BALL_RADIUS;
@@ -175,9 +75,9 @@ const BALL_VISUAL_RADIUS = BALL_RADIUS;
 // Stamina indicator tuning — see the three-mesh breakdown in the
 // torso-pool construction block below for how these values are used.
 const STAMINA_OUTLINE_OPACITY = 0.55;
-// Keep a sliver visible at stamina=0 so exhausted players don't
-// vanish completely into the outline.
-// STAMINA_FLOOR imported from renderer-math.js
+// (STAMINA_FLOOR — keeping a sliver of fill visible at stamina=0 so
+// exhausted players don't vanish into the outline — lives in
+// renderer-math.js and is consumed transitively by updateStaminaClipPlane.)
 
 // Splash particles for ball bounces. Pool holds up to PARTICLE_POOL slots,
 // filled via a rolling index so old particles are recycled automatically.
@@ -195,6 +95,26 @@ const PARTICLE_GRAVITY       = 0.28;
 const PARTICLE_GROUND_DRAG   = 0.45;
 // World-space radius of a new particle sphere, scaled down as it ages.
 const PARTICLE_VISUAL_RADIUS = 0.9;
+// Footstep burst — fires twice per walk cycle (one per planted foot).
+// Count + speed scale with the player's actual ground speed, so a
+// sprint kicks up noticeably more dust than a slow walk. The walk
+// cycle's phase advance also accelerates with speed, so faster
+// movement compounds into more bursts per second.
+const FOOTSTEP_MIN_SPEED   = 1.5;  // physics units / tick — gates idle/turn
+const FOOTSTEP_BASE_COUNT  = 1;
+const FOOTSTEP_FORCE_COUNT = 7;    // extra particles per unit speed01
+const FOOTSTEP_MAX_COUNT   = 8;
+const FOOTSTEP_SPEED       = 1.1;  // world units / frame at speed=1
+const FOOTSTEP_BACK_OFFSET = 4;    // spawn offset behind motion vector
+
+// Push-contact burst — fires when a punch lands on the victim. Bursts
+// outward from the impact point uniformly on a unit sphere (no preferred
+// axis) with a small upward bias so they arc before gravity drops them.
+const PUSH_CONTACT_BASE_COUNT  = 8;
+const PUSH_CONTACT_FORCE_COUNT = 14;   // extra particles per unit force
+const PUSH_CONTACT_MAX_COUNT   = 22;
+const PUSH_CONTACT_SPEED       = 1.6;  // world units / frame at force=1
+const PUSH_CONTACT_LIFT_BIAS   = 0.45; // adds to the up axis component
 // Goal-scored burst — much bigger and longer-lived than a bounce.
 // Particles spawn inside the mouth and fan outward toward the field.
 const GOAL_BURST_COUNT       = 42;
@@ -242,8 +162,9 @@ const SHADOW_FRAGMENT_SHADER = /* glsl */ `
     gl_FragColor = vec4(0.22, 0.22, 0.24, a);
   }
 `;
-const PLAYER_SHADOW_RADIUS = 12; // world units — fits under stickman glyph
+const PLAYER_SHADOW_RADIUS = 12; // world units — fits under stickman silhouette
 const SHADOW_ALPHA_BASE    = 0.55;
+const SHADOW_Y             = 0.2; // tiny offset above ground to avoid z-fight with field lines
 
 /* ── Palette (matches style.css design tokens) ─────────────── */
 
@@ -298,11 +219,12 @@ export class Renderer {
     this.scene.add(fill);
 
     // Dedicated ball mesh: a real 3D sphere in world space at
-    // (ball.x, ball.z, ball.y * Z_STRETCH). Physics collision uses
-    // BALL_RADIUS; visual sphere is larger for readability. A
-    // procedurally-generated CanvasTexture paints ~12 dark panels
-    // at icosahedron-vertex positions so the rotation (applied from
-    // the ball's velocity each frame) is visible at a glance.
+    // (ball.x, ball.z, ball.y * Z_STRETCH). Visual radius equals
+    // BALL_RADIUS so the rendered sphere and the collision envelope
+    // can't drift apart. A procedurally-generated CanvasTexture
+    // paints ~12 dark panels at icosahedron-vertex positions so the
+    // rotation (applied from the ball's velocity each frame) is
+    // visible at a glance.
     const ballGeom = new THREE.SphereGeometry(1, 24, 16);
     const ballMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
@@ -310,15 +232,28 @@ export class Renderer {
       metalness: 0.05,
       map: buildBallTexture(),
     });
-    this._ballMesh = new THREE.Mesh(ballGeom, ballMat);
-    this._ballMesh.frustumCulled = false;
     this._staticGeometries.push(ballGeom);
     this._staticMaterials.push(ballMat);
     if (ballMat.map) this._staticMaterials.push(ballMat.map);
-    this.scene.add(this._ballMesh);
-    // Ball orientation is integrated per frame from linear velocity
-    // (rolling without slipping on the ground). Reused scratch
-    // objects avoid per-frame allocation.
+    // Pooled ball meshes so harnesses can render N physics worlds.
+    // Each mesh's quaternion accumulates spin independently across
+    // frames — the caller must pass balls in stable order for
+    // rotation continuity.
+    this._ballGeom = ballGeom;
+    this._ballMat = ballMat;
+    this._ballMeshes = [];
+    this._ballCursor = 0;
+    this._mkBall = () => {
+      const mesh = new THREE.Mesh(this._ballGeom, this._ballMat);
+      mesh.frustumCulled = false;
+      mesh.visible = false;
+      this.scene.add(mesh);
+      this._ballMeshes.push(mesh);
+      return mesh;
+    };
+    this._mkBall();  // pre-create the common single-ball slot
+    // Ball-spin scratch objects (shared across pool — spin integration
+    // is applied to the currently-indexed mesh's quaternion).
     this._ballSpinAxis = new THREE.Vector3();
     this._ballSpinQuat = new THREE.Quaternion();
 
@@ -328,7 +263,8 @@ export class Renderer {
     // uAlpha can be animated per-entity (ball fades as it rises).
     const shadowGeom = new THREE.PlaneGeometry(1, 1);
     this._staticGeometries.push(shadowGeom);
-    const makeShadow = () => {
+    this._shadowGeom = shadowGeom;
+    this._makeShadow = () => {
       const mat = new THREE.ShaderMaterial({
         uniforms: { uAlpha: { value: SHADOW_ALPHA_BASE } },
         vertexShader: SHADOW_VERTEX_SHADER,
@@ -336,7 +272,7 @@ export class Renderer {
         transparent: true,
         depthWrite: false,
       });
-      const mesh = new THREE.Mesh(shadowGeom, mat);
+      const mesh = new THREE.Mesh(this._shadowGeom, mat);
       mesh.rotation.x = -Math.PI / 2;  // lay flat on xz plane
       mesh.frustumCulled = false;
       mesh._uAlpha = mat.uniforms.uAlpha;
@@ -344,9 +280,14 @@ export class Renderer {
       this.scene.add(mesh);
       return mesh;
     };
-    this._p1Shadow   = makeShadow();
-    this._p2Shadow   = makeShadow();
-    this._ballShadow = makeShadow();
+    // Pool of player shadows, grown on demand via _placePlayerShadow.
+    // Two pre-created for the common case of two players (zero extra
+    // cost vs the original _p1Shadow / _p2Shadow).
+    this._playerShadows = [this._makeShadow(), this._makeShadow()];
+    this._playerShadowCursor = 0;
+    // Pool of ball shadows — one per ball mesh (matched by index).
+    this._ballShadows = [this._makeShadow()];
+    this._ballShadowCursor = 0;
 
     // Stickman pipe parts — torsos, arms, and legs each use their own
     // fixed-length CapsuleGeometry so the hemispherical caps stay
@@ -383,14 +324,14 @@ export class Renderer {
     const torsoFillBodyLen = torsoBodyLen;
     // Arms split at the elbow — upper arm is 15% thicker than the
     // forearm. Both halves have body_len = UPPER_ARM − 2·radius so
-    // the overlapping caps at the elbow line up with the (larger)
-    // elbow sphere the joint draws at that point.
+    // the overlapping caps at the elbow meet at the same world point
+    // as the (slightly-undersized) elbow sphere drawn there.
     const upperArmBodyLen = STICKMAN_UPPER_ARM - 2 * STICKMAN_UPPER_ARM_RADIUS;
     const lowerArmBodyLen = STICKMAN_LOWER_ARM - 2 * STICKMAN_LOWER_ARM_RADIUS;
     // Leg is drawn as TWO half-length capsules meeting at the knee,
     // so the mesh geometry's span is UPPER_LEG (= LOWER_LEG), not the
-    // full limb height. Overlapping hemispherical caps at the knee
-    // read as a natural joint without a separate knee sphere.
+    // full limb height. The knee sphere drawn over the join hides
+    // any seam from non-collinear bend angles.
     const halfLegBodyLen = STICKMAN_UPPER_LEG - 2 * STICKMAN_LEG_RADIUS;
     const stickmanTorsoGeom      = new THREE.CapsuleGeometry(STICKMAN_TORSO_RADIUS,      torsoBodyLen,     4, 12);
     const stickmanTorsoFillGeom  = new THREE.CapsuleGeometry(STICKMAN_TORSO_FILL_RADIUS, torsoFillBodyLen, 4, 12);
@@ -423,7 +364,9 @@ export class Renderer {
     discGeom.rotateX(-Math.PI / 2);
     this._staticGeometries.push(discGeom);
 
-    const makeUpperArmMesh = () => {
+    // Mesh factories stored on `this` so pools can grow on demand in
+    // the _place* helpers (harnesses/tests can drive N > 2 players).
+    this._mkUpperArm = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
       const mesh = new THREE.Mesh(stickmanUpperArmGeom, mat);
       mesh.visible = false;
@@ -432,7 +375,7 @@ export class Renderer {
       this.scene.add(mesh);
       this._stickmanUpperArm.push(mesh);
     };
-    const makeLowerArmMesh = () => {
+    this._mkLowerArm = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
       const mesh = new THREE.Mesh(stickmanLowerArmGeom, mat);
       mesh.visible = false;
@@ -441,7 +384,7 @@ export class Renderer {
       this.scene.add(mesh);
       this._stickmanLowerArm.push(mesh);
     };
-    const makeLegMesh = () => {
+    this._mkLeg = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
       const mesh = new THREE.Mesh(stickmanLegGeom, mat);
       mesh.visible = false;
@@ -450,7 +393,7 @@ export class Renderer {
       this.scene.add(mesh);
       this._stickmanLeg.push(mesh);
     };
-    const makeTorsoOutlineMesh = () => {
+    this._mkTorsoOutline = () => {
       const mat = new THREE.MeshLambertMaterial({
         color: 0xffffff,
         transparent: true,
@@ -468,9 +411,9 @@ export class Renderer {
       this.scene.add(mesh);
       this._stickmanTorsoOutline.push(mesh);
     };
-    const makeTorsoFillMesh = () => {
-      // Each fill mesh gets its own clipping plane instance so the
-      // four pooled torsos can have independent fill levels.
+    this._mkTorsoFill = () => {
+      // Each fill mesh gets its own clipping plane instance so
+      // pooled torsos have independent fill levels.
       const plane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
       const mat = new THREE.MeshLambertMaterial({
         color: 0xffffff,
@@ -485,7 +428,7 @@ export class Renderer {
       this._stickmanTorsoFill.push(mesh);
       this._stickmanTorsoFillPlanes.push(plane);
     };
-    const makeTorsoDiscMesh = () => {
+    this._mkTorsoDisc = () => {
       const mat = new THREE.MeshLambertMaterial({
         color: 0xffffff,
         side: THREE.DoubleSide,
@@ -498,28 +441,26 @@ export class Renderer {
       this.scene.add(mesh);
       this._stickmanTorsoDisc.push(mesh);
     };
+    // Initial pools — sized for the common 2-player match case so the
+    // first frame has no allocation. _place* helpers grow on demand.
     for (let i = 0; i < 4; i++) {
-      makeTorsoOutlineMesh();
-      makeTorsoFillMesh();
-      makeTorsoDiscMesh();
+      this._mkTorsoOutline();
+      this._mkTorsoFill();
+      this._mkTorsoDisc();
     }
-    // Arms and legs both split at a joint: 2 players × 2 limbs ×
-    // 2 halves = 8 segments of each kind. Pools of 8 with no slack
-    // are fine (meshes are static and the draw order is
-    // deterministic); bump if future anims add extra draws.
-    for (let i = 0; i < 8; i++) { makeUpperArmMesh(); makeLowerArmMesh(); }
-    for (let i = 0; i < 16; i++) makeLegMesh();
+    for (let i = 0; i < 8; i++) { this._mkUpperArm(); this._mkLowerArm(); }
+    for (let i = 0; i < 16; i++) this._mkLeg();
     this._stickmanTorsoCursor = 0;
     this._stickmanUpperArmCursor = 0;
     this._stickmanLowerArmCursor = 0;
     this._stickmanLegCursor = 0;
 
-    // Stickman sphere pool — used for heads and fists. One shared
-    // unit sphere geometry, per-mesh Lambert material for color.
+    // Stickman sphere pool — used for heads, elbows, knees.
+    // One shared unit sphere geometry, per-mesh Lambert material.
     const stickmanSph = new THREE.SphereGeometry(1, 14, 10);
     this._staticGeometries.push(stickmanSph);
     this._stickmanSph = [];
-    for (let i = 0; i < STICKMAN_SPH_POOL; i++) {
+    this._mkSph = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
       const mesh = new THREE.Mesh(stickmanSph, mat);
       mesh.visible = false;
@@ -527,20 +468,67 @@ export class Renderer {
       this._staticMaterials.push(mat);
       this.scene.add(mesh);
       this._stickmanSph.push(mesh);
-    }
+    };
+    for (let i = 0; i < STICKMAN_SPH_POOL; i++) this._mkSph();
     this._stickmanSphCursor = 0;
 
-    // Smoothed animation state per player (tilt, amplitude, phase, lastTick).
-    // Keyed by the player state object so every stickman on this renderer
-    // evolves its own pose without cross-talk. Tilt and amplitude are
-    // low-pass filtered toward their speed-derived targets; phase is
-    // accumulated with the current swing rate so rate changes never snap.
+    // "Dazed" stars that orbit the head when a player is resting
+    // (exhausted, regenerating stamina). Three stars per resting
+    // stickman, placed in a horizontal ring above the head with
+    // a per-frame phase offset so they spin around. The pool grows
+    // on demand so multi-player harnesses don't need a hard ceiling.
+    const starShape = new THREE.Shape();
+    {
+      const N = 5;
+      const outer = 1.6;
+      const inner = 0.7;
+      for (let i = 0; i < N * 2; i++) {
+        const r = (i % 2 === 0) ? outer : inner;
+        const theta = (i / (N * 2)) * Math.PI * 2 - Math.PI / 2;
+        const sx = Math.cos(theta) * r;
+        const sy = Math.sin(theta) * r;
+        if (i === 0) starShape.moveTo(sx, sy);
+        else starShape.lineTo(sx, sy);
+      }
+      starShape.closePath();
+    }
+    const starGeom = new THREE.ExtrudeGeometry(starShape, {
+      depth: 0.4, bevelEnabled: false, curveSegments: 1,
+    });
+    starGeom.translate(0, 0, -0.2); // centre on extrusion axis
+    this._staticGeometries.push(starGeom);
+    this._restStars = [];
+    this._mkRestStar = () => {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 1,
+      });
+      const mesh = new THREE.Mesh(starGeom, mat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      this._staticMaterials.push(mat);
+      this.scene.add(mesh);
+      this._restStars.push(mesh);
+    };
+    this._restStarCursor = 0;
+
+    // Smoothed animation state per player (LPF factors, phase
+    // accumulators, heading history). Keyed by the player state
+    // object so every stickman on this renderer evolves its own pose
+    // without cross-talk. See animation/state.js::createAnimState
+    // for the full schema.
     this._animByPlayer = new WeakMap();
+    // Per-player previous walk-cycle swing value, used to detect
+    // sin(phase) zero-crossings (foot strikes) and spawn dust bursts.
+    this._lastFootSwing = new WeakMap();
 
     // Scratch buffers for per-frame IK solves; reused across both
     // players so the hot draw path never allocates.
     this._scratchKickPose = { upperAngle: 0, lowerAngle: 0 };
     this._scratchPushPose = { upperAngle: 0, lowerAngle: 0, upperYaw: 0, lowerYaw: 0 };
+    // Reused snapshot + pose objects so the per-frame pose pipeline
+    // (advanceAnimState → composeStickmanPose) never allocates.
+    this._scratchAnimSnap = {};
+    this._scratchPose = createPoseScratch();
 
     // Splash particle pool — ring-buffer allocation, `life === 0` means
     // free. Fields are all numbers so there's zero GC churn per frame.
@@ -593,6 +581,12 @@ export class Renderer {
     // across both stickmen since each frame's writes are consumed
     // before the next _placeTorso call overwrites it.
     this._staminaColorBuf = [0, 0, 0];
+    // Scratch state for updateStaminaClipPlane + disc orientation. Each
+    // call fills `_staminaClipOut` in place; _discLocalY is the static
+    // up-vector the disc geometry was pre-rotated to face.
+    this._staminaClipOut = { cx:0, cy:0, cz:0, dx:0, dy:1, dz:0, axialFromMid:0 };
+    this._discLocalY = new THREE.Vector3(0, 1, 0);
+    this._scratchDiscDir = new THREE.Vector3();
 
     this._resizeObserver = null;
     this._lastW = 0;
@@ -632,21 +626,56 @@ export class Renderer {
 
   renderState(state) {
     const tick = state.tick || 0;
-    const celebrating = state.pauseState === 'celebrate';
-    const p1Celebrating = celebrating && state.goalScorer === state.p1;
-    const p2Celebrating = celebrating && state.goalScorer === state.p2;
+    // state.players is the N-player path (any array of player-shaped
+    // objects). Falls back to [p1, p2] for the single-match case.
+    const players = state.players || [state.p1, state.p2];
     const prevTorsoCursor    = this._stickmanTorsoCursor;
     const prevUpperArmCursor = this._stickmanUpperArmCursor;
     const prevLowerArmCursor = this._stickmanLowerArmCursor;
     const prevLegCursor      = this._stickmanLegCursor;
     const prevSphCursor      = this._stickmanSphCursor;
+    const prevPlayerShadowCursor = this._playerShadowCursor;
+    const prevBallCursor         = this._ballCursor;
+    const prevBallShadowCursor   = this._ballShadowCursor;
+    const prevRestStarCursor     = this._restStarCursor;
     this._stickmanTorsoCursor    = 0;
     this._stickmanUpperArmCursor = 0;
     this._stickmanLowerArmCursor = 0;
     this._stickmanLegCursor      = 0;
     this._stickmanSphCursor      = 0;
-    this._addStickman(state.p1, COLOR_TEXT, tick, p1Celebrating);
-    this._addStickman(state.p2, COLOR_TEXT, tick, p2Celebrating);
+    this._playerShadowCursor     = 0;
+    this._ballCursor             = 0;
+    this._ballShadowCursor       = 0;
+    this._restStarCursor         = 0;
+    // Per-player dead-ball flags. The harness may stamp each player
+    // with `_scenePauseState` + `_sceneGoalScorer` + `_sceneWinner` so
+    // multiple independent scenarios inside one composite render
+    // frame don't cross-contaminate — in that case we read the
+    // player's own scenario state instead of the global composite.
+    // When those annotations aren't set (live match path), we fall
+    // back to the global state.pauseState.
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i];
+      const pPause      = p._scenePauseState !== undefined ? p._scenePauseState : state.pauseState;
+      const pGoalScorer = p._sceneGoalScorer !== undefined ? p._sceneGoalScorer : state.goalScorer;
+      const pWinner     = p._sceneWinner     !== undefined ? p._sceneWinner     : state.winner;
+      const pSide       = p._sceneSide       !== undefined ? p._sceneSide
+                         : p === state.p1 ? 'left' : p === state.p2 ? 'right' : null;
+
+      const pCelebrating = pPause === 'celebrate';
+      const pReposition  = pPause === 'reposition';
+      const pMatchend    = pPause === 'matchend';
+
+      const isScorer  = pCelebrating && pGoalScorer === p;
+      const isGrieving = pCelebrating && pGoalScorer && pGoalScorer !== p;
+      let isMatchendWin = false, isMatchendLose = false;
+      if (pMatchend && pWinner && pSide) {
+        isMatchendWin  = pSide === pWinner;
+        isMatchendLose = pSide !== pWinner;
+      }
+      this._addStickman(p, COLOR_TEXT, tick, isScorer, isGrieving, pReposition, isMatchendWin, isMatchendLose);
+      this._placePlayerShadow(p);
+    }
     for (let i = this._stickmanTorsoCursor; i < prevTorsoCursor; i++) {
       this._stickmanTorsoOutline[i].visible = false;
       this._stickmanTorsoFill[i].visible = false;
@@ -656,55 +685,56 @@ export class Renderer {
     for (let i = this._stickmanLowerArmCursor; i < prevLowerArmCursor; i++) this._stickmanLowerArm[i].visible = false;
     for (let i = this._stickmanLegCursor; i < prevLegCursor; i++) this._stickmanLeg[i].visible = false;
     for (let i = this._stickmanSphCursor; i < prevSphCursor; i++) this._stickmanSph[i].visible = false;
+    for (let i = this._playerShadowCursor; i < prevPlayerShadowCursor; i++) this._playerShadows[i].visible = false;
+    for (let i = this._restStarCursor; i < prevRestStarCursor; i++) this._restStars[i].visible = false;
 
-    // Ball — real 3D sphere in world space. Altitude comes straight
-    // from physics ball.z; gravity, bounce, and all collisions live
-    // in physics.js and are unaffected by the visual change.
-    const ballAltitude = state.ball.z || 0;
-    this._ballMesh.position.set(
-      state.ball.x,
-      ballAltitude + BALL_VISUAL_RADIUS,
-      state.ball.y * Z_STRETCH,
-    );
-    this._ballMesh.scale.set(BALL_VISUAL_RADIUS, BALL_VISUAL_RADIUS, BALL_VISUAL_RADIUS);
-    // Ball rotation: rolling-without-slipping angular velocity from
-    // linear velocity. For a ball on the ground moving with velocity
-    // v, the no-slip condition gives ω = (v_z / R, 0, -v_x / R)
-    // where world_z is field-depth (physics y scaled by Z_STRETCH)
-    // and world_x is physics x. In the air the same formula is used
-    // so the ball keeps spinning visibly — physically it's wrong but
-    // reads as motion. Integrated per frame (dt = 1 tick).
+    // Balls — single-ball state.ball path is backward-compatible;
+    // state.balls[] is the N-ball path for harnesses/testing.
+    // Each ball mesh accumulates its own spin quaternion across
+    // frames, so callers must pass balls in stable index order.
+    const balls = state.balls || [state.ball];
     const R = BALL_VISUAL_RADIUS;
-    const omegaX = (state.ball.vy * Z_STRETCH) / R;
-    const omegaZ = -state.ball.vx / R;
-    const omegaMag = Math.sqrt(omegaX * omegaX + omegaZ * omegaZ);
-    if (omegaMag > 1e-5) {
-      this._ballSpinAxis.set(omegaX / omegaMag, 0, omegaZ / omegaMag);
-      this._ballSpinQuat.setFromAxisAngle(this._ballSpinAxis, omegaMag);
-      this._ballMesh.quaternion.premultiply(this._ballSpinQuat);
+    for (let bi = 0; bi < balls.length; bi++) {
+      const b = balls[bi];
+      while (this._ballMeshes.length <= bi) this._mkBall();
+      while (this._ballShadows.length <= bi) this._ballShadows.push(this._makeShadow());
+      const mesh = this._ballMeshes[bi];
+      mesh.visible = true;
+      const ballAltitude = b.z || 0;
+      mesh.position.set(b.x, ballAltitude + BALL_VISUAL_RADIUS, b.y * Z_STRETCH);
+      mesh.scale.set(BALL_VISUAL_RADIUS, BALL_VISUAL_RADIUS, BALL_VISUAL_RADIUS);
+      // Rolling-without-slipping spin from linear velocity.
+      const omegaX = (b.vy * Z_STRETCH) / R;
+      const omegaZ = -b.vx / R;
+      const omegaMag = Math.sqrt(omegaX * omegaX + omegaZ * omegaZ);
+      if (omegaMag > 1e-5) {
+        this._ballSpinAxis.set(omegaX / omegaMag, 0, omegaZ / omegaMag);
+        this._ballSpinQuat.setFromAxisAngle(this._ballSpinAxis, omegaMag);
+        mesh.quaternion.premultiply(this._ballSpinQuat);
+      }
+      // Ground shadow for this ball — stays flat on the xz-plane,
+      // grows slightly and fades as the ball rises.
+      const shadow = this._ballShadows[bi];
+      const airH = Math.max(0, b.z || 0);
+      const ballShadowR = BALL_VISUAL_RADIUS * (1 + airH * 0.04);
+      const ballShadowA = SHADOW_ALPHA_BASE / (1 + airH * 0.06);
+      shadow.visible = true;
+      shadow.position.set(b.x, SHADOW_Y, b.y * Z_STRETCH);
+      shadow.scale.set(ballShadowR * 2, ballShadowR * 2, 1);
+      shadow._uAlpha.value = ballShadowA;
     }
-
-    // Ground shadows — stamped on the xz-plane, sized per-entity.
-    // Ball shadow is anchored to the ball's x/y (physics plane) so it
-    // stays put on the ground as the sphere rises on ball.z; radius
-    // grows slightly and alpha fades with altitude, reading as height.
-    const SHADOW_Y = 0.2;   // tiny offset above ground to avoid z-fight
-    this._p1Shadow.position.set(state.p1.x + PLAYER_WIDTH / 2, SHADOW_Y, state.p1.y * Z_STRETCH);
-    this._p1Shadow.scale.set(PLAYER_SHADOW_RADIUS * 2, PLAYER_SHADOW_RADIUS * 2, 1);
-    this._p2Shadow.position.set(state.p2.x + PLAYER_WIDTH / 2, SHADOW_Y, state.p2.y * Z_STRETCH);
-    this._p2Shadow.scale.set(PLAYER_SHADOW_RADIUS * 2, PLAYER_SHADOW_RADIUS * 2, 1);
-    const airH = Math.max(0, state.ball.z || 0);
-    const ballShadowR = BALL_VISUAL_RADIUS * (1 + airH * 0.04);
-    const ballShadowA = SHADOW_ALPHA_BASE / (1 + airH * 0.06);
-    this._ballShadow.position.set(state.ball.x, SHADOW_Y, state.ball.y * Z_STRETCH);
-    this._ballShadow.scale.set(ballShadowR * 2, ballShadowR * 2, 1);
-    this._ballShadow._uAlpha.value = ballShadowA;
+    this._ballCursor       = balls.length;
+    this._ballShadowCursor = balls.length;
+    // Hide any ball / ball-shadow slots beyond what this frame used.
+    for (let i = this._ballCursor;       i < prevBallCursor;       i++) this._ballMeshes[i].visible = false;
+    for (let i = this._ballShadowCursor; i < prevBallShadowCursor; i++) this._ballShadows[i].visible = false;
 
     // Consume per-frame physics events. `state.events` is cleared at
     // the top of each tick, so anything here is brand-new this frame.
     for (let i = 0; i < state.events.length; i++) {
       const ev = state.events[i];
       if (ev.type === 'ball_bounce') this._spawnBounceParticles(ev);
+      else if (ev.type === 'push_contact') this._spawnPushContactParticles(ev);
       else if (ev.type === 'goal') this._spawnGoalBurst(ev.scorer);
     }
     this._stepParticles();
@@ -1307,289 +1337,55 @@ export class Renderer {
 
   /* ── Stickman ────────────────────────────────────────────
    *
-   * 3D pipe figure: torso + two arms + two legs as thin cylinders,
-   * head + fists as spheres, all positioned in world space. The
-   * animation pipeline is identical to the previous billboard
-   * version — walk/push/celebrate/tilt/amplitude/phase are all
-   * smoothed the same way — only the render primitive changed.
+   * 3D capsule figure: torso + two arms + two legs as fixed-length
+   * CapsuleGeometry, head + elbows + knees as spheres, all
+   * positioned in world space. Per-frame state advances via
+   * advanceAnimState (animation/state.js); pose layout is built by
+   * composeStickmanPose (animation/poses.js); this method only
+   * places the meshes.
    *
-   * Local frame for each stickman:
-   *   +x = forward (toward opposing goal; facing = +1 for left
-   *        team, -1 for right)
-   *   +y = up
-   *   +z = lateral right of the body
-   *
-   * Limbs swing in the (forward, up) plane: angle 0 hangs straight
-   * down, angle π/2 points forward, angle π points straight up
-   * (celebration). World positions are produced by scaling local.x
-   * by `facing` and adding the player's world base (x, 0, z).
+   * Limbs swing in a (forward, up) plane where (forwardX, forwardZ)
+   * is the player's heading-derived world-xz unit vector supplied
+   * by the pose layer. Per-segment angle conventions: 0 hangs
+   * straight down, +π/2 points forward, +π points straight up
+   * (celebration).
    */
-  _addStickman(player, color, tick, isCelebrating) {
-    // Player world position — x along the field, z across the depth.
-    // Both are mutable because push-hop shifts the whole figure in
-    // the heading direction (which has both x and z components).
-    let baseX = player.x + PLAYER_WIDTH / 2;
-    let baseZ = player.y * Z_STRETCH;
-    const s = STICKMAN_GLYPH_SIZE;
-
-    // Heading = physics-space angle (0 = +x). Forward unit vector
-    // lives in world xz, perpendicular lateral vector is the left-
-    // hand rotation of forward. All shoulder / hip / limb / tilt
-    // offsets are built on this local frame.
-    const heading = player.heading ?? 0;
-    const forwardX = Math.cos(heading);
-    const forwardZ = Math.sin(heading);
-    const lateralX = -forwardZ;
-    const lateralZ =  forwardX;
-
-    // Fetch / init smoothed state for this player (same as before).
+  _addStickman(player, color, tick, isCelebrating, isGrieving = false, isReposition = false, isMatchendWin = false, isMatchendLose = false) {
+    // 1. Fetch / init the smoothed animation state for this player.
     let anim = this._animByPlayer.get(player);
     if (!anim) {
-      anim = {
-        tilt: 0, amplitude: 0, phase: 0,
-        celebrate: 0, celebratePhase: 0,
-        pushing: 0, pushProgress: 0, prevPushTimer: 0,
-        lastTick: tick, lastX: player.x, lastY: player.y,
-      };
+      anim = createAnimState(tick, player);
       this._animByPlayer.set(player, anim);
     }
-    const dt = tick > anim.lastTick ? tick - anim.lastTick : 0;
-    const denom = dt > 0 ? dt : 1;
-    const effVx = (player.x - anim.lastX) / denom;
-    const effVy = (player.y - anim.lastY) / denom;
-    anim.lastTick = tick;
-    anim.lastX = player.x;
-    anim.lastY = player.y;
+    // 2. Advance LPFs + phases one frame; derive per-frame snapshot.
+    const animSnap = advanceAnimState(
+      anim, player, tick, isCelebrating, this._scratchAnimSnap,
+      isGrieving, isReposition, isMatchendWin, isMatchendLose,
+    );
+    // 3. Compose the full pose — walk + kick + push + celebrate all
+    //    layered into one flat numeric pose via animation/poses.js.
+    const pose = composeStickmanPose(
+      animSnap, player, this._scratchPose,
+      this._scratchKickPose, this._scratchPushPose,
+    );
+    // 4. Place the meshes. Torso + head are single-piece; arms and
+    //    legs are 2-bone with per-segment angles from the pose.
+    this._placeTorso(pose.baseX, pose.upperHipY, pose.baseZ, pose.neckX, pose.neckY, pose.neckZ, color, player.stamina);
+    this._placeSph(pose.headX, pose.headY, pose.headZ, STICKMAN_HEAD_RADIUS, color);
+    this._placeArm(pose.lShX, pose.shoulderY, pose.lShZ, pose.lArmUpper, pose.lArmLower, pose.forwardX, pose.forwardZ, color, pose.lArmUpperYaw, pose.lArmLowerYaw);
+    this._placeArm(pose.rShX, pose.shoulderY, pose.rShZ, pose.rArmUpper, pose.rArmLower, pose.forwardX, pose.forwardZ, color, pose.rArmUpperYaw, pose.rArmLowerYaw);
+    this._placeLeg(pose.lHipX, pose.hipBaseY, pose.lHipZ, pose.lLegUpper, pose.lLegLower, pose.forwardX, pose.forwardZ, color);
+    this._placeLeg(pose.rHipX, pose.hipBaseY, pose.rHipZ, pose.rLegUpper, pose.rLegLower, pose.forwardX, pose.forwardZ, color);
 
-    const speed = Math.sqrt(effVx * effVx + effVy * effVy);
+    // 5. Footstep dust on walk-cycle zero crossings, gated on speed.
+    //    Pure cosmetic — never feeds back into physics or anim state.
+    this._maybeFootstepBurst(player, animSnap);
 
-    const targetAmplitude = Math.min(speed * 0.2, 1.0);
-    // Walk tilt — sign from the component of motion along the
-    // player's current heading, so "moving forward" leans in,
-    // "moving backward" leans the opposite way. Heading-frame
-    // decomposition uses the same Z_STRETCH as the physics-side
-    // target heading so motion direction and facing stay consistent.
-    const effVworldZ = effVy * Z_STRETCH;
-    const forwardSpeed = effVx * forwardX + effVworldZ * forwardZ;
-    const targetTilt = speed > STICKMAN_RUN_THRESHOLD
-      ? Math.sign(forwardSpeed) * Math.min(
-          (speed - STICKMAN_RUN_THRESHOLD) * STICKMAN_TILT_PER_SPEED,
-          STICKMAN_TILT_MAX,
-        )
-      : 0;
-    const swingRate = 0.2 + speed * 0.04;
-
-    const targetCelebrate = isCelebrating ? 1 : 0;
-    const targetPushing   = player.pushTimer > 0 ? 1 : 0;
-
-    if (player.pushTimer > 0) {
-      if (anim.prevPushTimer <= 0) anim.pushProgress = 0;
-      anim.pushProgress += dt;
-    } else {
-      anim.pushProgress = 0;
+    // 6. Dazed stars orbiting the head while resting (exhausted).
+    //    Hidden via the cursor sweep when rest factor is 0.
+    if (animSnap.rest > 0.01) {
+      this._placeRestStars(pose, animSnap);
     }
-    anim.prevPushTimer = player.pushTimer;
-
-    // Kick animation reads physics state directly — no smoothing, no
-    // local timer. `player.kick` is the authoritative source for
-    // active/phase/timer, and `player.airZ` is the airborne lift
-    // already computed by the physics tick for the airkick phase.
-    const kick = player.kick;
-    const isKicking = !!(kick && kick.active);
-    const isAirkick = isKicking && kick.kind === 'air';
-    const airLift   = player.airZ || 0;
-
-    anim.tilt      += (targetTilt      - anim.tilt)      * STICKMAN_SMOOTH;
-    anim.amplitude += (targetAmplitude - anim.amplitude) * STICKMAN_SMOOTH;
-    anim.celebrate += (targetCelebrate - anim.celebrate) * STICKMAN_SMOOTH;
-    anim.pushing = targetPushing;
-    anim.phase          = (anim.phase          + swingRate       * dt) % TWO_PI;
-    anim.celebratePhase = (anim.celebratePhase + CELEB_PHASE_RATE * dt) % TWO_PI;
-
-    const amplitude = anim.amplitude;
-    const celeb     = anim.celebrate;
-    const celebInv  = 1 - celeb;
-    const pushing   = anim.pushing;
-    const swing     = Math.sin(anim.phase);
-
-    const jumpY = Math.max(0, Math.sin(anim.celebratePhase)) * CELEB_JUMP_PEAK * celeb;
-    const bob = Math.abs(swing) * 0.08 * amplitude * celebInv;
-
-    // Push body cosmetics — dip / tilt / hop stay scripted; the
-    // striking arm itself gets real 2-bone IK to the opponent's
-    // body (see `pushArmPose` call below, after shoulderY is known).
-    let pushBodyDip    = 0;
-    let pushTiltOffset = 0;
-    if (pushing > 0) {
-      const pushT = Math.min(anim.pushProgress / PUSH_TOTAL_TICKS, 1);
-      pushBodyDip    =  pushBodyDipAt(pushT);
-      pushTiltOffset =  pushBodyTiltAt(pushT);
-      const hop       =  pushHopAt(pushT);
-      baseX          +=  forwardX * hop;
-      baseZ          +=  forwardZ * hop;
-    }
-
-    // Kick scripted state — the contralateral arm (left arm) drives
-    // the counter-swing; body dip + tilt sell the weight transfer;
-    // pelvis twists toward the kick direction and snaps through;
-    // the support (left) leg crouches a little during strike. The
-    // kicking leg itself is no longer scripted: it's IK'd to
-    // `kick.footTarget` below, after the leg-angle block.
-    let kickArmAngle       = 0;
-    let kickBodyDip        = 0;
-    let kickTiltOffset     = 0;
-    let kickHipTwist       = 0;
-    let kickSupportCrouch  = 0;
-    if (isKicking) {
-      const totalMs = isAirkick ? AIRKICK_MS : KICK_DURATION_MS;
-      const kickT   = Math.min(kick.timer / totalMs, 1);
-      kickTiltOffset    = isAirkick ? airkickTiltAt(kickT) : kickTiltAt(kickT);
-      kickArmAngle      = kickArmAngleAt(kickT);
-      kickBodyDip       = kickDipAt(kickT);
-      kickHipTwist      = kickHipTwistAt(kickT);
-      kickSupportCrouch = kickSupportCrouchAt(kickT);
-    }
-
-    const walkTilt  = anim.tilt;
-    const upperTilt = walkTilt + pushTiltOffset + kickTiltOffset;
-    const tiltC = Math.cos(upperTilt);
-    const tiltS = Math.sin(upperTilt);
-
-    // Feet-on-ground clearance — straight legs land on y=0. airLift
-    // raises the whole figure during the airkick leap (legs trail
-    // the body upward because hipBaseY lifts with the rest).
-    const hipBaseY  = STICKMAN_LIMB_FULL_H + bob * s + jumpY + airLift;
-    const upperHipY = hipBaseY + pushBodyDip + kickBodyDip;
-
-    // Neck (top of torso) is one torso-length above the hip, rotated
-    // forward by upperTilt in the (forward, up) plane. "Forward" is
-    // the heading-space xz vector (forwardX, forwardZ).
-    const torsoH      = STICKMAN_SHOULDER_OFY;
-    const neckFwdOfs  = torsoH * tiltS;
-    const neckX       = baseX + forwardX * neckFwdOfs;
-    const neckZ       = baseZ + forwardZ * neckFwdOfs;
-    const neckY       = upperHipY + torsoH * tiltC;
-
-    // Shoulders: lateral to neck along (lateralX, lateralZ).
-    const shoulderHalfWidth = STICKMAN_SHOULDER_OFX;
-    const lShX = neckX - lateralX * shoulderHalfWidth;
-    const lShZ = neckZ - lateralZ * shoulderHalfWidth;
-    const rShX = neckX + lateralX * shoulderHalfWidth;
-    const rShZ = neckZ + lateralZ * shoulderHalfWidth;
-
-    // Torso: capsule from hip center to neck (both move with baseX/Z).
-    this._placeTorso(baseX, upperHipY, baseZ, neckX, neckY, neckZ, color, player.stamina);
-
-    // Head: sphere a fixed gap above the neck, following the tilt so
-    // it stays anchored to the torso top.
-    const headGap     = STICKMAN_HEAD_GAP_Y;
-    const headFwdOfs  = headGap * tiltS;
-    const headCenterX = neckX + forwardX * headFwdOfs;
-    const headCenterZ = neckZ + forwardZ * headFwdOfs;
-    const headCenterY = neckY + headGap * tiltC + STICKMAN_HEAD_RADIUS;
-    this._placeSph(headCenterX, headCenterY, headCenterZ, STICKMAN_HEAD_RADIUS, color);
-
-    // Hips: lateral to hip center along the same lateral vector.
-    const hipHalfWidth = STICKMAN_HIP_OFX;
-    // Pelvis twist: rotate the right-hip lateral direction around the
-    // up axis by `kickHipTwist` so both hips describe the arc a real
-    // pelvis would during a right-footed kick. Left hip mirrors the
-    // right; when no kick is active, twist is 0 and we land back on
-    // the plain ±lateral offsets.
-    const twistSin = Math.sin(kickHipTwist);
-    const twistCos = Math.cos(kickHipTwist);
-    const twistedRightX = lateralX * twistCos - forwardX * twistSin;
-    const twistedRightZ = lateralZ * twistCos - forwardZ * twistSin;
-    const rHipX = baseX + twistedRightX * hipHalfWidth;
-    const rHipZ = baseZ + twistedRightZ * hipHalfWidth;
-    const lHipX = baseX - twistedRightX * hipHalfWidth;
-    const lHipZ = baseZ - twistedRightZ * hipHalfWidth;
-
-    // Limb angles — contralateral walk swing + celebration override
-    // (arms sweep to π = straight up, legs spread forward-back) +
-    // push override (both arms scripted to the punch curve).
-    const armSwing = swing * 0.85 * amplitude;
-    const legSwing = -swing * 0.7  * amplitude;
-    let leftArmAngle  =  armSwing;
-    let rightArmAngle = -armSwing;
-    let leftLegAngle  =  legSwing;
-    let rightLegAngle = -legSwing;
-
-    if (celeb > 0.001) {
-      const legSpread = Math.max(0, Math.sin(anim.celebratePhase)) * CELEB_LEG_SPREAD;
-      leftArmAngle  = leftArmAngle  * celebInv +  Math.PI   * celeb;
-      rightArmAngle = rightArmAngle * celebInv + -Math.PI   * celeb;
-      leftLegAngle  = leftLegAngle  * celebInv + -legSpread * celeb;
-      rightLegAngle = rightLegAngle * celebInv +  legSpread * celeb;
-    }
-
-    // Push arm override is applied AFTER the per-arm (upper, lower)
-    // split below — IK to the opponent's body needs the striking
-    // shoulder's world anchor, which we don't have yet. See the
-    // `if (pushing > 0 && celeb < 0.001)` block after `_placeArm`
-    // setup.
-
-    // Per-leg (upper, lower) angles for the 2-bone draw. Walk /
-    // celebrate use a cosmetic follow-through shin derived from the
-    // thigh via `shinAngleFor`; the kicking leg (right by convention)
-    // overrides with real 2-bone IK to `kick.footTarget` below.
-    let leftUpperAngle  = leftLegAngle;
-    let leftLowerAngle  = shinAngleFor(leftLegAngle);
-    let rightUpperAngle = rightLegAngle;
-    let rightLowerAngle = shinAngleFor(rightLegAngle);
-
-    // Kick takes precedence over walk swing (but not push — physics
-    // guarantees the two never overlap). Right leg IK's to the foot
-    // target; left (support) leg micro-crouches through strike so the
-    // planted weight reads visually; left arm counter-swings forward;
-    // right arm pulls back. Celebration still overrides everything.
-    if (isKicking && celeb < 0.001) {
-      kickLegPose(kick, rHipX, hipBaseY, rHipZ, forwardX, forwardZ, this._scratchKickPose);
-      rightUpperAngle = this._scratchKickPose.upperAngle;
-      rightLowerAngle = this._scratchKickPose.lowerAngle;
-      // Support leg: upper forward by `kickSupportCrouch`, lower
-      // rotates the opposite way (2× upper) so the foot stays close
-      // to the ground while the knee pokes forward.
-      leftUpperAngle = leftLegAngle + kickSupportCrouch;
-      leftLowerAngle = shinAngleFor(leftLegAngle) - KICK_SUPPORT_SHIN_RATIO * kickSupportCrouch;
-      leftArmAngle  = kickArmAngle;
-      rightArmAngle = -kickArmAngle * KICK_ARM_OPP_FRAC;
-    }
-
-    // Per-arm (upper, lower) angles. Walk / celebrate / kick-
-    // counter-swing use the same cosmetic forearm follow-through as
-    // the knee — `forearmAngleFor` bends the forearm in the direction
-    // of the upper-arm swing. A punch (when player.pushTimer > 0)
-    // overrides ONLY the striking arm via the variant-specific
-    // scripted trajectory in `pushArmPose`; the non-striking arm
-    // keeps its cosmetic swing.
-    let leftUpperArmAngle  = leftArmAngle;
-    let leftLowerArmAngle  = forearmAngleFor(leftArmAngle);
-    let rightUpperArmAngle = rightArmAngle;
-    let rightLowerArmAngle = forearmAngleFor(rightArmAngle);
-    let leftUpperYaw = 0, leftLowerYaw = 0;
-    let rightUpperYaw = 0, rightLowerYaw = 0;
-
-    const shoulderY = upperHipY + torsoH * tiltC;
-    if (player.pushTimer > 0 && celeb < 0.001) {
-      pushArmPose(player, this._scratchPushPose);
-      if (player.pushArm === 'right') {
-        rightUpperArmAngle = this._scratchPushPose.upperAngle;
-        rightLowerArmAngle = this._scratchPushPose.lowerAngle;
-        rightUpperYaw      = this._scratchPushPose.upperYaw;
-        rightLowerYaw      = this._scratchPushPose.lowerYaw;
-      } else {
-        leftUpperArmAngle = this._scratchPushPose.upperAngle;
-        leftLowerArmAngle = this._scratchPushPose.lowerAngle;
-        leftUpperYaw      = this._scratchPushPose.upperYaw;
-        leftLowerYaw      = this._scratchPushPose.lowerYaw;
-      }
-    }
-
-    this._placeArm(lShX, shoulderY, lShZ, leftUpperArmAngle,  leftLowerArmAngle,  forwardX, forwardZ, color, leftUpperYaw,  leftLowerYaw);
-    this._placeArm(rShX, shoulderY, rShZ, rightUpperArmAngle, rightLowerArmAngle, forwardX, forwardZ, color, rightUpperYaw, rightLowerYaw);
-    this._placeLeg(lHipX, hipBaseY, lHipZ, leftUpperAngle,  leftLowerAngle,  forwardX, forwardZ, color);
-    this._placeLeg(rHipX, hipBaseY, rHipZ, rightUpperAngle, rightLowerAngle, forwardX, forwardZ, color);
   }
 
   /** Orient `mesh` so its local +y axis points from A toward B and
@@ -1621,6 +1417,51 @@ export class Renderer {
     mesh.material.color.setRGB(color[0], color[1], color[2]);
   }
 
+  /** Place the next shadow from the player-shadow pool under
+   *  `player`, growing the pool on demand. Pooled so harnesses can
+   *  render N players without a fixed ceiling. */
+  _placePlayerShadow(player) {
+    const idx = this._playerShadowCursor++;
+    while (this._playerShadows.length <= idx) this._playerShadows.push(this._makeShadow());
+    const shadow = this._playerShadows[idx];
+    shadow.position.set(player.x + PLAYER_WIDTH / 2, SHADOW_Y, player.y * Z_STRETCH);
+    shadow.scale.set(PLAYER_SHADOW_RADIUS * 2, PLAYER_SHADOW_RADIUS * 2, 1);
+    shadow.visible = true;
+  }
+
+  /** Place 3 dazed stars in a horizontal ring above the head, rotating
+   *  around the player's vertical axis. Phase comes from `animSnap.restPhase`
+   *  but is multiplied by -1.6 so the ring counter-rotates 60% faster
+   *  than the body's own wobble, exaggerating the dizzy read.
+   *  Opacity = animSnap.rest, so stars fade in/out with the LPF factor. */
+  _placeRestStars(pose, animSnap) {
+    const ringRadius = STICKMAN_HEAD_RADIUS * 1.55;
+    const ringHeight = STICKMAN_HEAD_RADIUS * 0.85;  // above the head
+    const cy = pose.headY + ringHeight;
+    const opacity = Math.min(1, animSnap.rest);
+    const scale = 0.6 + 0.4 * opacity;
+    // Counter-spin: stars orbit faster than the body and the opposite
+    // way, exaggerating the dizzy read.
+    const spin = -animSnap.restPhase * 1.6;
+    for (let i = 0; i < 3; i++) {
+      const idx = this._restStarCursor++;
+      while (this._restStars.length <= idx) this._mkRestStar();
+      const mesh = this._restStars[idx];
+      const theta = spin + (i * (Math.PI * 2 / 3));
+      mesh.position.set(
+        pose.headX + Math.cos(theta) * ringRadius,
+        cy + Math.sin(theta * 1.7) * (STICKMAN_HEAD_RADIUS * 0.18),
+        pose.headZ + Math.sin(theta) * ringRadius,
+      );
+      // Each star also tumbles around its own axis so it's not a flat
+      // billboard — gives a metallic twinkle.
+      mesh.rotation.set(theta * 0.6, theta, 0);
+      mesh.scale.set(scale, scale, scale);
+      mesh.material.opacity = opacity;
+      mesh.visible = true;
+    }
+  }
+
   /** Pull a torso capsule triple (outline + fill + disc) from the
    *  pool, orient the outline+fill between hip and neck, update the
    *  fill mesh's clipping plane so the solid fill covers the bottom
@@ -1630,7 +1471,11 @@ export class Renderer {
    *  red→amber→green gradient driven by `staminaFrac`. */
   _placeTorso(ax, ay, az, bx, by, bz, color, staminaFrac) {
     const idx = this._stickmanTorsoCursor;
-    if (idx >= this._stickmanTorsoOutline.length) return;
+    while (this._stickmanTorsoOutline.length <= idx) {
+      this._mkTorsoOutline();
+      this._mkTorsoFill();
+      this._mkTorsoDisc();
+    }
     this._stickmanTorsoCursor++;
     const outline = this._stickmanTorsoOutline[idx];
     const fill    = this._stickmanTorsoFill[idx];
@@ -1639,27 +1484,29 @@ export class Renderer {
     const tint = staminaColorInto(this._staminaColorBuf, staminaFrac);
     this._orientBetween(outline, ax, ay, az, bx, by, bz, color);
     this._orientBetween(fill,    ax, ay, az, bx, by, bz, tint);
-    // The fill capsule is inset by the shell thickness on both caps,
-    // so its y-extent is shorter than the hip→neck distance. Clip the
-    // stamina range over the fill's actual range, not the outline's,
-    // so stamina=0 maps to the fill's bottom and stamina=1 maps to
-    // its top.
-    const hipY  = ay < by ? ay : by;
-    const neckY = ay < by ? by : ay;
-    const insetHipY  = hipY  + STICKMAN_TORSO_SHELL_THICKNESS;
-    const insetNeckY = neckY - STICKMAN_TORSO_SHELL_THICKNESS;
-    const fillWorldY = updateStaminaClipPlane(plane, insetHipY, insetNeckY, staminaFrac);
+    // Clip plane perpendicular to the torso axis at the stamina
+    // fraction. The fill capsule is inset by shell thickness on both
+    // caps (its ends sit `shellThickness` inside the outline), so the
+    // helper shrinks the range it maps 0/1 over accordingly.
+    const info = updateStaminaClipPlane(
+      plane, ax, ay, az, bx, by, bz,
+      STICKMAN_TORSO_SHELL_THICKNESS, staminaFrac, this._staminaClipOut,
+    );
 
     const disc = this._stickmanTorsoDisc[idx];
-    const midY = (ay + by) * 0.5;
     const discR = staminaDiscRadius(
-      fillWorldY - midY,
+      info.axialFromMid,
       this._fillBodyHalf,
       this._fillCapRadius,
     );
     if (discR > 0) {
       disc.visible = true;
-      disc.position.set((ax + bx) * 0.5, fillWorldY, (az + bz) * 0.5);
+      disc.position.set(info.cx, info.cy, info.cz);
+      // Orient the flat disc so its normal tracks the torso axis —
+      // otherwise an inclined torso would have a horizontal lid
+      // poking sideways through the shell.
+      this._scratchDiscDir.set(info.dx, info.dy, info.dz);
+      disc.quaternion.setFromUnitVectors(this._discLocalY, this._scratchDiscDir);
       const s = (discR / this._fillCapRadius) * 0.995;
       disc.scale.set(s, 1, s);
       disc.material.color.setRGB(tint[0], tint[1], tint[2]);
@@ -1687,13 +1534,13 @@ export class Renderer {
   }
 
   /** Two-segment arm with an elbow. `upperAngle` is the shoulder
-   *  swing angle (same convention as the old single-capsule arm:
-   *  0 = straight down, +π/2 = forward, +π = straight up).
-   *  `lowerAngle` is the forearm's world-space swing angle (not
-   *  relative to the upper arm). Both capsules meet at the elbow,
-   *  where the slightly-oversized `STICKMAN_ELBOW_RADIUS` sphere is
-   *  drawn. Upper arm is 15 % thicker than the forearm, matching
-   *  rough human proportions. */
+   *  swing angle (0 = straight down, +π/2 = forward, +π = straight
+   *  up). `lowerAngle` is the forearm's world-space swing angle
+   *  (not relative to the upper arm). Both capsules meet at the
+   *  elbow, where a slightly-undersized `STICKMAN_ELBOW_RADIUS`
+   *  sphere is drawn (a small joint bump, not a growth). Upper arm
+   *  is 15 % thicker than the forearm, matching rough human
+   *  proportions. */
   _placeArm(px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color, upperYaw = 0, lowerYaw = 0) {
     const U = STICKMAN_UPPER_ARM;
     const L = STICKMAN_LOWER_ARM;
@@ -1717,28 +1564,24 @@ export class Renderer {
     const handZ = elbowZ + lFwdZ * L * lowerSin;
 
     // Upper segment (thicker): shoulder → elbow.
-    if (this._stickmanUpperArmCursor < this._stickmanUpperArm.length) {
-      const upperMesh = this._stickmanUpperArm[this._stickmanUpperArmCursor++];
-      this._orientBetween(upperMesh, px, py, pz, elbowX, elbowY, elbowZ, color);
-    }
+    while (this._stickmanUpperArm.length <= this._stickmanUpperArmCursor) this._mkUpperArm();
+    const upperMesh = this._stickmanUpperArm[this._stickmanUpperArmCursor++];
+    this._orientBetween(upperMesh, px, py, pz, elbowX, elbowY, elbowZ, color);
     // Lower segment (thinner): elbow → hand.
-    if (this._stickmanLowerArmCursor < this._stickmanLowerArm.length) {
-      const lowerMesh = this._stickmanLowerArm[this._stickmanLowerArmCursor++];
-      this._orientBetween(lowerMesh, elbowX, elbowY, elbowZ, handX, handY, handZ, color);
-    }
+    while (this._stickmanLowerArm.length <= this._stickmanLowerArmCursor) this._mkLowerArm();
+    const lowerMesh = this._stickmanLowerArm[this._stickmanLowerArmCursor++];
+    this._orientBetween(lowerMesh, elbowX, elbowY, elbowZ, handX, handY, handZ, color);
     // Elbow sphere — reads as a joint bump even when the arm is
     // straight and the two capsules are collinear.
     this._placeSph(elbowX, elbowY, elbowZ, STICKMAN_ELBOW_RADIUS, color);
   }
 
   /** Two-segment leg with a knee. `upperAngle` is the hip-swing
-   *  angle (same convention as the old single-capsule leg: 0 =
-   *  straight down, +π/2 = forward, +π = straight up). `lowerAngle`
-   *  is the shin's world-space swing angle (not relative to the
-   *  upper leg). Both capsules meet at the knee; the overlapping
-   *  hemispherical caps at that point read visually as the joint,
-   *  so no separate kneecap sphere is needed. Passing
-   *  `lowerAngle === upperAngle` reproduces the old straight leg. */
+   *  angle (0 = straight down, +π/2 = forward, +π = straight up).
+   *  `lowerAngle` is the shin's world-space swing angle (not
+   *  relative to the upper leg). The two capsules meet at the
+   *  knee, with a kneecap sphere drawn over the join. Passing
+   *  `lowerAngle === upperAngle` produces a straight leg. */
   _placeLeg(px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color) {
     const U = STICKMAN_UPPER_LEG;
     const L = STICKMAN_LOWER_LEG;
@@ -1752,25 +1595,25 @@ export class Renderer {
     const footZ = kneeZ + forwardZ * L * lowerSin;
 
     // Upper segment: hip → knee.
-    if (this._stickmanLegCursor >= this._stickmanLeg.length) return;
+    while (this._stickmanLeg.length <= this._stickmanLegCursor) this._mkLeg();
     const upperMesh = this._stickmanLeg[this._stickmanLegCursor++];
     this._orientBetween(upperMesh, px, py, pz, kneeX, kneeY, kneeZ, color);
 
     // Lower segment: knee → foot.
-    if (this._stickmanLegCursor >= this._stickmanLeg.length) return;
+    while (this._stickmanLeg.length <= this._stickmanLegCursor) this._mkLeg();
     const lowerMesh = this._stickmanLeg[this._stickmanLegCursor++];
     this._orientBetween(lowerMesh, kneeX, kneeY, kneeZ, footX, footY, footZ, color);
 
-    // Kneecap sphere at the joint — slightly larger than the leg
-    // shaft so it reads as an actual joint bump even when the leg
-    // is straight and the two capsules are collinear.
+    // Kneecap sphere at the joint — slightly under the leg shaft
+    // radius so it reads as joint detail rather than a growth, even
+    // when the leg is straight and the two capsules are collinear.
     this._placeSph(kneeX, kneeY, kneeZ, STICKMAN_KNEE_RADIUS, color);
   }
 
   /** Pull a sphere from the pool and place it at a world point with
    *  the given radius and color. */
   _placeSph(cx, cy, cz, radius, color) {
-    if (this._stickmanSphCursor >= this._stickmanSph.length) return;
+    while (this._stickmanSph.length <= this._stickmanSphCursor) this._mkSph();
     const mesh = this._stickmanSph[this._stickmanSphCursor++];
     mesh.visible = true;
     mesh.position.set(cx, cy, cz);
@@ -1819,6 +1662,115 @@ export class Renderer {
         p.vy = r2 * spread;
         p.vz = speed * (0.3 + r3 * 0.7);
       }
+
+      p.maxLife = PARTICLE_LIFE_BASE + Math.floor(Math.random() * PARTICLE_LIFE_VARIANCE);
+      p.life = p.maxLife;
+    }
+  }
+
+  /** Detect a foot-plant on the walk cycle (sin(phase) zero-crossing)
+   *  and spawn a dust burst when the player is moving. Idle / kicking /
+   *  pushing / celebrating stickmen are gated out by the speed floor —
+   *  they may have phase noise but it doesn't read as walking. */
+  _maybeFootstepBurst(player, snap) {
+    const speed = Math.hypot(player.vx || 0, (player.vy || 0) * Z_STRETCH);
+    const swing = snap.swing;
+    const prev = this._lastFootSwing.get(player);
+    this._lastFootSwing.set(player, swing);
+    if (prev === undefined) return;
+    if (speed < FOOTSTEP_MIN_SPEED) return;
+    // Suppress while kicking, pushing, or in dead-ball anims — those
+    // have their own poses and a footstep burst would look out of place.
+    if (player.kick && player.kick.active) return;
+    if (player.pushTimer > 0) return;
+    // Zero-crossing of sin(phase) → one foot just touched ground.
+    if ((prev <= 0) === (swing <= 0)) return;
+    this._spawnFootstepParticles(player, speed);
+  }
+
+  /** Spawn the footstep dust burst. Count + outward speed scale with
+   *  the player's normalized speed (vs MAX_PLAYER_SPEED). Particles
+   *  spawn slightly behind the motion vector at ground level and
+   *  burst mostly upward + outward — matches the "kicked-up dust"
+   *  look of the ball-bounce particles. */
+  _spawnFootstepParticles(player, speed) {
+    const speed01 = Math.min(1, speed / MAX_PLAYER_SPEED);
+    const count = Math.min(
+      FOOTSTEP_MAX_COUNT,
+      Math.floor(FOOTSTEP_BASE_COUNT + speed01 * FOOTSTEP_FORCE_COUNT),
+    );
+    if (count <= 0) return;
+    const burstSpeed = speed01 * FOOTSTEP_SPEED;
+
+    // Motion direction in world xz (player.vy is physics-y so scale
+    // by Z_STRETCH for world-space). Spawn slightly behind the player
+    // so dust trails the planted foot.
+    const wvx = player.vx || 0;
+    const wvz = (player.vy || 0) * Z_STRETCH;
+    const wmag = Math.sqrt(wvx * wvx + wvz * wvz) || 1;
+    const dirX = wvx / wmag;
+    const dirZ = wvz / wmag;
+    const spawnX = player.x + PLAYER_WIDTH / 2 - dirX * FOOTSTEP_BACK_OFFSET;
+    const spawnY = player.y - (dirZ / Z_STRETCH) * FOOTSTEP_BACK_OFFSET;
+
+    for (let i = 0; i < count; i++) {
+      const p = this._particles[this._particleNext];
+      this._particleNext = (this._particleNext + 1) % this._particles.length;
+
+      p.x = spawnX;
+      p.y = spawnY;
+      p.z = 0;
+
+      // Mostly upward kick with a little lateral spread + a backward
+      // bias along the motion axis. r3 randomizes magnitude so the
+      // burst isn't a uniform shell.
+      const r1 = (Math.random() - 0.5) * 2;
+      const r2 = (Math.random() - 0.5) * 2;
+      const r3 = Math.random();
+      p.vx = (-dirX * (0.4 + r3 * 0.4) + r1 * 0.4) * burstSpeed;
+      p.vy = (-(dirZ / Z_STRETCH) * (0.4 + r3 * 0.4) + r2 * 0.4) * burstSpeed;
+      p.vz = (0.6 + r3 * 0.5) * burstSpeed;
+
+      p.maxLife = PARTICLE_LIFE_BASE + Math.floor(Math.random() * PARTICLE_LIFE_VARIANCE);
+      p.life = p.maxLife;
+    }
+  }
+
+  /** Spawn a burst of dust at the punch impact point. Particles fly
+   *  outward in all directions (uniform unit-sphere) with a mild
+   *  upward bias so they arc visibly before gravity pulls them down.
+   *  Count + speed scale with `ev.force` (0..1). */
+  _spawnPushContactParticles(ev) {
+    const force = Math.max(0.2, ev.force);
+    const count = Math.min(
+      PUSH_CONTACT_MAX_COUNT,
+      Math.floor(PUSH_CONTACT_BASE_COUNT + force * PUSH_CONTACT_FORCE_COUNT),
+    );
+    const speed = force * PUSH_CONTACT_SPEED;
+    for (let i = 0; i < count; i++) {
+      const p = this._particles[this._particleNext];
+      this._particleNext = (this._particleNext + 1) % this._particles.length;
+
+      p.x = ev.x;
+      p.y = ev.y;
+      p.z = ev.z;
+
+      // Marsaglia uniform-sphere direction.
+      let u1, u2, s;
+      do {
+        u1 = Math.random() * 2 - 1;
+        u2 = Math.random() * 2 - 1;
+        s = u1 * u1 + u2 * u2;
+      } while (s >= 1 || s === 0);
+      const factor = Math.sqrt(1 - s);
+      const dirX  = 2 * u1 * factor;
+      const dirYp = 2 * u2 * factor;     // physics-y axis (depth)
+      const dirZu = 1 - 2 * s;           // vertical (up)
+
+      const mag = speed * (0.4 + 0.6 * Math.random());
+      p.vx = dirX  * mag;
+      p.vy = dirYp * mag;
+      p.vz = (dirZu + PUSH_CONTACT_LIFT_BIAS) * mag;
 
       p.maxLife = PARTICLE_LIFE_BASE + Math.floor(Math.random() * PARTICLE_LIFE_VARIANCE);
       p.life = p.maxLife;
@@ -1926,174 +1878,9 @@ export class Renderer {
 
 /* ── Helpers ───────────────────────────────────────────────── */
 
-/**
- * Upper-body crouch depth during push. Body drops while the pivot
- * pulls back, snaps upright during the strike, settles at 0. Negative
- * values are subtracted from the upper body's Y so a negative result
- * means "lower than neutral."
- */
-function pushBodyDipAt(t) {
-  if (t < PUSH_RAISE_T) return 0;
-  if (t < PUSH_WINDUP_T) {
-    const p = (t - PUSH_RAISE_T) / (PUSH_WINDUP_T - PUSH_RAISE_T);
-    return -PUSH_CROUCH_DEPTH * easeOut(p);
-  }
-  if (t < PUSH_STRIKE_T) {
-    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
-    return -PUSH_CROUCH_DEPTH * (1 - p * p);
-  }
-  return 0;
-}
-
-/**
- * Whole-body horizontal hop during push. 0 during raise/windup, springs
- * forward with quadratic acceleration during strike, decays during settle.
- * Magnitude only — multiply by pushDir outside.
- */
-function pushHopAt(t) {
-  if (t < PUSH_WINDUP_T) return 0;
-  if (t < PUSH_STRIKE_T) {
-    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
-    return PUSH_HOP_DIST * p * p;
-  }
-  if (t < PUSH_SETTLE_T) {
-    const p = (t - PUSH_STRIKE_T) / (PUSH_SETTLE_T - PUSH_STRIKE_T);
-    return PUSH_HOP_DIST * (1 - easeInOut(p));
-  }
-  return 0;
-}
-
-/**
- * Body lean along the player's heading as a signed "forward amount":
- * negative = lean back (windup loading), positive = lean forward
- * (strike release). Added directly to the walk-tilt term because
- * both live in the same heading-relative (forward, up) frame.
- */
-function pushBodyTiltAt(t) {
-  if (t < PUSH_RAISE_T) return 0;
-  if (t < PUSH_WINDUP_T) {
-    const p = (t - PUSH_RAISE_T) / (PUSH_WINDUP_T - PUSH_RAISE_T);
-    return -PUSH_BACK_TILT * easeOut(p);
-  }
-  if (t < PUSH_STRIKE_T) {
-    const p = (t - PUSH_WINDUP_T) / (PUSH_STRIKE_T - PUSH_WINDUP_T);
-    return -PUSH_BACK_TILT + (PUSH_BACK_TILT + PUSH_FWD_TILT) * (p * p);
-  }
-  if (t < PUSH_SETTLE_T) {
-    const p = (t - PUSH_STRIKE_T) / (PUSH_SETTLE_T - PUSH_STRIKE_T);
-    return PUSH_FWD_TILT * (1 - easeInOut(p));
-  }
-  return 0;
-}
-
-/* ── Kick body-english curves ─────────────────────────────── */
-
-/**
- * Counter-balance arm swing: forward during windup + strike, returns
- * to 0 during recovery. Same shape for ground and airkick — the arm
- * doesn't need airkick-specific tuning because it isn't the load-
- * bearing limb.
- */
-function kickArmAngleAt(t) {
-  if (t < KICK_FIRE_T) {
-    const p = t / KICK_FIRE_T;
-    return KICK_ARM_SWING * easeInOut(p);
-  }
-  if (t < KICK_STRIKE_END_T) return KICK_ARM_SWING;
-  const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
-  return KICK_ARM_SWING * (1 - easeInOut(p));
-}
-
-/**
- * Body dip: crouch into the windup, spring back up on strike, settle
- * during recovery. Negative values lower the upper body.
- */
-function kickDipAt(t) {
-  if (t < KICK_FIRE_T) {
-    const p = t / KICK_FIRE_T;
-    return -KICK_CROUCH_DEPTH * easeOut(p);
-  }
-  if (t < KICK_STRIKE_END_T) {
-    const p = (t - KICK_FIRE_T) / (KICK_STRIKE_END_T - KICK_FIRE_T);
-    return -KICK_CROUCH_DEPTH * (1 - p * p);
-  }
-  return 0;
-}
-
-/**
- * Body tilt during ground kick: lean back during windup, flip forward
- * through strike, settle during recovery.
- */
-function kickTiltAt(t) {
-  if (t < KICK_FIRE_T) {
-    const p = t / KICK_FIRE_T;
-    return -KICK_BACK_TILT * easeOut(p);
-  }
-  if (t < KICK_STRIKE_END_T) {
-    const p = (t - KICK_FIRE_T) / (KICK_STRIKE_END_T - KICK_FIRE_T);
-    return -KICK_BACK_TILT + (KICK_BACK_TILT + KICK_FWD_TILT) * (p * p);
-  }
-  const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
-  return KICK_FWD_TILT * (1 - easeInOut(p));
-}
-
-/**
- * Body tilt during airkick: big back lean that holds through the
- * leap, settles as the player lands.
- */
-function airkickTiltAt(t) {
-  if (t < AIRKICK_PEAK_FRAC) {
-    const p = t / AIRKICK_PEAK_FRAC;
-    return -AIRKICK_BACK_TILT * easeOut(p);
-  }
-  if (t < AIRKICK_STRIKE_END_T) return -AIRKICK_BACK_TILT;
-  const p = (t - AIRKICK_STRIKE_END_T) / (1 - AIRKICK_STRIKE_END_T);
-  return -AIRKICK_BACK_TILT * (1 - easeInOut(p));
-}
-
-/**
- * Pelvis twist around the vertical axis. +angle rotates the right
- * hip back (and left hip forward) — the wind-up position for a
- * right-footed kick. Strike snaps the hip through to −MAX (right
- * hip forward, follow-through); recovery eases back to 0. Shared
- * between ground and airkick.
- */
-function kickHipTwistAt(t) {
-  if (t < KICK_FIRE_T) {
-    const p = t / KICK_FIRE_T;
-    return KICK_HIP_TWIST_MAX * easeInOut(p);
-  }
-  if (t < KICK_STRIKE_END_T) {
-    const p = (t - KICK_FIRE_T) / (KICK_STRIKE_END_T - KICK_FIRE_T);
-    return KICK_HIP_TWIST_MAX * (1 - 2 * easeInOut(p));
-  }
-  const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
-  return -KICK_HIP_TWIST_MAX * (1 - easeInOut(p));
-}
-
-/**
- * Support-leg (planted, non-kicking) micro-crouch. Kicks in at the
- * strike phase and fades through recovery. Used as the upper-leg
- * forward angle; the shin rotates the opposite way to keep the foot
- * roughly planted under the hip (knee-out crouch).
- */
-function kickSupportCrouchAt(t) {
-  if (t < KICK_FIRE_T) return 0;
-  if (t < KICK_STRIKE_END_T) {
-    const p = (t - KICK_FIRE_T) / (KICK_STRIKE_END_T - KICK_FIRE_T);
-    return KICK_SUPPORT_CROUCH * easeInOut(p);
-  }
-  const p = (t - KICK_STRIKE_END_T) / (1 - KICK_STRIKE_END_T);
-  return KICK_SUPPORT_CROUCH * (1 - easeInOut(p));
-}
-
-function easeInOut(p) {
-  return p < 0.5 ? 2 * p * p : 1 - (2 * (1 - p)) * (1 - p);
-}
-
-function easeOut(p) {
-  return 1 - (1 - p) * (1 - p);
-}
+// Body-english curves (pushBodyDipAt, kickTiltAt, airkickTiltAt, …)
+// live in animation/curves.js and are consumed by animation/poses.js;
+// renderer.js does not import them directly.
 
 function rgb(hex) {
   const h = hex.replace('#', '');
@@ -2124,38 +1911,88 @@ function staminaColorInto(out, t) {
 }
 
 /**
- * Build a procedural CanvasTexture for the soccer ball — off-white
- * base with ~12 dark circles placed at icosahedron-vertex (u, v)
- * coordinates so the pattern roughly tiles the sphere the way a
- * real football's panels do. Used for rolling-spin visibility; the
- * exact icosahedron distortion doesn't matter, only that rotation
- * is readable at a glance.
+ * Procedural soccer-ball texture. Per-pixel computation: each
+ * texel's (u, v) is mapped to a 3D direction on the unit sphere,
+ * and we colour it based on the angular distance to the nearest
+ * icosahedron vertex. This places ~12 uniform-looking dark panels
+ * on the rendered sphere — the equivalent of a "Telstar" pattern's
+ * 12 black pentagons — without the equirectangular smearing that
+ * a fixed-pixel-radius painter produced near the poles.
+ *
+ * Spot edge is softened by a thin band where the angle is between
+ * SPOT_INNER and SPOT_OUTER, giving subpixel anti-aliasing without
+ * needing supersampling.
  */
 function buildBallTexture() {
+  const W = 512, H = 256;
   const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 256;
+  canvas.width = W;
+  canvas.height = H;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#ececec';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#222222';
-  // 12 icosahedron-ish positions in UV space: 2 poles + 5 upper ring
-  // + 5 lower ring. Equirectangular mapping distorts near the poles
-  // but the rolling spin stays clearly visible.
-  const verts = [
-    [0.50, 0.97],                    // north pole
-    [0.50, 0.03],                    // south pole
-    [0.05, 0.70], [0.25, 0.70], [0.45, 0.70], [0.65, 0.70], [0.85, 0.70],
-    [0.15, 0.30], [0.35, 0.30], [0.55, 0.30], [0.75, 0.30], [0.95, 0.30],
+
+  // 12 icosahedron vertices on the unit sphere. The standard
+  // golden-ratio coordinates form a regular icosahedron.
+  const t = (1 + Math.sqrt(5)) / 2;
+  const raw = [
+    [-1,  t,  0], [ 1,  t,  0], [-1, -t,  0], [ 1, -t,  0],
+    [ 0, -1,  t], [ 0,  1,  t], [ 0, -1, -t], [ 0,  1, -t],
+    [ t,  0, -1], [ t,  0,  1], [-t,  0, -1], [-t,  0,  1],
   ];
-  const r = 30;
-  for (const [u, v] of verts) {
-    const x = u * canvas.width;
-    const y = (1 - v) * canvas.height;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
+  const verts = raw.map(([x, y, z]) => {
+    const len = Math.hypot(x, y, z);
+    return [x / len, y / len, z / len];
+  });
+
+  // Spot geometry: angular radius (in radians from spot centre).
+  // ~22° matches the apparent size of a Telstar pentagon. The
+  // anti-alias band is a few degrees wider than the inner edge.
+  const SPOT_INNER = Math.cos(0.32);
+  const SPOT_OUTER = Math.cos(0.36);
+  const BG = 245, FG = 26;  // off-white base, near-black spots
+
+  const img = ctx.createImageData(W, H);
+  const data = img.data;
+  for (let py = 0; py < H; py++) {
+    // v = 0 (top of canvas) → north pole; v = 1 (bottom) → south pole.
+    // three.js's default flipY=true on CanvasTexture flips this back
+    // when sampling so the geometry's UVs read correctly.
+    const v = py / (H - 1);
+    const lat = (0.5 - v) * Math.PI;
+    const cosLat = Math.cos(lat);
+    const sinLat = Math.sin(lat);
+    for (let px = 0; px < W; px++) {
+      const u = px / W;
+      const lon = (u - 0.5) * 2 * Math.PI;
+      const dx = cosLat * Math.cos(lon);
+      const dy = sinLat;
+      const dz = cosLat * Math.sin(lon);
+      // Find max dot product with the 12 vertex directions →
+      // smallest angular distance to any spot centre.
+      let bestDot = -1;
+      for (let k = 0; k < 12; k++) {
+        const e = verts[k];
+        const d = dx * e[0] + dy * e[1] + dz * e[2];
+        if (d > bestDot) bestDot = d;
+      }
+      let c;
+      if (bestDot >= SPOT_INNER) {
+        c = FG;
+      } else if (bestDot >= SPOT_OUTER) {
+        // anti-alias band
+        const k = (bestDot - SPOT_OUTER) / (SPOT_INNER - SPOT_OUTER);
+        c = Math.round(BG + (FG - BG) * k);
+      } else {
+        c = BG;
+      }
+      const i = (py * W + px) * 4;
+      data[i] = c;
+      data[i + 1] = c;
+      data[i + 2] = c;
+      data[i + 3] = 255;
+    }
   }
+  ctx.putImageData(img, 0, 0);
+
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.ClampToEdgeWrapping;

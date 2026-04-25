@@ -49,6 +49,7 @@ import {
   PUSH_TOTAL_TICKS,
   WALK_ELBOW_BEND_MAX,
   WALK_STANCE_KNEE_BEND, WALK_SWING_KNEE_BEND,
+  REST_UPPER_SWAY, REST_THIGH_FORWARD, REST_SHIN_BACK,
   kickArmAngleAt, kickDipAt, kickTiltAt, airkickTiltAt, airkickTuckAt,
   kickHipTwistAt, kickSupportCrouchAt,
   pushBodyDipAt, pushHopAt, pushBodyTiltAt,
@@ -186,6 +187,18 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   const forwardZ = animSnap.forwardZ;
   const lateralX = -forwardZ;
   const lateralZ =  forwardX;
+  const rest = animSnap.rest || 0;
+  // Rest pose: an exhausted player's upper body wobbles in a small
+  // circle while stamina recharges; legs and hips stay planted.
+  // The neck (and everything attached to it — shoulders, head) gets
+  // an XZ offset that rotates with `restPhase`. Scaled by `rest`
+  // (LPF) so it eases in/out without snapping at state boundaries.
+  let restSwayX = 0, restSwayZ = 0;
+  if (rest > 0.001) {
+    const swayMag = REST_UPPER_SWAY * rest;
+    restSwayX = Math.cos(animSnap.restPhase) * swayMag;
+    restSwayZ = Math.sin(animSnap.restPhase) * swayMag;
+  }
 
   // Base hip-centre in world xz — starts at the player's physics
   // (x, y) mapped to the camera frame, gets shifted by the push
@@ -331,8 +344,8 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   const torsoH     = STICKMAN_SHOULDER_OFY;
   const neckFwdOfs = torsoH * tiltS;
   const neckLatOfs = torsoH * rollS;
-  const neckX = baseX + forwardX * neckFwdOfs + lateralX * neckLatOfs;
-  const neckZ = baseZ + forwardZ * neckFwdOfs + lateralZ * neckLatOfs;
+  const neckX = baseX + forwardX * neckFwdOfs + lateralX * neckLatOfs + restSwayX;
+  const neckZ = baseZ + forwardZ * neckFwdOfs + lateralZ * neckLatOfs + restSwayZ;
   const neckY = upperHipY + torsoH * tiltC * Math.cos(reactBodyRoll);
 
   // Head pitches further forward/back on a jab or uppercut (reactHeadBack)
@@ -446,6 +459,19 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     leftLowerAngle  = leftLowerAngle  * celebInv + (-legFlex) * celeb;
     rightUpperAngle = rightUpperAngle * celebInv + (+legFlex) * celeb;
     rightLowerAngle = rightLowerAngle * celebInv + (-legFlex) * celeb;
+  }
+
+  // Rest legs — a tired bent-knee stance: thighs slightly forward,
+  // shins slightly back so the foot stays under the hip. Lerped by
+  // `rest` so the flex eases in/out with the LPF. Applied here so
+  // it's overridden by kick / push / celebrate / matchend poses
+  // (the rest target is gated off in those states anyway, but this
+  // ordering keeps the override-precedence consistent).
+  if (rest > 0.001) {
+    leftUpperAngle  += REST_THIGH_FORWARD * rest;
+    rightUpperAngle += REST_THIGH_FORWARD * rest;
+    leftLowerAngle  += REST_SHIN_BACK     * rest;
+    rightLowerAngle += REST_SHIN_BACK     * rest;
   }
 
   // Kick override: right leg → IK to kick.footTarget; the support

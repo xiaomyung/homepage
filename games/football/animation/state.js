@@ -32,6 +32,12 @@ export const CELEB_PHASE_RATE = 0.125;
 // celebrate: ~80 ticks per cycle = ~1.3 s of gentle sway.
 export const GRIEVE_PHASE_RATE = 0.08;
 
+// Rest (exhausted-and-recovering) body-spin rate. Slower than walk
+// swing — a dazed, sluggish circle. ~62 ticks per full body rotation
+// ≈ 1 s. Keeps the animation legible at game speed without inducing
+// motion sickness.
+export const REST_PHASE_RATE = 0.10;
+
 // TURN / STOP detection thresholds. Scales map raw angular velocity
 // (rad/tick) and deceleration (u/tick²) onto the 0..1 factor the
 // pose composer reads. Empirical — tuned against the locomotion
@@ -55,6 +61,10 @@ export function createAnimState(tick, player) {
     pushing: 0,
     pushProgress: 0,
     prevPushTimer: 0,
+    // Rest (exhausted recovery) state — body spins slowly while
+    // stamina recharges past STAMINA_EXHAUSTION_THRESHOLD.
+    rest: 0,
+    restPhase: 0,
     // TURN + STOP detection history
     turn: 0,
     stop: 0,
@@ -183,6 +193,15 @@ export function advanceAnimState(
     const targetMatchWin  = isMatchendWin  ? 1 : 0;
     const targetMatchLose = isMatchendLose ? 1 : 0;
     const targetPushing   = player.pushTimer > 0 ? 1 : 0;
+    // Rest target: only exhausted players who aren't doing anything
+    // else play the dazed-spin pose. Once stamina passes the
+    // STAMINA_EXHAUSTION_THRESHOLD, physics clears `exhausted` and
+    // the rest LPF unwinds to 0.
+    const isResting = !!player.exhausted
+      && !isCelebrating && !isGrieving
+      && !isMatchendWin && !isMatchendLose
+      && !isReposition;
+    const targetRest = isResting ? 1 : 0;
 
     // TURN / STOP detection — both inferred from per-frame deltas.
     // angVel = how fast the heading is swinging this tick; decel =
@@ -214,10 +233,19 @@ export function advanceAnimState(
     anim.matchLose += (targetMatchLose - anim.matchLose) * STICKMAN_SMOOTH;
     anim.turn      += (targetTurn      - anim.turn)      * STICKMAN_SMOOTH;
     anim.stop      += (targetStop      - anim.stop)      * STICKMAN_SMOOTH;
+    anim.rest      += (targetRest      - anim.rest)      * STICKMAN_SMOOTH;
     anim.pushing = targetPushing;
     anim.phase          = (anim.phase          + swingRate        * dt) % TWO_PI;
     anim.celebratePhase = (anim.celebratePhase + CELEB_PHASE_RATE  * dt) % TWO_PI;
     anim.grievePhase    = (anim.grievePhase    + GRIEVE_PHASE_RATE * dt) % TWO_PI;
+    // restPhase advances only while `rest` is active, so the LPF
+    // tail on exit doesn't add residual rotation. Reset to 0 when
+    // rest is fully off so re-entry starts at a clean angle.
+    if (anim.rest > 0.001) {
+      anim.restPhase = (anim.restPhase + REST_PHASE_RATE * dt) % TWO_PI;
+    } else {
+      anim.restPhase = 0;
+    }
 
     // Cache the tick-derived non-LPF scalars for no-tick render
     // frames to pass through verbatim.
@@ -252,6 +280,7 @@ export function advanceAnimState(
   else if (isReposition && speed > 0.3)       stateName = 'REPOSITION';
   else if (isKicking)                         stateName = isAirkick ? 'KICK_AIR' : 'KICK_GROUND';
   else if (player.pushTimer > 0)              stateName = 'PUSH';
+  else if (player.exhausted)                  stateName = 'EXHAUSTED';
   else if (targetStop > 0.5)                  stateName = 'STOP';
   else if (targetTurn > 0.5)                  stateName = 'TURN';
   else if (speed > 0.5)                       stateName = 'WALK';
@@ -279,6 +308,8 @@ export function advanceAnimState(
   out.matchLose      = anim.matchLose;
   out.turn           = anim.turn;
   out.stop           = anim.stop;
+  out.rest           = anim.rest;
+  out.restPhase      = anim.restPhase;
   out.pushing        = anim.pushing;
   out.pushProgress   = anim.pushProgress;
   out.isKicking      = isKicking;

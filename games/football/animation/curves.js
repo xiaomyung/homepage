@@ -93,6 +93,17 @@ export const WALK_ELBOW_BEND_MAX   = Math.PI * 0.42;          // rad — full be
 export const WALK_STANCE_KNEE_BEND = 0.22;                    // rad — stance-phase bend (~13°) at full amp
 export const WALK_SWING_KNEE_BEND  = 1.00;                    // rad — added at swing midpoint (~57°) at full amp
 
+// ── Rest (exhausted-recovery) pose ──────────────────────────
+// The upper torso wobbles in a small horizontal circle while legs
+// stay planted. REST_UPPER_SWAY is the radius (world units) of the
+// circle the neck traces — small enough that the figure reads as a
+// dazed wobble rather than a full body lean.
+export const REST_UPPER_SWAY    = 2.5;
+// Tired bent-knee stance — thighs slightly forward, shins slightly
+// back so the foot stays under the hip.
+export const REST_THIGH_FORWARD = 0.16;  // rad — thigh leaning forward (~9°)
+export const REST_SHIN_BACK     = -0.18; // rad — shin pulled back relative to thigh (knee bend ~19°)
+
 // ── Curve functions ──────────────────────────────────────────
 
 /**

@@ -551,7 +551,7 @@ const PUSH_STRIKE_TIMER = {
  *  `advanceKick`'s in-flight-lock contract. Also commits the pending
  *  push impulse to the victim at the strike tick, so the victim only
  *  moves on contact rather than on the windup frame. */
-function advancePush(p) {
+function advancePush(state, p) {
   if (p.pushTimer <= 0) return false;
   const prevTimer = p.pushTimer;
   p.pushTimer -= TICK_MS;
@@ -599,6 +599,19 @@ function advancePush(p) {
     p.pendingPushVictim = null;
     p.pendingPushVx = 0;
     p.pendingPushVy = 0;
+    if (state.recordEvents) {
+      // Impact point at the victim's head. Coordinates use the
+      // ball_bounce convention: x = world x, y = physics y,
+      // z = world height.
+      const f = state.field;
+      state.events.push({
+        type: 'push_contact',
+        x: victim.x + f.playerWidth / 2,
+        y: victim.y,
+        z: HEAD_CENTER_Z,
+        force: victim.reactForce,
+      });
+    }
   }
   return true;
 }
@@ -623,7 +636,7 @@ function applyAction(state, p, out) {
   if (advanceKick(state, p)) return;
   // Push cooldown decrements unconditionally so a push issued right
   // before a kick doesn't get frozen at max for the kick's duration.
-  if (advancePush(p)) return;
+  if (advancePush(state, p)) return;
 
   if (p.exhausted) { p.vx = 0; p.vy = 0; return; }
 

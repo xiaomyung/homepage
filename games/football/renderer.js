@@ -27,6 +27,7 @@ import {
   BALL_RADIUS,
   GOAL_POST_RADIUS,
   PLAYER_WIDTH,
+  MAX_PLAYER_SPEED,
   Z_STRETCH,
   STICKMAN_GLYPH_SIZE,
   STICKMAN_SHOULDER_OFY,
@@ -106,6 +107,26 @@ const PARTICLE_GRAVITY       = 0.28;
 const PARTICLE_GROUND_DRAG   = 0.45;
 // World-space radius of a new particle sphere, scaled down as it ages.
 const PARTICLE_VISUAL_RADIUS = 0.9;
+// Footstep burst — fires twice per walk cycle (one per planted foot).
+// Count + speed scale with the player's actual ground speed, so a
+// sprint kicks up noticeably more dust than a slow walk. The walk
+// cycle's phase advance also accelerates with speed, so faster
+// movement compounds into more bursts per second.
+const FOOTSTEP_MIN_SPEED   = 1.5;  // physics units / tick — gates idle/turn
+const FOOTSTEP_BASE_COUNT  = 1;
+const FOOTSTEP_FORCE_COUNT = 7;    // extra particles per unit speed01
+const FOOTSTEP_MAX_COUNT   = 8;
+const FOOTSTEP_SPEED       = 1.1;  // world units / frame at speed=1
+const FOOTSTEP_BACK_OFFSET = 4;    // spawn offset behind motion vector
+
+// Push-contact burst — fires when a punch lands on the victim. Bursts
+// outward from the impact point uniformly on a unit sphere (no preferred
+// axis) with a small upward bias so they arc before gravity drops them.
+const PUSH_CONTACT_BASE_COUNT  = 8;
+const PUSH_CONTACT_FORCE_COUNT = 14;   // extra particles per unit force
+const PUSH_CONTACT_MAX_COUNT   = 22;
+const PUSH_CONTACT_SPEED       = 1.6;  // world units / frame at force=1
+const PUSH_CONTACT_LIFT_BIAS   = 0.45; // adds to the up axis component
 // Goal-scored burst — much bigger and longer-lived than a bounce.
 // Particles spawn inside the mouth and fan outward toward the field.
 const GOAL_BURST_COUNT       = 42;
@@ -462,12 +483,54 @@ export class Renderer {
     for (let i = 0; i < STICKMAN_SPH_POOL; i++) this._mkSph();
     this._stickmanSphCursor = 0;
 
+    // "Dazed" stars that orbit the head when a player is resting
+    // (exhausted, regenerating stamina). Three stars per resting
+    // stickman, placed in a horizontal ring above the head with
+    // a per-frame phase offset so they spin around. The pool grows
+    // on demand so multi-player harnesses don't need a hard ceiling.
+    const starShape = new THREE.Shape();
+    {
+      const N = 5;
+      const outer = 1.6;
+      const inner = 0.7;
+      for (let i = 0; i < N * 2; i++) {
+        const r = (i % 2 === 0) ? outer : inner;
+        const theta = (i / (N * 2)) * Math.PI * 2 - Math.PI / 2;
+        const sx = Math.cos(theta) * r;
+        const sy = Math.sin(theta) * r;
+        if (i === 0) starShape.moveTo(sx, sy);
+        else starShape.lineTo(sx, sy);
+      }
+      starShape.closePath();
+    }
+    const starGeom = new THREE.ExtrudeGeometry(starShape, {
+      depth: 0.4, bevelEnabled: false, curveSegments: 1,
+    });
+    starGeom.translate(0, 0, -0.2); // centre on extrusion axis
+    this._staticGeometries.push(starGeom);
+    this._restStars = [];
+    this._mkRestStar = () => {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 1,
+      });
+      const mesh = new THREE.Mesh(starGeom, mat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      this._staticMaterials.push(mat);
+      this.scene.add(mesh);
+      this._restStars.push(mesh);
+    };
+    this._restStarCursor = 0;
+
     // Smoothed animation state per player (tilt, amplitude, phase, lastTick).
     // Keyed by the player state object so every stickman on this renderer
     // evolves its own pose without cross-talk. Tilt and amplitude are
     // low-pass filtered toward their speed-derived targets; phase is
     // accumulated with the current swing rate so rate changes never snap.
     this._animByPlayer = new WeakMap();
+    // Per-player previous walk-cycle swing value, used to detect
+    // sin(phase) zero-crossings (foot strikes) and spawn dust bursts.
+    this._lastFootSwing = new WeakMap();
 
     // Scratch buffers for per-frame IK solves; reused across both
     // players so the hot draw path never allocates.
@@ -586,6 +649,7 @@ export class Renderer {
     const prevPlayerShadowCursor = this._playerShadowCursor;
     const prevBallCursor         = this._ballCursor;
     const prevBallShadowCursor   = this._ballShadowCursor;
+    const prevRestStarCursor     = this._restStarCursor;
     this._stickmanTorsoCursor    = 0;
     this._stickmanUpperArmCursor = 0;
     this._stickmanLowerArmCursor = 0;
@@ -594,6 +658,7 @@ export class Renderer {
     this._playerShadowCursor     = 0;
     this._ballCursor             = 0;
     this._ballShadowCursor       = 0;
+    this._restStarCursor         = 0;
     // Per-player dead-ball flags. The harness may stamp each player
     // with `_scenePauseState` + `_sceneGoalScorer` + `_sceneWinner` so
     // multiple independent scenarios inside one composite render
@@ -633,6 +698,7 @@ export class Renderer {
     for (let i = this._stickmanLegCursor; i < prevLegCursor; i++) this._stickmanLeg[i].visible = false;
     for (let i = this._stickmanSphCursor; i < prevSphCursor; i++) this._stickmanSph[i].visible = false;
     for (let i = this._playerShadowCursor; i < prevPlayerShadowCursor; i++) this._playerShadows[i].visible = false;
+    for (let i = this._restStarCursor; i < prevRestStarCursor; i++) this._restStars[i].visible = false;
 
     // Balls — single-ball state.ball path is backward-compatible;
     // state.balls[] is the N-ball path for harnesses/testing.
@@ -680,6 +746,7 @@ export class Renderer {
     for (let i = 0; i < state.events.length; i++) {
       const ev = state.events[i];
       if (ev.type === 'ball_bounce') this._spawnBounceParticles(ev);
+      else if (ev.type === 'push_contact') this._spawnPushContactParticles(ev);
       else if (ev.type === 'goal') this._spawnGoalBurst(ev.scorer);
     }
     this._stepParticles();
@@ -1326,6 +1393,15 @@ export class Renderer {
     this._placeLeg(pose.lHipX, pose.hipBaseY, pose.lHipZ, pose.lLegUpper, pose.lLegLower, pose.forwardX, pose.forwardZ, color);
     this._placeLeg(pose.rHipX, pose.hipBaseY, pose.rHipZ, pose.rLegUpper, pose.rLegLower, pose.forwardX, pose.forwardZ, color);
 
+    // 5. Footstep dust on walk-cycle zero crossings, gated on speed.
+    //    Pure cosmetic — never feeds back into physics or anim state.
+    this._maybeFootstepBurst(player, animSnap);
+
+    // 6. Dazed stars orbiting the head while resting (exhausted).
+    //    Hidden via the cursor sweep when rest factor is 0.
+    if (animSnap.rest > 0.01) {
+      this._placeRestStars(pose, animSnap);
+    }
   }
 
   /** Orient `mesh` so its local +y axis points from A toward B and
@@ -1367,6 +1443,40 @@ export class Renderer {
     shadow.position.set(player.x + PLAYER_WIDTH / 2, SHADOW_Y, player.y * Z_STRETCH);
     shadow.scale.set(PLAYER_SHADOW_RADIUS * 2, PLAYER_SHADOW_RADIUS * 2, 1);
     shadow.visible = true;
+  }
+
+  /** Place 3 dazed stars in a horizontal ring above the head, rotating
+   *  around the player's vertical axis. Phase comes from `animSnap.restPhase`
+   *  so the ring spins at the same rate as the body, but in the opposite
+   *  direction so it visually counter-rotates and reads as "dizziness".
+   *  Opacity = animSnap.rest, so stars fade in/out with the LPF factor. */
+  _placeRestStars(pose, animSnap) {
+    const ringRadius = STICKMAN_HEAD_RADIUS * 1.55;
+    const ringHeight = STICKMAN_HEAD_RADIUS * 0.85;  // above the head
+    const cy = pose.headY + ringHeight;
+    const opacity = Math.min(1, animSnap.rest);
+    const scale = 0.6 + 0.4 * opacity;
+    // Counter-spin: stars orbit faster than the body and the opposite
+    // way, so a wobble of one is set against a wobble of the other —
+    // exaggerates the dizzy read.
+    const spin = -animSnap.restPhase * 1.6;
+    for (let i = 0; i < 3; i++) {
+      const idx = this._restStarCursor++;
+      while (this._restStars.length <= idx) this._mkRestStar();
+      const mesh = this._restStars[idx];
+      const theta = spin + (i * (Math.PI * 2 / 3));
+      mesh.position.set(
+        pose.headX + Math.cos(theta) * ringRadius,
+        cy + Math.sin(theta * 1.7) * (STICKMAN_HEAD_RADIUS * 0.18),
+        pose.headZ + Math.sin(theta) * ringRadius,
+      );
+      // Each star also tumbles around its own axis so it's not a flat
+      // billboard — gives the metal "twinkle" feel.
+      mesh.rotation.set(theta * 0.6, theta, 0);
+      mesh.scale.set(scale, scale, scale);
+      mesh.material.opacity = opacity;
+      mesh.visible = true;
+    }
   }
 
   /** Pull a torso capsule triple (outline + fill + disc) from the
@@ -1577,6 +1687,115 @@ export class Renderer {
     }
   }
 
+  /** Detect a foot-plant on the walk cycle (sin(phase) zero-crossing)
+   *  and spawn a dust burst when the player is moving. Idle / kicking /
+   *  pushing / celebrating stickmen are gated out by the speed floor —
+   *  they may have phase noise but it doesn't read as walking. */
+  _maybeFootstepBurst(player, snap) {
+    const speed = Math.hypot(player.vx || 0, (player.vy || 0) * Z_STRETCH);
+    const swing = snap.swing;
+    const prev = this._lastFootSwing.get(player);
+    this._lastFootSwing.set(player, swing);
+    if (prev === undefined) return;
+    if (speed < FOOTSTEP_MIN_SPEED) return;
+    // Suppress while kicking, pushing, or in dead-ball anims — those
+    // have their own poses and a footstep burst would look out of place.
+    if (player.kick && player.kick.active) return;
+    if (player.pushTimer > 0) return;
+    // Zero-crossing of sin(phase) → one foot just touched ground.
+    if ((prev <= 0) === (swing <= 0)) return;
+    this._spawnFootstepParticles(player, speed);
+  }
+
+  /** Spawn the footstep dust burst. Count + outward speed scale with
+   *  the player's normalized speed (vs MAX_PLAYER_SPEED). Particles
+   *  spawn slightly behind the motion vector at ground level and
+   *  burst mostly upward + outward — matches the "kicked-up dust"
+   *  look of the ball-bounce particles. */
+  _spawnFootstepParticles(player, speed) {
+    const speed01 = Math.min(1, speed / MAX_PLAYER_SPEED);
+    const count = Math.min(
+      FOOTSTEP_MAX_COUNT,
+      Math.floor(FOOTSTEP_BASE_COUNT + speed01 * FOOTSTEP_FORCE_COUNT),
+    );
+    if (count <= 0) return;
+    const burstSpeed = speed01 * FOOTSTEP_SPEED;
+
+    // Motion direction in world xz (player.vy is physics-y so scale
+    // by Z_STRETCH for world-space). Spawn slightly behind the player
+    // so dust trails the planted foot.
+    const wvx = player.vx || 0;
+    const wvz = (player.vy || 0) * Z_STRETCH;
+    const wmag = Math.sqrt(wvx * wvx + wvz * wvz) || 1;
+    const dirX = wvx / wmag;
+    const dirZ = wvz / wmag;
+    const spawnX = player.x + PLAYER_WIDTH / 2 - dirX * FOOTSTEP_BACK_OFFSET;
+    const spawnY = player.y - (dirZ / Z_STRETCH) * FOOTSTEP_BACK_OFFSET;
+
+    for (let i = 0; i < count; i++) {
+      const p = this._particles[this._particleNext];
+      this._particleNext = (this._particleNext + 1) % this._particles.length;
+
+      p.x = spawnX;
+      p.y = spawnY;
+      p.z = 0;
+
+      // Mostly upward kick with a little lateral spread + a backward
+      // bias along the motion axis. r3 randomizes magnitude so the
+      // burst isn't a uniform shell.
+      const r1 = (Math.random() - 0.5) * 2;
+      const r2 = (Math.random() - 0.5) * 2;
+      const r3 = Math.random();
+      p.vx = (-dirX * (0.4 + r3 * 0.4) + r1 * 0.4) * burstSpeed;
+      p.vy = (-(dirZ / Z_STRETCH) * (0.4 + r3 * 0.4) + r2 * 0.4) * burstSpeed;
+      p.vz = (0.6 + r3 * 0.5) * burstSpeed;
+
+      p.maxLife = PARTICLE_LIFE_BASE + Math.floor(Math.random() * PARTICLE_LIFE_VARIANCE);
+      p.life = p.maxLife;
+    }
+  }
+
+  /** Spawn a burst of dust at the punch impact point. Particles fly
+   *  outward in all directions (uniform unit-sphere) with a mild
+   *  upward bias so they arc visibly before gravity pulls them down.
+   *  Count + speed scale with `ev.force` (0..1). */
+  _spawnPushContactParticles(ev) {
+    const force = Math.max(0.2, ev.force);
+    const count = Math.min(
+      PUSH_CONTACT_MAX_COUNT,
+      Math.floor(PUSH_CONTACT_BASE_COUNT + force * PUSH_CONTACT_FORCE_COUNT),
+    );
+    const speed = force * PUSH_CONTACT_SPEED;
+    for (let i = 0; i < count; i++) {
+      const p = this._particles[this._particleNext];
+      this._particleNext = (this._particleNext + 1) % this._particles.length;
+
+      p.x = ev.x;
+      p.y = ev.y;
+      p.z = ev.z;
+
+      // Marsaglia uniform-sphere direction.
+      let u1, u2, s;
+      do {
+        u1 = Math.random() * 2 - 1;
+        u2 = Math.random() * 2 - 1;
+        s = u1 * u1 + u2 * u2;
+      } while (s >= 1 || s === 0);
+      const factor = Math.sqrt(1 - s);
+      const dirX  = 2 * u1 * factor;
+      const dirYp = 2 * u2 * factor;     // physics-y axis (depth)
+      const dirZu = 1 - 2 * s;           // vertical (up)
+
+      const mag = speed * (0.4 + 0.6 * Math.random());
+      p.vx = dirX  * mag;
+      p.vy = dirYp * mag;
+      p.vz = (dirZu + PUSH_CONTACT_LIFT_BIAS) * mag;
+
+      p.maxLife = PARTICLE_LIFE_BASE + Math.floor(Math.random() * PARTICLE_LIFE_VARIANCE);
+      p.life = p.maxLife;
+    }
+  }
+
   /** Spawn a big burst of particles when a goal is scored. Spawns inside
    *  the scored goal's mouth across the full mouth width (y axis) and
    *  shoots outward toward the field (+x for the LEFT goal, -x for the
@@ -1710,38 +1929,88 @@ function staminaColorInto(out, t) {
 }
 
 /**
- * Build a procedural CanvasTexture for the soccer ball — off-white
- * base with ~12 dark circles placed at icosahedron-vertex (u, v)
- * coordinates so the pattern roughly tiles the sphere the way a
- * real football's panels do. Used for rolling-spin visibility; the
- * exact icosahedron distortion doesn't matter, only that rotation
- * is readable at a glance.
+ * Procedural soccer-ball texture. Per-pixel computation: each
+ * texel's (u, v) is mapped to a 3D direction on the unit sphere,
+ * and we colour it based on the angular distance to the nearest
+ * icosahedron vertex. This places ~12 uniform-looking dark panels
+ * on the rendered sphere — the equivalent of a "Telstar" pattern's
+ * 12 black pentagons — without the equirectangular smearing that
+ * a fixed-pixel-radius painter produced near the poles.
+ *
+ * Spot edge is softened by a thin band where the angle is between
+ * SPOT_INNER and SPOT_OUTER, giving subpixel anti-aliasing without
+ * needing supersampling.
  */
 function buildBallTexture() {
+  const W = 512, H = 256;
   const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 256;
+  canvas.width = W;
+  canvas.height = H;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#ececec';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#222222';
-  // 12 icosahedron-ish positions in UV space: 2 poles + 5 upper ring
-  // + 5 lower ring. Equirectangular mapping distorts near the poles
-  // but the rolling spin stays clearly visible.
-  const verts = [
-    [0.50, 0.97],                    // north pole
-    [0.50, 0.03],                    // south pole
-    [0.05, 0.70], [0.25, 0.70], [0.45, 0.70], [0.65, 0.70], [0.85, 0.70],
-    [0.15, 0.30], [0.35, 0.30], [0.55, 0.30], [0.75, 0.30], [0.95, 0.30],
+
+  // 12 icosahedron vertices on the unit sphere. The standard
+  // golden-ratio coordinates form a regular icosahedron.
+  const t = (1 + Math.sqrt(5)) / 2;
+  const raw = [
+    [-1,  t,  0], [ 1,  t,  0], [-1, -t,  0], [ 1, -t,  0],
+    [ 0, -1,  t], [ 0,  1,  t], [ 0, -1, -t], [ 0,  1, -t],
+    [ t,  0, -1], [ t,  0,  1], [-t,  0, -1], [-t,  0,  1],
   ];
-  const r = 30;
-  for (const [u, v] of verts) {
-    const x = u * canvas.width;
-    const y = (1 - v) * canvas.height;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
+  const verts = raw.map(([x, y, z]) => {
+    const len = Math.hypot(x, y, z);
+    return [x / len, y / len, z / len];
+  });
+
+  // Spot geometry: angular radius (in radians from spot centre).
+  // ~22° matches the apparent size of a Telstar pentagon. The
+  // anti-alias band is a few degrees wider than the inner edge.
+  const SPOT_INNER = Math.cos(0.32);
+  const SPOT_OUTER = Math.cos(0.36);
+  const BG = 245, FG = 26;  // off-white base, near-black spots
+
+  const img = ctx.createImageData(W, H);
+  const data = img.data;
+  for (let py = 0; py < H; py++) {
+    // v = 0 (top of canvas) → north pole; v = 1 (bottom) → south pole.
+    // three.js's default flipY=true on CanvasTexture flips this back
+    // when sampling so the geometry's UVs read correctly.
+    const v = py / (H - 1);
+    const lat = (0.5 - v) * Math.PI;
+    const cosLat = Math.cos(lat);
+    const sinLat = Math.sin(lat);
+    for (let px = 0; px < W; px++) {
+      const u = px / W;
+      const lon = (u - 0.5) * 2 * Math.PI;
+      const dx = cosLat * Math.cos(lon);
+      const dy = sinLat;
+      const dz = cosLat * Math.sin(lon);
+      // Find max dot product with the 12 vertex directions →
+      // smallest angular distance to any spot centre.
+      let bestDot = -1;
+      for (let k = 0; k < 12; k++) {
+        const e = verts[k];
+        const d = dx * e[0] + dy * e[1] + dz * e[2];
+        if (d > bestDot) bestDot = d;
+      }
+      let c;
+      if (bestDot >= SPOT_INNER) {
+        c = FG;
+      } else if (bestDot >= SPOT_OUTER) {
+        // anti-alias band
+        const k = (bestDot - SPOT_OUTER) / (SPOT_INNER - SPOT_OUTER);
+        c = Math.round(BG + (FG - BG) * k);
+      } else {
+        c = BG;
+      }
+      const i = (py * W + px) * 4;
+      data[i] = c;
+      data[i + 1] = c;
+      data[i + 2] = c;
+      data[i + 3] = 255;
+    }
   }
+  ctx.putImageData(img, 0, 0);
+
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.ClampToEdgeWrapping;

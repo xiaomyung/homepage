@@ -49,14 +49,15 @@ const ROUTE_PREFIX = '/api/football';
 const PORT = Number(process.env.FOOTBALL_PORT || 5050);
 const HOST = '127.0.0.1';
 
-// Showcase cadence. Half the showcases are the top brain playing the
-// fallback teacher — that's the visually clearest match (the user
-// sees the evolved policy competing against a known baseline). The
-// other half sample from the TOP 10 brains for variety — not the
-// full 50, because lower-ranked brains often have polarised
-// strategies that clash into 0-0 stalemates or 30-0 blowouts when
-// paired with each other, which reads as "the game is broken"
-// despite the training working fine.
+// Showcase cadence. Half the showcases prefer fallback-mode replays
+// (the evolved policy vs the known baseline reads as the visually
+// clearest match); the other half prefer brain-vs-brain replays.
+// Both halves are drawn from a recent-decisive-match ring buffer.
+// Only the cold-start fallback in `pickShowcase` actually selects
+// by current top-brain ranking, restricted to the top 10 because
+// lower-ranked brains tend to clash into 0-0 stalemates or 30-0
+// blowouts that read as "the game is broken" despite training
+// working fine.
 const SHOWCASE_FALLBACK_EVERY_N = 2;
 const SHOWCASE_TOP_POOL_SIZE    = 10;
 
@@ -209,10 +210,10 @@ const state = {
 // losing side never contested" cutoff.
 const BLOWOUT_THRESHOLD = 10;
 
-// Cap on the recent-interesting-match ring buffer. 200 entries × ~32
-// bytes = ~6 KB. Enough for good showcase variety without holding
-// stale pairings forever. Cleared on breed because brain ids are
-// reused with new weights across generations.
+// Cap on the recent-interesting-match ring buffer. Each entry
+// carries its own weights snapshots for both players (~24 KB
+// pair × 200 entries ≈ 4–5 MB) so replays remain bit-deterministic
+// across breeds — the buffer is intentionally NOT cleared on breed.
 const INTERESTING_CAP = 200;
 
 // Gap between consecutive /results POSTs beyond which the broker
@@ -597,12 +598,13 @@ function tryBreed() {
   // reflects CURRENT training quality (like `cur top` / `cur avg`),
   // not a lifetime-since-reset average dominated by early bad gens.
   state.matchCounts = freshMatchCounts();
-  // interestingMatches intentionally NOT cleared here — entries are
-  // tagged with their generation and pickInterestingReplay filters
-  // on current gen. That lets the showcase keep replaying last-gen
-  // matches for the first ~1 s of the new gen while the new
-  // generation's matches fill in (otherwise we got a visible
-  // "no seed → fallback to blind picker" blackout every breed).
+  // interestingMatches intentionally NOT cleared here — each entry
+  // carries its own weights snapshots so replays remain bit-
+  // deterministic even after the population has been bred. That lets
+  // the showcase keep replaying last-gen matches for the first ~1 s
+  // of the new gen until the new generation's matches fill in
+  // (otherwise we got a visible "no seed → fallback to blind picker"
+  // blackout every breed).
   schedulePersist();
   return true;
 }
@@ -638,7 +640,7 @@ function schedulePersist() {
 // Runtime can accumulate for long stretches between breeds (e.g. if
 // the population is stuck, or after all brains are already past
 // breeding thresholds and tryBreed gates on nothing). schedulePersist
-// only fires when a breed is actually pending, so we also run an
+// only fires after a breed has just completed, so we also run an
 // unconditional runtime flush every RUNTIME_PERSIST_MS to bound the
 // loss window on a crash during long flat periods.
 const RUNTIME_PERSIST_MS = 30_000;
@@ -857,11 +859,12 @@ function readJsonBody(req) {
 // ── Route handlers ────────────────────────────────────────────
 
 /** Serve the full population snapshot — one brain per entry with
- *  pre-serialized weights JSON fragments. Called by clients on worker
- *  start and on generation drift (detected via handleMatchup's
- *  generation counter). Response size scales with population_size,
- *  not per-matchup traffic: 50 × 12 KB ≈ 600 KB fetched ~once per
- *  generation instead of per matchup. */
+ *  pre-serialized weights JSON fragments. Called by clients on
+ *  worker start and on generation drift (detected via the
+ *  `generation` field echoed by `/results` responses; see
+ *  training-orchestrator.js). Response size scales with
+ *  population_size, not per-matchup traffic: 50 × 12 KB ≈ 600 KB
+ *  fetched ~once per generation. */
 function handlePopulation(req, res) {
   const pop = state.population;
   const brainParts = new Array(pop.length);
@@ -899,13 +902,16 @@ async function handleResults(req, res) {
   } else {
     return json(res, 400, { error: 'expected results array or envelope' });
   }
-  // Stale-generation results are silently dropped via recordResult's
-  // id-miss guard (broker's population has new ids after a breed).
-  // The generation hint decides whether the result's brain weights
-  // still match the current population: if the client was on an
-  // older gen at match time, the weights we'd snapshot now are a
-  // different set than the ones that produced the score, so replay
-  // would be non-deterministic. Fitness stats still get counted
+  // Stale-generation results are NOT dropped here — recordResult's
+  // id-miss guard only fires when the brain id is out of range
+  // (e.g. after a population_size shrink). After a breed, brain
+  // ids 0..49 are reused with new weights, so a stale-gen result
+  // still gets recorded against the new-gen brain at the same id.
+  // We accept this small fitness-stat drift (gen-N vs gen-N+1 are
+  // roughly fungible). The replay buffer must NOT take stale
+  // entries though — the broker's current weights snapshot
+  // wouldn't match the weights that produced the score. Fitness
+  // stats still get counted
   // (goal-diff on gen-N and gen-N+1 brains is roughly fungible),
   // but the replay buffer only accepts fresh-gen results.
   const isFresh = clientGen === null || clientGen === state.generation;
@@ -1154,7 +1160,10 @@ async function handleReset(req, res) {
 
 async function dispatch(req, res) {
   const url = req.url || '';
-  // Strip query string; none of our routes use it, but be defensive.
+  // Strip the query string before matching the route. /reset and
+  // /history do use query strings (?hard=1, ?points=N), but the
+  // handlers re-parse req.url themselves; the dispatcher only
+  // needs the path.
   const qi = url.indexOf('?');
   const pathname = qi >= 0 ? url.slice(0, qi) : url;
   const key = `${req.method} ${pathname}`;

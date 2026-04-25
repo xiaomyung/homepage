@@ -1,29 +1,35 @@
-// Keyframe data per animation state.
+// Keyframe data per animation sub-stage.
 //
-// Each top-level entry corresponds to one FSM state defined in
-// state.js. Inside each state:
-//   ikGroups  — optional list of IK claims (see poses.js). Channels
-//               listed in an ikGroup are written by the solver;
-//               their keyframe arrays are ignored in that state.
+// Each top-level entry is a kick / airkick / push sub-stage
+// (WIND / STRIKE / RECOVER / LEAP / LAND) — finer granularity than
+// the state.js FSM labels (KICK_GROUND / KICK_AIR / PUSH).
+// Inside each entry:
+//   ikGroups  — optional list of IK claims; future use only. The
+//               composer in poses.js currently ignores this and
+//               calls kickLegPose / pushArmPose directly.
 //   <channel> — keyframe arrays, one per keyframed (or scaled)
 //               channel. Channels not listed fall through to the
 //               `default` in channels.js.
 //
-// Hand-tune via debug/test-renderer.html's keyframe editor, then
-// "Copy as code" replaces the relevant block verbatim.
+// THIS FILE IS DEAD DATA TODAY. composeStickmanPose still evaluates
+// curves.js polynomials directly; keyframes.js exists as authoring
+// scaffolding for a future visual editor. Keep values in sync with
+// curves.js — animation-keyframes.test.mjs asserts the boundary
+// continuity within ±2% over 200 samples.
 
-// ── Constants mirrored from renderer.js / physics.js ──────────
-// Kept local so this file stays independent of the renderer. Update
-// alongside the source constants if they're ever retuned.
+// ── Constants mirrored from animation/curves.js ───────────────
+// Kept local so this file stays import-cycle-free. Resync if the
+// curves.js values drift; the boundary-continuity test will catch
+// any divergence.
 const STICKMAN_GLYPH_SIZE = 22;
-const KICK_CROUCH_DEPTH   = 0.12 * STICKMAN_GLYPH_SIZE;
+const KICK_CROUCH_DEPTH   = 0.18 * STICKMAN_GLYPH_SIZE;
 const PUSH_CROUCH_DEPTH   = 0.30 * STICKMAN_GLYPH_SIZE;
 const PUSH_HOP_DIST       = 0.40 * STICKMAN_GLYPH_SIZE;
-const KICK_BACK_TILT      = 0.12;
-const KICK_FWD_TILT       = 0.22;
+const KICK_BACK_TILT      = 0.18;
+const KICK_FWD_TILT       = 0.30;
 const KICK_ARM_SWING      = Math.PI * 0.45;
 const KICK_HIP_TWIST_MAX  = Math.PI * 0.11;
-const KICK_SUPPORT_CROUCH = 0.2;
+const KICK_SUPPORT_CROUCH = 0.35;
 const AIRKICK_BACK_TILT   = 0.55;
 const PUSH_BACK_TILT      = 0.28;
 const PUSH_FWD_TILT       = 0.42;
@@ -117,8 +123,10 @@ export const KEYFRAMES = {
     ],
     torsoTilt: [{ t: 0, v: -PUSH_BACK_TILT }, { t: 1, v: +PUSH_FWD_TILT }],
     bodyY:     [{ t: 0, v: -PUSH_CROUCH_DEPTH }, { t: 1, v: 0 }],
-    // Whole-body hop along heading — accelerates forward during the
-    // snap, read by the renderer as +PUSH_HOP_DIST in forward-space.
+    // HACK — overload the hipTwist channel to carry the forward hop
+    // distance until a dedicated bodyHop channel is added. channels.js
+    // declares hipTwist as radians, so this is a deliberate type
+    // mismatch parked here for the future composer migration.
     hipTwist:  [{ t: 0, v: 0 }, { t: 1, v: +PUSH_HOP_DIST }],
   },
   PUSH_RECOVER: {
@@ -126,9 +134,10 @@ export const KEYFRAMES = {
     hipTwist:  [{ t: 0, v: +PUSH_HOP_DIST }, { t: 1, v: 0 }],
   },
 
-  // ─── Locomotion / dead-ball / misc — populated in step 8 ────
-  // IDLE / WALK / RUN / TURN / STOP / CELEBRATE / CELEBRATE_IDLE /
-  // MATCHEND_WIN / MATCHEND_LOSS / REPOSITION / WAITING
-  // Empty for now — existing locomotion / celebrate code paths in
-  // renderer.js still drive those until step 6's FSM refactor.
+  // ─── Locomotion / dead-ball / misc — not yet authored ───────
+  // IDLE / WALK / RUN / TURN / STOP / CELEBRATE / GRIEVE /
+  // MATCHEND_WIN / MATCHEND_LOSE / REPOSITION / WAITING / EXHAUSTED
+  // Locomotion + dead-ball are still driven by curves + smoothed
+  // factors in animation/poses.js; migrating each to a keyframe
+  // block is a future phase.
 };

@@ -113,10 +113,11 @@ const MATCH_LOSE_TILT      =  0.30;   // rad — moderate forward slump
 const MATCH_LOSE_ARM_UPPER = -0.25;   // arms slightly behind vertical — hanging limp
 
 // Walk-cycle base shape (pure-locomotion arms/legs).
-// armSwing: shoulder rotates a bit less than the hip — elbows close
-// the rest of the gap. armSwingBias: shifts the swing centre BACKWARD
-// so the back-swing reaches further than the forward-swing, matching
-// how runners' arms sit slightly behind the torso line at neutral.
+// armSwing/legSwing: shoulder and hip swing coefficients; the
+// elbow bend below adds further hand excursion on top.
+// armSwingBias: shifts the arm-swing centre BACKWARD so the back-
+// swing reaches further than the forward-swing, matching how
+// runners' arms sit slightly behind the torso line at neutral.
 // bobFrac: vertical bob magnitude as a fraction of GLYPH_SIZE.
 const WALK_ARM_SWING_COEF = 0.72;
 const WALK_LEG_SWING_COEF = 0.7;
@@ -374,8 +375,9 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   const upperTilt = walkTilt + pushTiltOffset + kickTiltOffset + stopTiltOffset + matchLoseTiltOffset + reactBodyTilt;
   const tiltC = Math.cos(upperTilt);
   const tiltS = Math.sin(upperTilt);
-  // Lateral roll adds a sideways offset to the neck/head — small-angle
-  // approximation is safe at these magnitudes (≤0.45 rad).
+  // Lateral roll: the neck/head lateral offset uses the exact
+  // sin(roll); we drop the cos(roll) factor on the FORWARD offset,
+  // a few-percent error even at full hook roll (~0.80 rad).
   const rollS = Math.sin(reactBodyRoll);
 
   const hipBaseY  = STICKMAN_LIMB_FULL_H + bob * STICKMAN_GLYPH_SIZE + jumpY + airLift - turnHipDip - celebHipDrop + reactHipLift;
@@ -416,12 +418,11 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   const lHipZ = baseZ - twistedRightZ * STICKMAN_HIP_OFX;
 
   // ── Walk swing base (arms contralateral, legs contralateral) ─
-  // Arm coefficient slightly under the leg coefficient — real
-  // runners rotate at the shoulder a bit less than at the hip,
-  // and the elbow bend below adds some hand excursion on top.
-  // The swing centre is biased BACKWARD so the back-swing reaches
-  // further than the forward-swing, matching how runners' arms
-  // sit slightly behind the torso line at neutral.
+  // Shoulder + hip swing coefficients are close in magnitude; the
+  // elbow bend below adds further hand excursion on top of the
+  // shoulder swing. The arm-swing centre is biased BACKWARD so the
+  // back-swing reaches further than the forward-swing, matching
+  // how runners' arms sit slightly behind the torso line at neutral.
   const armSwing = swing * WALK_ARM_SWING_COEF * amplitude;
   const legSwing = -swing * WALK_LEG_SWING_COEF * amplitude;
   const armSwingBias = WALK_ARM_SWING_BIAS * amplitude;  // ~-10° shift at full amp
@@ -663,9 +664,9 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     rightLowerArmAngle = forearmAngleFor(rightUpperArmAngle);
   }
 
-  // Push override: striking arm → IK to player.pushTarget via the
-  // variant-specific scripted trajectory. Only overrides the
-  // striking side; the other arm keeps its cosmetic swing.
+  // Push override: striking arm runs the variant-specific scripted
+  // (keyframe-blended) trajectory via pushArmPose. Only overrides
+  // the striking side; the other arm keeps its cosmetic swing.
   const shoulderY = upperHipY + torsoH * tiltC * Math.cos(reactBodyRoll);
   if (pushing > 0 && celeb < LPF_DEAD_ZONE) {
     pushArmPose(player, scratchPushPose);
@@ -786,7 +787,8 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     pose.rArmLower    = rightLowerArmAngle * grieveInv +  GRIEVE_ARM_LOWER  * grieve;
     pose.rArmUpperYaw = rightUpperYaw      * grieveInv + (-GRIEVE_ARM_UPPER_YAW) * grieve;
     pose.rArmLowerYaw = rightLowerYaw      * grieveInv + (+GRIEVE_ARM_LOWER_YAW) * grieve;
-    // Kneeling legs — thighs forward, shins straight down tucked under.
+    // Kneeling legs — thighs tilted forward (+30°), shins horizontal
+    // backward (parallel to ground): the figure rests on knees + shins.
     pose.lLegUpper = leftUpperAngle  * grieveInv + GRIEVE_LEG_UPPER * grieve;
     pose.lLegLower = leftLowerAngle  * grieveInv + GRIEVE_LEG_LOWER * grieve;
     pose.rLegUpper = rightUpperAngle * grieveInv + GRIEVE_LEG_UPPER * grieve;

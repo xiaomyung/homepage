@@ -58,10 +58,9 @@ const STICKMAN_TORSO_FILL_RADIUS = STICKMAN_TORSO_RADIUS - STICKMAN_TORSO_SHELL_
 // shaft radius so they read as joint detail, not a growth.
 const STICKMAN_KNEE_RADIUS  = STICKMAN_LEG_RADIUS * 0.92;
 const STICKMAN_ELBOW_RADIUS = STICKMAN_LOWER_ARM_RADIUS * 0.92;
-// Sphere pool: 1 head + 2 elbows + 2 knees per stickman × 2 stickmen = 10
-// for upper-body, plus 2 knees per stickman × 2 stickmen = 4 for
-// knees, plus a spare. (Torso and limb pools are sized inline
-// alongside their geometries.)
+// Sphere pool: 1 head + 2 elbows + 2 knees = 5 per stickman × 2
+// stickmen = 10, plus 2 spare = 12. (Torso and limb pools are sized
+// inline alongside their geometries.)
 const STICKMAN_SPH_POOL     = 12;
 const TWO_PI = Math.PI * 2;
 
@@ -163,7 +162,7 @@ const SHADOW_FRAGMENT_SHADER = /* glsl */ `
     gl_FragColor = vec4(0.22, 0.22, 0.24, a);
   }
 `;
-const PLAYER_SHADOW_RADIUS = 12; // world units — fits under stickman glyph
+const PLAYER_SHADOW_RADIUS = 12; // world units — fits under stickman silhouette
 const SHADOW_ALPHA_BASE    = 0.55;
 const SHADOW_Y             = 0.2; // tiny offset above ground to avoid z-fight with field lines
 
@@ -220,11 +219,12 @@ export class Renderer {
     this.scene.add(fill);
 
     // Dedicated ball mesh: a real 3D sphere in world space at
-    // (ball.x, ball.z, ball.y * Z_STRETCH). Physics collision uses
-    // BALL_RADIUS; visual sphere is larger for readability. A
-    // procedurally-generated CanvasTexture paints ~12 dark panels
-    // at icosahedron-vertex positions so the rotation (applied from
-    // the ball's velocity each frame) is visible at a glance.
+    // (ball.x, ball.z, ball.y * Z_STRETCH). Visual radius equals
+    // BALL_RADIUS so the rendered sphere and the collision envelope
+    // can't drift apart. A procedurally-generated CanvasTexture
+    // paints ~12 dark panels at icosahedron-vertex positions so the
+    // rotation (applied from the ball's velocity each frame) is
+    // visible at a glance.
     const ballGeom = new THREE.SphereGeometry(1, 24, 16);
     const ballMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
@@ -324,14 +324,14 @@ export class Renderer {
     const torsoFillBodyLen = torsoBodyLen;
     // Arms split at the elbow — upper arm is 15% thicker than the
     // forearm. Both halves have body_len = UPPER_ARM − 2·radius so
-    // the overlapping caps at the elbow line up with the (larger)
-    // elbow sphere the joint draws at that point.
+    // the overlapping caps at the elbow meet at the same world point
+    // as the (slightly-undersized) elbow sphere drawn there.
     const upperArmBodyLen = STICKMAN_UPPER_ARM - 2 * STICKMAN_UPPER_ARM_RADIUS;
     const lowerArmBodyLen = STICKMAN_LOWER_ARM - 2 * STICKMAN_LOWER_ARM_RADIUS;
     // Leg is drawn as TWO half-length capsules meeting at the knee,
     // so the mesh geometry's span is UPPER_LEG (= LOWER_LEG), not the
-    // full limb height. Overlapping hemispherical caps at the knee
-    // read as a natural joint without a separate knee sphere.
+    // full limb height. The knee sphere drawn over the join hides
+    // any seam from non-collinear bend angles.
     const halfLegBodyLen = STICKMAN_UPPER_LEG - 2 * STICKMAN_LEG_RADIUS;
     const stickmanTorsoGeom      = new THREE.CapsuleGeometry(STICKMAN_TORSO_RADIUS,      torsoBodyLen,     4, 12);
     const stickmanTorsoFillGeom  = new THREE.CapsuleGeometry(STICKMAN_TORSO_FILL_RADIUS, torsoFillBodyLen, 4, 12);
@@ -455,7 +455,7 @@ export class Renderer {
     this._stickmanLowerArmCursor = 0;
     this._stickmanLegCursor = 0;
 
-    // Stickman sphere pool — used for heads, fists, elbows, knees.
+    // Stickman sphere pool — used for heads, elbows, knees.
     // One shared unit sphere geometry, per-mesh Lambert material.
     const stickmanSph = new THREE.SphereGeometry(1, 14, 10);
     this._staticGeometries.push(stickmanSph);
@@ -511,11 +511,11 @@ export class Renderer {
     };
     this._restStarCursor = 0;
 
-    // Smoothed animation state per player (tilt, amplitude, phase, lastTick).
-    // Keyed by the player state object so every stickman on this renderer
-    // evolves its own pose without cross-talk. Tilt and amplitude are
-    // low-pass filtered toward their speed-derived targets; phase is
-    // accumulated with the current swing rate so rate changes never snap.
+    // Smoothed animation state per player (LPF factors, phase
+    // accumulators, heading history). Keyed by the player state
+    // object so every stickman on this renderer evolves its own pose
+    // without cross-talk. See animation/state.js::createAnimState
+    // for the full schema.
     this._animByPlayer = new WeakMap();
     // Per-player previous walk-cycle swing value, used to detect
     // sin(phase) zero-crossings (foot strikes) and spawn dust bursts.
@@ -1337,22 +1337,18 @@ export class Renderer {
 
   /* ── Stickman ────────────────────────────────────────────
    *
-   * 3D pipe figure: torso + two arms + two legs as thin cylinders,
-   * head + fists as spheres, all positioned in world space. The
-   * animation pipeline is identical to the previous billboard
-   * version — walk/push/celebrate/tilt/amplitude/phase are all
-   * smoothed the same way — only the render primitive changed.
+   * 3D capsule figure: torso + two arms + two legs as fixed-length
+   * CapsuleGeometry, head + elbows + knees as spheres, all
+   * positioned in world space. Per-frame state advances via
+   * advanceAnimState (animation/state.js); pose layout is built by
+   * composeStickmanPose (animation/poses.js); this method only
+   * places the meshes.
    *
-   * Local frame for each stickman:
-   *   +x = forward (toward opposing goal; facing = +1 for left
-   *        team, -1 for right)
-   *   +y = up
-   *   +z = lateral right of the body
-   *
-   * Limbs swing in the (forward, up) plane: angle 0 hangs straight
-   * down, angle π/2 points forward, angle π points straight up
-   * (celebration). World positions are produced by scaling local.x
-   * by `facing` and adding the player's world base (x, 0, z).
+   * Limbs swing in a (forward, up) plane where (forwardX, forwardZ)
+   * is the player's heading-derived world-xz unit vector supplied
+   * by the pose layer. Per-segment angle conventions: 0 hangs
+   * straight down, +π/2 points forward, +π points straight up
+   * (celebration).
    */
   _addStickman(player, color, tick, isCelebrating, isGrieving = false, isReposition = false, isMatchendWin = false, isMatchendLose = false) {
     // 1. Fetch / init the smoothed animation state for this player.
@@ -1435,8 +1431,8 @@ export class Renderer {
 
   /** Place 3 dazed stars in a horizontal ring above the head, rotating
    *  around the player's vertical axis. Phase comes from `animSnap.restPhase`
-   *  so the ring spins at the same rate as the body, but in the opposite
-   *  direction so it visually counter-rotates and reads as "dizziness".
+   *  but is multiplied by -1.6 so the ring counter-rotates 60% faster
+   *  than the body's own wobble, exaggerating the dizzy read.
    *  Opacity = animSnap.rest, so stars fade in/out with the LPF factor. */
   _placeRestStars(pose, animSnap) {
     const ringRadius = STICKMAN_HEAD_RADIUS * 1.55;
@@ -1538,13 +1534,13 @@ export class Renderer {
   }
 
   /** Two-segment arm with an elbow. `upperAngle` is the shoulder
-   *  swing angle (same convention as the old single-capsule arm:
-   *  0 = straight down, +π/2 = forward, +π = straight up).
-   *  `lowerAngle` is the forearm's world-space swing angle (not
-   *  relative to the upper arm). Both capsules meet at the elbow,
-   *  where the slightly-oversized `STICKMAN_ELBOW_RADIUS` sphere is
-   *  drawn. Upper arm is 15 % thicker than the forearm, matching
-   *  rough human proportions. */
+   *  swing angle (0 = straight down, +π/2 = forward, +π = straight
+   *  up). `lowerAngle` is the forearm's world-space swing angle
+   *  (not relative to the upper arm). Both capsules meet at the
+   *  elbow, where a slightly-undersized `STICKMAN_ELBOW_RADIUS`
+   *  sphere is drawn (a small joint bump, not a growth). Upper arm
+   *  is 15 % thicker than the forearm, matching rough human
+   *  proportions. */
   _placeArm(px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color, upperYaw = 0, lowerYaw = 0) {
     const U = STICKMAN_UPPER_ARM;
     const L = STICKMAN_LOWER_ARM;
@@ -1581,13 +1577,11 @@ export class Renderer {
   }
 
   /** Two-segment leg with a knee. `upperAngle` is the hip-swing
-   *  angle (same convention as the old single-capsule leg: 0 =
-   *  straight down, +π/2 = forward, +π = straight up). `lowerAngle`
-   *  is the shin's world-space swing angle (not relative to the
-   *  upper leg). Both capsules meet at the knee; the overlapping
-   *  hemispherical caps at that point read visually as the joint,
-   *  so no separate kneecap sphere is needed. Passing
-   *  `lowerAngle === upperAngle` reproduces the old straight leg. */
+   *  angle (0 = straight down, +π/2 = forward, +π = straight up).
+   *  `lowerAngle` is the shin's world-space swing angle (not
+   *  relative to the upper leg). The two capsules meet at the
+   *  knee, with a kneecap sphere drawn over the join. Passing
+   *  `lowerAngle === upperAngle` produces a straight leg. */
   _placeLeg(px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color) {
     const U = STICKMAN_UPPER_LEG;
     const L = STICKMAN_LOWER_LEG;
@@ -1610,9 +1604,9 @@ export class Renderer {
     const lowerMesh = this._stickmanLeg[this._stickmanLegCursor++];
     this._orientBetween(lowerMesh, kneeX, kneeY, kneeZ, footX, footY, footZ, color);
 
-    // Kneecap sphere at the joint — slightly larger than the leg
-    // shaft so it reads as an actual joint bump even when the leg
-    // is straight and the two capsules are collinear.
+    // Kneecap sphere at the joint — slightly under the leg shaft
+    // radius so it reads as joint detail rather than a growth, even
+    // when the leg is straight and the two capsules are collinear.
     this._placeSph(kneeX, kneeY, kneeZ, STICKMAN_KNEE_RADIUS, color);
   }
 
@@ -1885,7 +1879,8 @@ export class Renderer {
 /* ── Helpers ───────────────────────────────────────────────── */
 
 // Body-english curves (pushBodyDipAt, kickTiltAt, airkickTiltAt, …)
-// moved to `animation/curves.js` — imported at the top of this file.
+// live in animation/curves.js and are consumed by animation/poses.js;
+// renderer.js does not import them directly.
 
 function rgb(hex) {
   const h = hex.replace('#', '');

@@ -33,7 +33,7 @@ export const CHANNELS = {
 
   // Celebration-specific. When the celebrate pose runs, these override
   // the swing channels via the blender (see animation/poses.js).
-  celebJumpY:     { kind: 'keyframed', default: 0 },    // world units — jumping-jack vertical travel
+  celebJumpY:     { kind: 'keyframed', default: 0 },    // world units — jump-cycle vertical travel (crouch → launch → apex → land)
   celebArmSpread: { kind: 'keyframed', default: 0 },    // 0..1 — arms-overhead fraction
   celebLegSpread: { kind: 'keyframed', default: 0 },    // radians — forward/back leg split
 };

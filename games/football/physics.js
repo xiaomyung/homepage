@@ -14,7 +14,7 @@ export const FIELD_HEIGHT = 54.6;
 const CEILING = 100;
 
 export const TICK_MS = 16;
-// Mercy rule — if no kick for STALL_MS wall-clock seconds, reset so
+// Mercy rule — if no kick for STALL_TICKS ticks (~10 s wall-clock), reset so
 // the match doesn't sit motionless. Visual mode just respawns the
 // ball; headless mode does a full kickoff (both players teleported)
 // so every training segment starts from a clean, identical state.
@@ -62,7 +62,7 @@ const MIN_SPEED_STAMINA = 0.3;
 // 180° turn takes PLAYER_TURN_TICKS ticks regardless of how fast the
 // NN slams the stick. Also defines which way the player must face to
 // land a kick or a push — see FACE_TOL constants below.
-export const Z_STRETCH = 4.7;  // must match renderer.js Z_STRETCH
+export const Z_STRETCH = 4.7;  // imported by renderer.js — single source of truth
 const PLAYER_TURN_TICKS = 20;  // ticks to complete a 180° turn
 const PLAYER_TURN_RATE = Math.PI / PLAYER_TURN_TICKS;
 export const KICK_FACE_TOL = Math.PI / 3;  // 60° cone toward ball
@@ -131,8 +131,9 @@ export const PUSH_ANIM_MS = 1000;
 // quick spike + recovery, not a full choreographed thrust.
 export const REACT_ANIM_MS = 550;
 // Sub-stage boundaries of the push animation as fractions of
-// PUSH_ANIM_MS. Used by pushArmExtension + pushArmPose (arm blend)
-// and by advancePush (strike commit).
+// PUSH_ANIM_MS. Used by pushArmExtension + pushArmPose for the
+// arm-blend transitions. Strike-commit timing is per-type (see
+// PUSH_CONTACT_FRAC / PUSH_STRIKE_TIMER below).
 const PUSH_WINDUP_FRAC = 0.35;   // windup → strike transition
 const PUSH_STRIKE_FRAC = 0.50;   // strike → recover transition;
                                  //   pose blends WINDUP→STRIKE end
@@ -156,8 +157,9 @@ const PUSH_VICTIM_STAMINA_MULT = 3;
 const GOAL_BACK_OFFSET = 30;
 const GOAL_DEPTH = 78;
 const GOAL_LINE_INSET = 6; // scoring line sits this far inside the mouth
-// Physics radius of the goal posts / crossbar — must match the
-// renderer's GOAL_BAR_RADIUS. The mouth opening is inset by this
+// Physics radius of the goal posts / crossbar — imported by
+// renderer.js as the cylinder radius for the visible goal frame
+// (single source of truth). The mouth opening is inset by this
 // much on each side (y posts and crossbar) so the ball's sphere
 // must be fully past the post's inner surface to count as in the
 // mouth. Without this inset a ball clipping the visible post
@@ -419,11 +421,12 @@ export function createState(field, rng = createSeededRng(0)) {
     events: [],
     recordEvents: false,
     // Training-mode flag. When true, `scoreGoal`/`ballOut` bypass the
-    // celebrate/reposition/waiting pause state machine entirely and
-    // instantly reset the pitch so every tick of the match budget is
-    // spent on active play — no animations, no idle frames, no
-    // WIN_SCORE early-stop. Default false so the visual showcase path
-    // stays untouched.
+    // celebrate/reposition/waiting pause state machine and reset the
+    // pitch immediately so every tick of the match budget is spent on
+    // active play — no animations, no idle frames. WIN_SCORE still
+    // ends the match (the headless scoreGoal flips state.matchOver
+    // and writes state.winner). Default false so the visual showcase
+    // path stays untouched.
     headless: false,
   };
   resetStateInPlace(state, field, rng);
@@ -665,7 +668,9 @@ function applyAction(state, p, out) {
 
 /* ── Angle helpers ────────────────────────────────────────────── */
 
-/** Shortest-arc signed difference between two angles, in (-π, π]. */
+/** Wrap an angle into (-π, π]. Apply after subtracting two angles
+ *  to get the shortest-arc signed difference. Imported by
+ *  animation/state.js. */
 export function wrapAngle(a) {
   while (a > Math.PI) a -= 2 * Math.PI;
   while (a <= -Math.PI) a += 2 * Math.PI;
@@ -681,8 +686,9 @@ function turnToward(current, target) {
 }
 
 /** True iff `p`'s heading points at world-space (worldX, worldZ) within
- *  `tol` radians. Shared by canKick, tryPush, and both fallbacks so the
- *  "is this action aligned" rule lives in exactly one place. */
+ *  `tol` radians. Used by tryPush. (canKickReach inlines its own
+ *  body-axis facing check because facingToward uses the bubble
+ *  centre, which doesn't match the shoulder-line kick gate.) */
 export function facingToward(p, worldX, worldZ, tol) {
   const centerX = p.x + PLAYER_WIDTH / 2;
   const centerZ = (p.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
@@ -1738,10 +1744,12 @@ function tryStartKick(state, p, dx, dy, dz, power) {
   const leadTicks = strikeLeadTicks(kind);
 
   const predicted = predictBallAtStrike(state.ball, leadTicks, _scratchPredicted);
-  // Reachability uses the body-center hip as a conservative gate:
-  // any kick committed here has at least one hip within U+L of the
-  // target. The foot-contact test in advanceKick switches to the
-  // right hip for visual alignment with the rendered leg.
+  // Reachability uses the body-centre hip: any kick committed here
+  // has its centre-hip within U+L of the target. The foot-contact
+  // test (testFootContact → ikFootWorld) uses the SAME centre hip
+  // so a ball that passes this gate also has a valid kill zone at
+  // strike time — using a different anchor caused balls to clear
+  // the gate but never meet the foot sphere.
   const hip = hipAnchor(p, _scratchHip);
   const local = projectHipLocal(hip, p.heading, predicted.x, predicted.y, predicted.z, _scratchLocal);
   const dist = Math.hypot(local.fwd, local.up, local.perp);

@@ -353,6 +353,8 @@ body {
   padding: 0.35rem 0.75rem;
   cursor: pointer;
   letter-spacing: 0.05em;
+  text-decoration: none;
+  display: inline-block;
   transition: border-color 0.12s, color 0.12s, background 0.12s;
 }
 
@@ -366,13 +368,16 @@ body {
   border-color: var(--red);
 }
 
-.game-btn-danger {
-  color: var(--red);
-  border-color: var(--rule);
-  margin-top: 0.5rem;
+.game-btn-block {
   display: block;
   width: 100%;
   text-align: center;
+  margin-top: 0.5rem;
+}
+
+.game-btn-danger {
+  color: var(--red);
+  border-color: var(--rule);
 }
 
 .game-btn-danger:hover {

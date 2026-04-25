@@ -273,10 +273,15 @@ export function createField(width = FIELD_WIDTH_REF) {
   return field;
 }
 
+// Kickoff spawn x for a given side. Used by initPlayer + the post-goal
+// reposition + resetToKickoff paths so all three return the same x.
+function kickoffSpawnX(field, side) {
+  const sign = side === 'left' ? -1 : +1;
+  return field.midX + sign * STARTING_GAP - field.playerWidth / 2;
+}
+
 function initPlayer(p, side, field) {
-  const x = side === 'left'
-    ? field.midX - STARTING_GAP - field.playerWidth / 2
-    : field.midX + STARTING_GAP - field.playerWidth / 2;
+  const x = kickoffSpawnX(field, side);
   p.side = side;
   p.x = x; p.y = FIELD_HEIGHT / 2;
   p.vx = 0; p.vy = 0;
@@ -1863,11 +1868,12 @@ export function kickLegExtension(kick) {
 
 /**
  * Stage-aware arm extension for a punch, mirroring
- * `kickLegExtension`. Pure function of `pushTimer` in ms:
- *   windup   : 0 → 0.7 (arm cocks back)
- *   strike   : 1.0      (arm extended to target)
- *   recovery : 1.0 → 0  (arm eases to neutral)
- * Returns 0 when `pushTimer <= 0` (no active push).
+ * `kickLegExtension`. Pure function of `pushTimer` in ms.
+ * Windup is split into a load (0 → PUSH_WINDUP_PEAK_TEFF over the
+ * first WINDUP_LOAD_FRAC of windup) and a rise (PEAK_TEFF → 1
+ * over the rest), so the fist reaches full extension by the
+ * windup→strike boundary instead of jumping there. Strike holds
+ * at 1, recovery eases back to 0. Returns 0 when no push active.
  */
 export function pushArmExtension(pushTimer) {
   if (pushTimer <= 0) return 0;
@@ -2429,8 +2435,8 @@ function resetToKickoff(state) {
   ball.inGoal = false;
 
   const cy = FIELD_HEIGHT / 2;
-  const tx1 = f.midX - STARTING_GAP - f.playerWidth / 2;
-  const tx2 = f.midX + STARTING_GAP - f.playerWidth / 2;
+  const tx1 = kickoffSpawnX(f, 'left');
+  const tx2 = kickoffSpawnX(f, 'right');
   const sides = [[state.p1, tx1], [state.p2, tx2]];
   for (let i = 0; i < sides.length; i++) {
     const p = sides[i][0];
@@ -2597,8 +2603,8 @@ function advancePause(state) {
 
   if (state.pauseState === 'reposition') {
     const f = state.field;
-    const tx1 = f.midX - STARTING_GAP - f.playerWidth / 2;
-    const tx2 = f.midX + STARTING_GAP - f.playerWidth / 2;
+    const tx1 = kickoffSpawnX(f, 'left');
+    const tx2 = kickoffSpawnX(f, 'right');
     const cy = FIELD_HEIGHT / 2;
 
     state.p1.stamina = Math.min(1, state.p1.stamina + STAMINA_REGEN);

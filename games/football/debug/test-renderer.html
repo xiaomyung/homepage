@@ -154,15 +154,18 @@
 
 <script type="module">
 import {
-  makeHarness, startLazyMount, freshState, lineupX,
-  PLAYER_WIDTH, Z_STRETCH, CONTEXT_CAP,
+  CONTEXT_CAP,
+  PLAYER_WIDTH,
+  Z_STRETCH,
+  freshState, lineupX, makeHarness, startLazyMount,
 } from './harness.js';
 import {
-  tick,
-  KICK_WINDUP_MS, KICK_DURATION_MS,
   AIRKICK_MS, AIRKICK_PEAK_FRAC,
-  TICK_MS, BALL_RADIUS,
+  BALL_RADIUS,
+  KICK_DURATION_MS, KICK_WINDUP_MS,
   STICKMAN_TORSO_RADIUS,
+  TICK_MS,
+  tick,
 } from '../physics.js';
 
 const log = document.getElementById('boot-log');
@@ -246,6 +249,10 @@ function act({
   return [moveX, moveY, kickGate, kickDx, kickDy, kickDz, kickPower, pushGate, pushPower];
 }
 const NOOP = act();
+
+// Y-coordinate used to "park" the unused player off-screen in
+// single-player scenarios, so they don't render or collide.
+const OFFSCREEN_Y = -500;
 
 // Pause-state clearer: used by scenarios to swallow goal/oob pauses
 // so they don't halt the loop (harnesses aren't real matches).
@@ -366,8 +373,8 @@ try {
         state.p1.y = LOCO_LANE_Y(i);
         state.p1.heading = 0;
         state.p1.stamina = 1;
-        state.p2.x = state.p1.x; state.p2.y = -500;
-        state.ball.y = -500; state.ball.frozen = true;
+        state.p2.x = state.p1.x; state.p2.y = OFFSCREEN_Y;
+        state.ball.y = OFFSCREEN_Y; state.ball.frozen = true;
       },
     })),
   });
@@ -410,7 +417,7 @@ try {
         label: `kick ${deg}°`,
         players: 'p1',
         init(state) {
-          state.p2.x = state.p1.x; state.p2.y = -500;   // park off-screen
+          state.p2.x = state.p1.x; state.p2.y = OFFSCREEN_Y;   // park off-screen
           resetKickScenario(state, i, angle);
         },
         step(state) {
@@ -480,7 +487,7 @@ try {
       label: `airkick h=${AIR_HEIGHTS[i]}`,
       players: 'p1',
       init(state) {
-        state.p2.x = state.p1.x; state.p2.y = -500;
+        state.p2.x = state.p1.x; state.p2.y = OFFSCREEN_Y;
         resetAirkickScenario(state, i);
       },
       step(state) {
@@ -528,8 +535,8 @@ try {
     clearPause(state);
     const launch = AIRBALL_LAUNCHES[i];
     // Park both players off-screen — this harness is pure ball physics.
-    state.p1.x = lineupX(i, AIRBALL_N); state.p1.y = -500;
-    state.p2.x = lineupX(i, AIRBALL_N); state.p2.y = -500;
+    state.p1.x = lineupX(i, AIRBALL_N); state.p1.y = OFFSCREEN_Y;
+    state.p2.x = lineupX(i, AIRBALL_N); state.p2.y = OFFSCREEN_Y;
     state.ball.x = lineupX(i, AIRBALL_N) - 60;
     state.ball.y = 27;
     state.ball.z = launch.z0;
@@ -546,7 +553,7 @@ try {
       label: launch.label,
       players: 'none',
       init(state) { resetAirball(state, i); },
-      step(state, _si, frame) {
+      step(state) {
         const ballPastScene = state.ball.x > lineupX(i, AIRBALL_N) + 60;
         if (state.pauseState || state.ball.frozen || ballPastScene) {
           resetAirball(state, i);
@@ -584,7 +591,7 @@ try {
   //   i=2,3  middle row (hooks     — i/2=1)
   //   i=0,1  bottom row (jabs      — i/2=0)
   //   i%2=0  left column, i%2=1 right column
-  const PUSH_GRID_COLS_X = [390, 510];                  // ~120 units apart
+  const PUSH_GRID_COLS_X = [390, 510];                   // ~120 units apart
   const PUSH_GRID_ROWS_Y = [48, 27, 6];                  // bottom, middle, top — physics y, ~21 units apart
   function pushCenter(i) {
     const col = i % 2;
@@ -595,16 +602,17 @@ try {
     clearPause(state);
     const cfg = PUSH_OFFSETS[i];
     const { cx, cy } = pushCenter(i);
+    const halfPerpY = cfg.perp / (2 * Z_STRETCH);
     state.p1.x = cx - cfg.fwd / 2;
-    state.p1.y = cy - cfg.perp / (2 * Z_STRETCH);
+    state.p1.y = cy - halfPerpY;
     state.p1.heading = 0;
     state.p1.vx = 0; state.p1.vy = 0; state.p1.stamina = 1;
     state.p2.x = cx + cfg.fwd / 2;
-    state.p2.y = cy + cfg.perp / (2 * Z_STRETCH);
+    state.p2.y = cy + halfPerpY;
     state.p2.heading = Math.PI;
     state.p2.vx = 0; state.p2.vy = 0; state.p2.stamina = 1;
     state.p2.pushVx = 0; state.p2.pushVy = 0;
-    state.ball.x = cx; state.ball.y = -500; state.ball.z = 0;
+    state.ball.x = cx; state.ball.y = OFFSCREEN_Y; state.ball.z = 0;
     state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
     state.ball.frozen = true;
   }
@@ -626,7 +634,7 @@ try {
       state.p1.vx = 0; state.p1.vy = 0;
       state.p1.stamina = 0;
       state.p1.exhausted = true;
-      state.p2.x = -200; state.p2.y = -500;
+      state.p2.x = -200; state.p2.y = OFFSCREEN_Y;
     },
     step(state) {
       state.p1.x = REST_TEST_X - PLAYER_WIDTH / 2;
@@ -652,8 +660,9 @@ try {
         step(state) {
           // Pin P1 every frame so the pusher never walks away.
           const { cx, cy } = pushCenter(i);
+          const halfPerpY = cfg.perp / (2 * Z_STRETCH);
           state.p1.x = cx - cfg.fwd / 2;
-          state.p1.y = cy - cfg.perp / (2 * Z_STRETCH);
+          state.p1.y = cy - halfPerpY;
           state.p1.heading = 0;
           state.p1.vx = 0; state.p1.vy = 0;
           state.p1.stamina = 1;
@@ -661,10 +670,10 @@ try {
           // lands. Keeps the loop readable — otherwise P2 flies away
           // and we never see another punch.
           const dp2x = state.p2.x - state.p1.x;
-          if (Math.abs(dp2x - cfg.fwd) > 6 || state.p2.pushTimer > 0 === false) {
+          if (Math.abs(dp2x - cfg.fwd) > 6 || state.p2.pushTimer <= 0) {
             if (state.p1.pushTimer <= 0 && state.p2.pushTimer <= 0) {
               state.p2.x = cx + cfg.fwd / 2;
-              state.p2.y = cy + cfg.perp / (2 * Z_STRETCH);
+              state.p2.y = cy + halfPerpY;
               state.p2.heading = Math.PI;
               state.p2.vx = 0; state.p2.vy = 0;
               state.p2.pushVx = 0; state.p2.pushVy = 0;
@@ -753,9 +762,9 @@ try {
         state.p1.heading = 0;
         state.p1.vx = 0; state.p1.vy = 0;
         state.p1.stamina = 1;
-        state.p2.x = state.p1.x; state.p2.y = -500;
-        state.p1._cs = { idx: 0, fired: false, bounces: 0, lastZ: 0, startFrame: 0 };
-        state.ball.y = -500; state.ball.z = BALL_RADIUS;
+        state.p2.x = state.p1.x; state.p2.y = OFFSCREEN_Y;
+        state.p1._channelState = { idx: 0, fired: false, bounces: 0, lastZ: 0, startFrame: 0 };
+        state.ball.y = OFFSCREEN_Y; state.ball.z = BALL_RADIUS;
         state.ball.frozen = true;
       },
       step(state, _i, frame) {
@@ -767,7 +776,7 @@ try {
         state.p1.vx = 0; state.p1.vy = 0;
         state.p1.stamina = 1;
 
-        const cs = state.p1._cs;
+        const cs = state.p1._channelState;
         if (!cs.fired) {
           const shot = channel[cs.idx % channel.length];
           const ang  = shot.angleDeg * Math.PI / 180;
@@ -807,7 +816,7 @@ try {
                        || elapsed > CONTACT_SHOT_TIMEOUT;
         if (advance) {
           state.ball.frozen = true;
-          state.ball.y = -500;
+          state.ball.y = OFFSCREEN_Y;
           state.ball.z = BALL_RADIUS;
           state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
           cs.fired = false;
@@ -843,7 +852,7 @@ try {
       state.p1.heading = 0;
       state.p1.vx = 0; state.p1.vy = 0;
       state.p1.stamina = 1;
-      state.p2.x = state.p1.x; state.p2.y = -500;
+      state.p2.x = state.p1.x; state.p2.y = OFFSCREEN_Y;
       state.p1._dribDir = 1;
     },
     step(state) {
@@ -890,7 +899,7 @@ try {
       state.p1.heading = Math.PI / 2;
       state.p1.vx = 0; state.p1.vy = 0;
       state.p1.stamina = 1;
-      state.p2.x = state.p1.x; state.p2.y = -500;
+      state.p2.x = state.p1.x; state.p2.y = OFFSCREEN_Y;
     },
     step(state, _i, frame) {
       const theta = frame * DRIBBLE_CIRCLE_OMEGA;
@@ -941,15 +950,13 @@ try {
         state.p2.x = cx + 30; state.p2.y = 24; state.p2.heading = Math.PI;
       },
       step(state, _i, frame) {
-        const WR = [0.5, 0, -1, 0, 0, 0, 0, -1, 0];
-        const WL = [-0.5, 0, -1, 0, 0, 0, 0, -1, 0];
         if (frame % 120 === 0) {
           const cx = lineupX(0, 3);
           state.p1.x = cx - 30; state.p1.vx = 0; state.p1.vy = 0;
           state.p2.x = cx + 30; state.p2.vx = 0; state.p2.vy = 0;
           state.p1.stamina = 1; state.p2.stamina = 1;
         }
-        tick(state, WR, WL);
+        tick(state, act({ moveX:  0.5 }), act({ moveX: -0.5 }));
       },
     },
     {
@@ -960,15 +967,13 @@ try {
         state.p2.x = cx + 80; state.p2.y = 24; state.p2.heading = Math.PI;
       },
       step(state, _i, frame) {
-        const SR = [1, 0, -1, 0, 0, 0, 0, -1, 0];
-        const SL = [-1, 0, -1, 0, 0, 0, 0, -1, 0];
         if (frame % 90 === 0) {
           const cx = lineupX(1, 3);
           state.p1.x = cx - 80; state.p1.vx = 0; state.p1.vy = 0;
           state.p2.x = cx + 80; state.p2.vx = 0; state.p2.vy = 0;
           state.p1.stamina = 1; state.p2.stamina = 1;
         }
-        tick(state, SR, SL);
+        tick(state, act({ moveX:  1 }), act({ moveX: -1 }));
       },
     },
     {
@@ -981,8 +986,6 @@ try {
         state.ball.y = state.p1.y;
       },
       step(state, _i, frame) {
-        const P1W = [0.3, 0, -1, 0, 0, 0, 0, -1, 0];
-        const P2P = [0, 0, -1, 0, 0, 0, 0, -1, 0];
         if (frame % 70 === 0) {
           const cx = lineupX(2, 3);
           state.p1.x = cx - 30; state.p1.vx = 0; state.p1.vy = 0; state.p1.stamina = 1;
@@ -991,7 +994,7 @@ try {
           state.ball.y = state.p1.y; state.ball.z = 0;
           state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
         }
-        tick(state, P1W, P2P);
+        tick(state, act({ moveX: 0.3 }), NOOP);
       },
     },
   ];
@@ -1020,10 +1023,9 @@ try {
           state.pauseState = 'celebrate';
           state.pauseTimer = 999;
           state.goalScorer = state.p1;
-          state.ball.y = -500; state.ball.frozen = true;
+          state.ball.y = OFFSCREEN_Y; state.ball.frozen = true;
         },
         step(state) {
-          state.tick++;
           state.pauseTimer = 999;
         },
       },

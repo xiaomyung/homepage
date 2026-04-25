@@ -32,11 +32,9 @@ const PUSH_FWD_TILT       = 0.42;
 // KICK_WIND   : 0      .. KICK_FIRE_T
 // KICK_STRIKE : KICK_FIRE_T .. KICK_STRIKE_END_T
 // KICK_RECOVER: KICK_STRIKE_END_T .. 1
-// Per the ground-kick timings in renderer.js:
-//   KICK_FIRE_T       ≈ 96/288  = 0.333
-//   KICK_STRIKE_END_T ≈ 0.333 + 0.15 = 0.483
-// For the airkick: AIRKICK_PEAK_FRAC = 0.4 and strike span = 0.20,
-// so AIRKICK_STRIKE_END_T ≈ 0.6.
+// Stage boundaries are derived from physics constants (KICK_WINDUP_MS /
+// KICK_DURATION_MS / AIRKICK_PEAK_FRAC), so the exact fractions move
+// when those tune. See `animation/curves.js` for the live values.
 
 // Each state's `t` runs 0..1 over its own stage. The keyframes
 // below encode the portions of the existing polynomial curves that

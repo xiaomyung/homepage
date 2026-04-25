@@ -15,43 +15,40 @@
 
 import * as THREE from 'https://unpkg.com/three@0.164.0/build/three.module.js';
 import {
+  BALL_RADIUS,
+  FIELD_HEIGHT,
+  FIELD_WIDTH_REF,
+  GOAL_POST_RADIUS,
+  MAX_PLAYER_SPEED,
+  PLAYER_WIDTH,
+  STICKMAN_HEAD_RADIUS,
+  STICKMAN_LEG_RADIUS,
+  STICKMAN_LIMB_FULL_H,
+  STICKMAN_LOWER_ARM,
+  STICKMAN_LOWER_ARM_RADIUS,
+  STICKMAN_LOWER_LEG,
+  STICKMAN_SHOULDER_OFY,
+  STICKMAN_TORSO_RADIUS,
+  STICKMAN_UPPER_ARM,
+  STICKMAN_UPPER_ARM_RADIUS,
+  STICKMAN_UPPER_LEG,
+  Z_STRETCH,
+  createField,
+} from './physics.js';
+import { advanceAnimState, createAnimState } from './animation/state.js';
+import { composeStickmanPose, createPoseScratch } from './animation/poses.js';
+import {
   staminaDiscRadius,
   updateStaminaClipPlane,
 } from './renderer-math.js';
-import { createAnimState, advanceAnimState } from './animation/state.js';
-import { composeStickmanPose, createPoseScratch } from './animation/poses.js';
-import {
-  createField,
-  FIELD_HEIGHT,
-  FIELD_WIDTH_REF,
-  BALL_RADIUS,
-  GOAL_POST_RADIUS,
-  PLAYER_WIDTH,
-  MAX_PLAYER_SPEED,
-  Z_STRETCH,
-  STICKMAN_GLYPH_SIZE,
-  STICKMAN_SHOULDER_OFY,
-  STICKMAN_LIMB_FULL_H,
-  STICKMAN_UPPER_LEG,
-  STICKMAN_LOWER_LEG,
-  STICKMAN_UPPER_ARM,
-  STICKMAN_LOWER_ARM,
-  STICKMAN_TORSO_RADIUS,
-  STICKMAN_HEAD_RADIUS,
-  STICKMAN_LEG_RADIUS,
-  STICKMAN_UPPER_ARM_RADIUS,
-  STICKMAN_LOWER_ARM_RADIUS,
-} from './physics.js';
 
 // Small margin so field edges don't touch the canvas boundary.
 const HORIZONTAL_MARGIN = 1.15;
 
-// Rig proportions (STICKMAN_GLYPH_SIZE, SHOULDER/HIP offsets, LIMB_FULL_H,
-// TORSO/HEAD/LEG/ARM radii) come from physics.js so the ball-body
-// collider and the rendered silhouette can't drift apart.
-// Walk-cycle LPF + forward-lean tuning constants moved to
-// `animation/state.js` (STICKMAN_SMOOTH, STICKMAN_RUN_THRESHOLD,
-// STICKMAN_TILT_PER_SPEED, STICKMAN_TILT_MAX).
+// Rig proportions (SHOULDER/HIP offsets, LIMB_FULL_H, TORSO/HEAD/LEG/
+// ARM radii) come from physics.js so the ball-body collider and the
+// rendered silhouette can't drift apart. Walk-cycle LPF + forward-
+// lean tuning constants live in `animation/state.js`.
 // Stamina fill capsule is inset inside the outline shell, creating a
 // visible "shell wall" (the outline appears thicker inward while the
 // outer silhouette is unchanged). Delta is in world units.
@@ -68,18 +65,10 @@ const STICKMAN_ELBOW_RADIUS = STICKMAN_LOWER_ARM_RADIUS * 0.92;
 const STICKMAN_SPH_POOL     = 12;
 const TWO_PI = Math.PI * 2;
 
-// Shin's world-space swing angle given the thigh's. Mild "follow-
-// through" curve: shin tracks 1 − `flex` of the thigh's angle where
-// `flex` grows with the thigh's swing magnitude, capped at 0.5. So
-// Shin + forearm follow-through helpers moved to renderer-math.js
-// (shinAngleFor, forearmAngleFor) — imported at the top of this
-// file. They're pure math and shared with animation/poses.js.
-
-// Celebration pose shape constants moved to animation/poses.js
-// (CELEB_JUMP_PEAK, CELEB_LEG_SPREAD) — imported there, not here.
-// Push + kick + airkick tuning constants and the body-english curve
-// functions all live in `animation/curves.js` (pure module, testable
-// under node). Imported at the top of this file.
+// Shin/forearm follow-through helpers (shinAngleFor, forearmAngleFor)
+// live in renderer-math.js. Celebration / push / kick / airkick body-
+// english constants and curve functions live in animation/poses.js
+// and animation/curves.js — imported there, not here.
 // Ball visual radius comes straight from physics.js so the rendered
 // sphere and the collision envelope are the same object — no drift.
 const BALL_VISUAL_RADIUS = BALL_RADIUS;
@@ -87,9 +76,9 @@ const BALL_VISUAL_RADIUS = BALL_RADIUS;
 // Stamina indicator tuning — see the three-mesh breakdown in the
 // torso-pool construction block below for how these values are used.
 const STAMINA_OUTLINE_OPACITY = 0.55;
-// Keep a sliver visible at stamina=0 so exhausted players don't
-// vanish completely into the outline.
-// STAMINA_FLOOR imported from renderer-math.js
+// (STAMINA_FLOOR — keeping a sliver of fill visible at stamina=0 so
+// exhausted players don't vanish into the outline — lives in
+// renderer-math.js and is consumed transitively by updateStaminaClipPlane.)
 
 // Splash particles for ball bounces. Pool holds up to PARTICLE_POOL slots,
 // filled via a rolling index so old particles are recycled automatically.
@@ -637,7 +626,6 @@ export class Renderer {
 
   renderState(state) {
     const tick = state.tick || 0;
-    const celebrating = state.pauseState === 'celebrate';
     // state.players is the N-player path (any array of player-shaped
     // objects). Falls back to [p1, p2] for the single-match case.
     const players = state.players || [state.p1, state.p2];
@@ -1457,8 +1445,7 @@ export class Renderer {
     const opacity = Math.min(1, animSnap.rest);
     const scale = 0.6 + 0.4 * opacity;
     // Counter-spin: stars orbit faster than the body and the opposite
-    // way, so a wobble of one is set against a wobble of the other —
-    // exaggerates the dizzy read.
+    // way, exaggerating the dizzy read.
     const spin = -animSnap.restPhase * 1.6;
     for (let i = 0; i < 3; i++) {
       const idx = this._restStarCursor++;
@@ -1471,7 +1458,7 @@ export class Renderer {
         pose.headZ + Math.sin(theta) * ringRadius,
       );
       // Each star also tumbles around its own axis so it's not a flat
-      // billboard — gives the metal "twinkle" feel.
+      // billboard — gives a metallic twinkle.
       mesh.rotation.set(theta * 0.6, theta, 0);
       mesh.scale.set(scale, scale, scale);
       mesh.material.opacity = opacity;

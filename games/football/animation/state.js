@@ -7,7 +7,7 @@
 //
 // Pure — no DOM, no three.js — imported from the renderer.
 
-import { Z_STRETCH, REACT_ANIM_MS } from '../physics.js';
+import { REACT_ANIM_MS, Z_STRETCH, wrapAngle } from '../physics.js';
 
 // ── Smoothing + phase-rate tuning ────────────────────────────
 // Low-pass smoothing factor for tilt / amplitude / celebrate. Values
@@ -44,6 +44,25 @@ export const REST_PHASE_RATE = 0.10;
 // harness 'turn 180°' and 'hard stop' scenarios.
 export const TURN_ANGVEL_SCALE = 0.08;   // rad/tick that reads as "full turn"
 export const STOP_DECEL_SCALE  = 0.8;    // u/tick² deceleration that reads as "full stop brake"
+
+// Walk-cycle tuning. Amplitude grows linearly with speed up to a cap;
+// swing rate (radians per tick of phase advance) also rises with speed
+// so faster movement = faster step cadence.
+const WALK_AMP_PER_SPEED   = 0.35;
+const WALK_AMP_MAX         = 1.0;
+const SWING_RATE_BASE      = 0.2;
+const SWING_RATE_PER_SPEED = 0.04;
+
+// Reposition heading-override gate. Below this physics speed the
+// motion-vector heading is too noisy to track, so animHeading sticks
+// with the physics heading instead.
+const REPOSITION_SPEED_GATE = 0.3;
+
+// State-label gates. Used only to emit the advisory `out.state`
+// label; the pose composer reads smoothed factors directly.
+const STATE_LABEL_STOP_GATE = 0.5;
+const STATE_LABEL_TURN_GATE = 0.5;
+const STATE_LABEL_WALK_GATE = 0.5;
 
 const TWO_PI = Math.PI * 2;
 
@@ -91,13 +110,6 @@ export function createAnimState(tick, player) {
     cachedTargetTurn: 0,
     cachedTargetStop: 0,
   };
-}
-
-// Shortest-arc angle delta (−π, π].
-function wrapAngle(a) {
-  while (a > Math.PI) a -= TWO_PI;
-  while (a <= -Math.PI) a += TWO_PI;
-  return a;
 }
 
 /** Advance one frame of anim state in place. Returns a snapshot
@@ -154,7 +166,7 @@ export function advanceAnimState(
     // of side-stepping. Smoothly interpolated via anim.animHeading
     // so the turn doesn't snap.
     let heading = physicsHeading;
-    if (isReposition && speed > 0.3) {
+    if (isReposition && speed > REPOSITION_SPEED_GATE) {
       const motionHeading = Math.atan2(effVy * Z_STRETCH, effVx);
       // Seed on first frame of reposition so we don't pop from an old
       // physics heading to the new motion heading.
@@ -179,14 +191,14 @@ export function advanceAnimState(
     // of the near-idle shuffle the old coefficient produced; cap
     // stays at 1.0 so max thigh swing stays in the natural
     // ~40° range (legSwing coefficient 0.7 × amp 1.0 = 0.7 rad).
-    const targetAmplitude = Math.min(speed * 0.35, 1.0);
+    const targetAmplitude = Math.min(speed * WALK_AMP_PER_SPEED, WALK_AMP_MAX);
     const targetTilt = speed > STICKMAN_RUN_THRESHOLD
       ? Math.sign(forwardSpeed) * Math.min(
           (speed - STICKMAN_RUN_THRESHOLD) * STICKMAN_TILT_PER_SPEED,
           STICKMAN_TILT_MAX,
         )
       : 0;
-    const swingRate = 0.2 + speed * 0.04;
+    const swingRate = SWING_RATE_BASE + speed * SWING_RATE_PER_SPEED;
 
     const targetCelebrate = isCelebrating  ? 1 : 0;
     const targetGrieve    = isGrieving     ? 1 : 0;
@@ -277,13 +289,13 @@ export function advanceAnimState(
   else if (isMatchendLose)                    stateName = 'MATCHEND_LOSE';
   else if (isCelebrating)                     stateName = 'CELEBRATE';
   else if (isGrieving)                        stateName = 'GRIEVE';
-  else if (isReposition && speed > 0.3)       stateName = 'REPOSITION';
+  else if (isReposition && speed > REPOSITION_SPEED_GATE) stateName = 'REPOSITION';
   else if (isKicking)                         stateName = isAirkick ? 'KICK_AIR' : 'KICK_GROUND';
   else if (player.pushTimer > 0)              stateName = 'PUSH';
   else if (player.exhausted)                  stateName = 'EXHAUSTED';
-  else if (targetStop > 0.5)                  stateName = 'STOP';
-  else if (targetTurn > 0.5)                  stateName = 'TURN';
-  else if (speed > 0.5)                       stateName = 'WALK';
+  else if (targetStop > STATE_LABEL_STOP_GATE) stateName = 'STOP';
+  else if (targetTurn > STATE_LABEL_TURN_GATE) stateName = 'TURN';
+  else if (speed > STATE_LABEL_WALK_GATE)     stateName = 'WALK';
   else                                        stateName = 'IDLE';
 
   if (!out) out = {};

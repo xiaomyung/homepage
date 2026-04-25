@@ -25,35 +25,35 @@
 // smoother.
 
 import {
+  AIRKICK_MS,
+  KICK_DURATION_MS,
   PLAYER_WIDTH,
-  Z_STRETCH,
   STICKMAN_GLYPH_SIZE,
-  STICKMAN_LIMB_FULL_H,
-  STICKMAN_SHOULDER_OFY,
-  STICKMAN_SHOULDER_OFX,
-  STICKMAN_HIP_OFX,
   STICKMAN_HEAD_GAP_Y,
   STICKMAN_HEAD_RADIUS,
-  KICK_DURATION_MS,
-  AIRKICK_MS,
+  STICKMAN_HIP_OFX,
+  STICKMAN_LIMB_FULL_H,
+  STICKMAN_SHOULDER_OFX,
+  STICKMAN_SHOULDER_OFY,
+  Z_STRETCH,
   kickLegPose,
   pushArmPose,
 } from '../physics.js';
-import { shinAngleFor, forearmAngleFor } from '../renderer-math.js';
+import { forearmAngleFor, shinAngleFor } from '../renderer-math.js';
 import {
-  KICK_ARM_OPP_FRAC, KICK_SUPPORT_SHIN_RATIO,
-  AIRKICK_TUCK_THIGH, AIRKICK_TUCK_SHIN,
-  AIRKICK_ARM_SPLAY, AIRKICK_ARM_YAW, AIRKICK_ARM_ELBOW_FLEX,
+  AIRKICK_ARM_ELBOW_FLEX, AIRKICK_ARM_SPLAY, AIRKICK_ARM_YAW,
   AIRKICK_HIP_TWIST_FRAC,
+  AIRKICK_TUCK_SHIN, AIRKICK_TUCK_THIGH,
+  KICK_ARM_OPP_FRAC, KICK_SUPPORT_SHIN_RATIO,
   KICK_START_BLEND_MS,
   PUSH_TOTAL_TICKS,
+  REST_SHIN_BACK, REST_THIGH_FORWARD, REST_UPPER_SWAY,
   WALK_ELBOW_BEND_MAX,
   WALK_STANCE_KNEE_BEND, WALK_SWING_KNEE_BEND,
-  REST_UPPER_SWAY, REST_THIGH_FORWARD, REST_SHIN_BACK,
-  kickArmAngleAt, kickDipAt, kickTiltAt, airkickTiltAt, airkickTuckAt,
+  airkickTiltAt, airkickTuckAt, kickArmAngleAt, kickDipAt, kickTiltAt,
   kickHipTwistAt, kickSupportCrouchAt,
-  pushBodyDipAt, pushHopAt, pushBodyTiltAt,
-  pushLegStanceAt, pushLegSquatAt,
+  pushBodyDipAt, pushBodyTiltAt, pushHopAt,
+  pushLegSquatAt, pushLegStanceAt,
 } from './curves.js';
 
 // Hit-reaction maxes — what a full-force punch of each type does.
@@ -108,8 +108,32 @@ const TURN_BODY_DIP_MAX = 1.4;  // world units subtracted from upperHipY at full
 // nothing more to do.
 const MATCH_WIN_ARM_UPPER  =  2.3;    // ~132° — arms raised up-and-out to the sides
 const MATCH_WIN_ARM_LOWER  =  2.3;    // forearms continue the upper direction (straight arms)
+const MATCH_WIN_ARM_YAW    =  0.25;   // rad — outward lateral spread so the V is wider than the shoulders
 const MATCH_LOSE_TILT      =  0.30;   // rad — moderate forward slump
 const MATCH_LOSE_ARM_UPPER = -0.25;   // arms slightly behind vertical — hanging limp
+
+// Walk-cycle base shape (pure-locomotion arms/legs).
+// armSwing: shoulder rotates a bit less than the hip — elbows close
+// the rest of the gap. armSwingBias: shifts the swing centre BACKWARD
+// so the back-swing reaches further than the forward-swing, matching
+// how runners' arms sit slightly behind the torso line at neutral.
+// bobFrac: vertical bob magnitude as a fraction of GLYPH_SIZE.
+const WALK_ARM_SWING_COEF = 0.72;
+const WALK_LEG_SWING_COEF = 0.7;
+const WALK_ARM_SWING_BIAS = -0.18;
+const WALK_BOB_FRAC       = 0.08;
+
+// LPF dead-zone — below this threshold a smoothed factor (rest,
+// celeb, grieve, matchWin/Lose, etc.) is treated as inactive and
+// its pose-layer override is skipped. Avoids floating-point dust at
+// state-transition tails.
+const LPF_DEAD_ZONE = 0.001;
+
+// Push split-stance + squat tuning. Module-level so they live alongside
+// the other PUSH_* constants; consumers are inside composeStickmanPose.
+const PUSH_FRONT_THIGH = 0.28;   // rad — lead leg forward angle at full stance
+const PUSH_REAR_THIGH  = 0.35;   // rad — rear leg back angle at full stance
+const PUSH_SQUAT_FLEX  = 0.35;   // rad — knee bend on top of stance during squat
 
 // Grieve (anti-celebration) shape — the loser falls to his knees,
 // hunches forward with both hands in front of his face, rocks
@@ -194,7 +218,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // an XZ offset that rotates with `restPhase`. Scaled by `rest`
   // (LPF) so it eases in/out without snapping at state boundaries.
   let restSwayX = 0, restSwayZ = 0;
-  if (rest > 0.001) {
+  if (rest > LPF_DEAD_ZONE) {
     const swayMag = REST_UPPER_SWAY * rest;
     restSwayX = Math.cos(animSnap.restPhase) * swayMag;
     restSwayZ = Math.sin(animSnap.restPhase) * swayMag;
@@ -226,6 +250,17 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   const pushProgress   = animSnap.pushProgress;
   const walkTilt       = animSnap.walkTilt;
 
+  // True when no specialized pose layer (kick / push / celebrate /
+  // grieve / matchend) is active — used by the walk-cycle leg + arm
+  // composers to decide whether to apply their pure-locomotion
+  // overrides on top of the swing base.
+  const purePoseActive = !isKicking
+    && !(pushing > 0)
+    && celeb < LPF_DEAD_ZONE
+    && grieve < LPF_DEAD_ZONE
+    && matchWin < LPF_DEAD_ZONE
+    && matchLose < LPF_DEAD_ZONE;
+
   // Celebrate jump cycle. First half of celebratePhase [0, π] is one
   // jump (crouch at 0/π, apex at π/2); second half [π, 2π] is a
   // short recovery standing on the ground so the figure doesn't
@@ -235,7 +270,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   const celebCrouch  = inJump ? (1 - Math.sin(Math.PI * celebJumpT)) : 0; // 1→0→1 during jump
   const jumpY        = Math.max(0, Math.sin(celebratePhase)) * CELEB_JUMP_PEAK * celeb;
   const celebHipDrop = CELEB_CROUCH_DEPTH * celebCrouch * celeb;
-  const bob          = Math.abs(swing) * 0.08 * amplitude * celebInv;
+  const bob          = Math.abs(swing) * WALK_BOB_FRAC * amplitude * celebInv;
 
   // ── Push body-english ────────────────────────────────────
   let pushBodyDip    = 0;
@@ -255,9 +290,14 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   let kickTiltOffset    = 0;
   let kickHipTwist      = 0;
   let kickSupportCrouch = 0;
+  // airkickTuck is consumed by the airkick leg, arm, and yaw blocks
+  // below — compute once here when in air so the three blocks don't
+  // each re-evaluate the curve.
+  let airkickTuck = 0;
   if (isKicking) {
     const totalMs = isAirkick ? AIRKICK_MS : KICK_DURATION_MS;
     const kickT   = Math.min(kick.timer / totalMs, 1);
+    if (isAirkick) airkickTuck = airkickTuckAt(kickT);
     kickTiltOffset    = isAirkick ? airkickTiltAt(kickT) : kickTiltAt(kickT);
     kickArmAngle      = kickArmAngleAt(kickT);
     // Ground-style torso dip is meaningful only when the player is
@@ -307,7 +347,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   let reactHipLift    = 0;   // vertical world-units added to upperHipY
   let reactHeadBack   = 0;   // rad — head pitch along heading axis
   let reactHeadSide   = 0;   // rad — head pitch along lateral axis
-  if (reactInt > 0.001) {
+  if (reactInt > LPF_DEAD_ZONE) {
     if (reactType === 'hook') {
       // Lateral dominant. Direction = reactLatSign (fist sweep), NOT
       // impulse direction (which is axial for face-to-face pushes).
@@ -382,9 +422,9 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // The swing centre is biased BACKWARD so the back-swing reaches
   // further than the forward-swing, matching how runners' arms
   // sit slightly behind the torso line at neutral.
-  const armSwing = swing * 0.72 * amplitude;
-  const legSwing = -swing * 0.7  * amplitude;
-  const armSwingBias = -0.18 * amplitude;  // ~-10° shift at full amp
+  const armSwing = swing * WALK_ARM_SWING_COEF * amplitude;
+  const legSwing = -swing * WALK_LEG_SWING_COEF * amplitude;
+  const armSwingBias = WALK_ARM_SWING_BIAS * amplitude;  // ~-10° shift at full amp
   let leftArmAngle  =  armSwing + armSwingBias;
   let rightArmAngle = -armSwing + armSwingBias;
   let leftLegAngle  =  legSwing;
@@ -396,7 +436,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // paths a human shoulder can't actually follow. Now both arms use
   // a positive (forward-up) swing with a yawed lateral spread, and
   // the pump dips/raises both fists at once like a real fist-pump.
-  if (celeb > 0.001) {
+  if (celeb > LPF_DEAD_ZONE) {
     const restT = inJump ? 0 : (celebratePhase - Math.PI) / Math.PI;  // 0..1 during rest half
     const jumpRaise = CELEB_ARM_RAISE_REST
                     + (CELEB_ARM_RAISE_MAX - CELEB_ARM_RAISE_REST) * Math.sin(Math.PI * celebJumpT);
@@ -424,17 +464,11 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // Other states (kick / push / celebrate / matchend / grieve) keep
   // the legacy `shinAngleFor` so their authored leg curves stay
   // intact; those blocks override the walk base below.
-  const walkLegsActive = !isKicking
-    && !(pushing > 0)
-    && celeb < 0.001
-    && grieve < 0.001
-    && matchWin < 0.001
-    && matchLose < 0.001;
   let leftUpperAngle  = leftLegAngle;
   let rightUpperAngle = rightLegAngle;
   let leftLowerAngle;
   let rightLowerAngle;
-  if (walkLegsActive) {
+  if (purePoseActive) {
     const cosPhase = animSnap.cosPhase || 0;
     const rightSwingT = (1 + cosPhase) * 0.5;
     const leftSwingT  = (1 - cosPhase) * 0.5;
@@ -453,7 +487,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // extends (0 flex) at the apex of the jump. Same thigh-fwd /
   // shin-back shape as the push squat so the foot plants under the
   // hip. Blended over whatever the walk base produced.
-  if (celeb > 0.001) {
+  if (celeb > LPF_DEAD_ZONE) {
     const legFlex = CELEB_LEG_SQUAT * celebCrouch * celeb;
     leftUpperAngle  = leftUpperAngle  * celebInv + (+legFlex) * celeb;
     leftLowerAngle  = leftLowerAngle  * celebInv + (-legFlex) * celeb;
@@ -467,7 +501,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // it's overridden by kick / push / celebrate / matchend poses
   // (the rest target is gated off in those states anyway, but this
   // ordering keeps the override-precedence consistent).
-  if (rest > 0.001) {
+  if (rest > LPF_DEAD_ZONE) {
     leftUpperAngle  += REST_THIGH_FORWARD * rest;
     rightUpperAngle += REST_THIGH_FORWARD * rest;
     leftLowerAngle  += REST_SHIN_BACK     * rest;
@@ -481,13 +515,13 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   //   air    — left leg tucks UP under the hip (knee + foot lifted
   //            for clearance and balance); both arms swing back-and-
   //            out for in-air balance, splayed via shoulder yaw.
-  // Celebrate outranks the kick override (celeb > 0.001 skips this).
+  // Celebrate outranks the kick override (celeb > LPF_DEAD_ZONE skips this).
   //
   // Start blend: the kick pose ramps in over the first ~50 ms after
   // `isKicking` flips on, so the leg/arm angles fade from the prior
   // walk-cycle pose into the kick pose instead of snapping. Without
   // this, an in-stride kick reads as the leg teleporting to neutral.
-  if (isKicking && celeb < 0.001) {
+  if (isKicking && celeb < LPF_DEAD_ZONE) {
     const startBlend = Math.min(1, kick.timer / KICK_START_BLEND_MS);
     const walkRU = rightUpperAngle, walkRL = rightLowerAngle;
     const walkLU = leftUpperAngle,  walkLL = leftLowerAngle;
@@ -498,7 +532,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     let kickRL = scratchKickPose.lowerAngle;
     let kickLU, kickLL, kickLA, kickRA;
     if (isAirkick) {
-      const tuck = airkickTuckAt(Math.min(kick.timer / AIRKICK_MS, 1));
+      const tuck = airkickTuck;
       kickLU = AIRKICK_TUCK_THIGH * tuck;
       kickLL = AIRKICK_TUCK_SHIN  * tuck;
       const armBack = -AIRKICK_ARM_SPLAY * tuck;
@@ -531,14 +565,11 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   //
   // Physics guarantees push and kick never overlap, so there's no
   // ordering conflict with the kick block above.
-  if (pushing > 0 && celeb < 0.001 && !isKicking) {
+  if (pushing > 0 && celeb < LPF_DEAD_ZONE && !isKicking) {
     const pushT  = Math.min(pushProgress / PUSH_TOTAL_TICKS, 1);
     const stance = pushLegStanceAt(pushT);
     const squat  = pushLegSquatAt(pushT);
-    if (stance > 0.001 || squat > 0.001) {
-      const PUSH_FRONT_THIGH = 0.28;  // rad forward at full stance
-      const PUSH_REAR_THIGH  = 0.35;  // rad backward at full stance
-      const PUSH_SQUAT_FLEX  = 0.35;  // rad thigh-forward / shin-back at peak
+    if (stance > LPF_DEAD_ZONE || squat > LPF_DEAD_ZONE) {
       const frontBase =  PUSH_FRONT_THIGH * stance;
       const rearBase  = -PUSH_REAR_THIGH  * stance;
       const flex      =  PUSH_SQUAT_FLEX  * squat;
@@ -566,17 +597,11 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // push / celebrate / matchend / grieve we fall back to the legacy
   // angle-proportional `forearmAngleFor` so those specialist poses
   // keep the elbow behaviour they were authored against.
-  const pureLocomotion = !isKicking
-    && !(pushing > 0)
-    && celeb < 0.001
-    && grieve < 0.001
-    && matchWin < 0.001
-    && matchLose < 0.001;
   let leftUpperArmAngle  = leftArmAngle;
   let rightUpperArmAngle = rightArmAngle;
   let leftLowerArmAngle;
   let rightLowerArmAngle;
-  if (pureLocomotion) {
+  if (purePoseActive) {
     // Drive the elbow bend off the LPF-smoothed `amplitude` rather
     // than raw `speed`. `amplitude` converges in ~6–7 frames, so
     // accelerations ramp the bend smoothly; raw-speed-driven bend
@@ -596,8 +621,8 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // bend on top so the elbows visibly flex when arms swing back
   // for in-air balance. Scaled by `tuck` so it ramps with the
   // leap and unwinds on landing — no flex at idle / kick start.
-  if (isAirkick && celeb < 0.001) {
-    const tuck = airkickTuckAt(Math.min(kick.timer / AIRKICK_MS, 1));
+  if (isAirkick && celeb < LPF_DEAD_ZONE) {
+    const tuck = airkickTuck;
     const extraFlex = AIRKICK_ARM_ELBOW_FLEX * tuck;
     leftLowerArmAngle  += extraFlex;
     rightLowerArmAngle += extraFlex;
@@ -610,7 +635,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // toward −lateral (outward from its left-side shoulder); right arm
   // toward +lateral. Without this spread, both arms pointing
   // forward-up would look parallel rather than victorious.
-  if (celeb > 0.001) {
+  if (celeb > LPF_DEAD_ZONE) {
     leftUpperYaw  = leftUpperYaw  + (-CELEB_ARM_YAW) * celeb;
     rightUpperYaw = rightUpperYaw + (+CELEB_ARM_YAW) * celeb;
   }
@@ -619,8 +644,8 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // tuck envelope so the splay ramps with the leap and unwinds on
   // landing. Without yaw the back-swung arms hang parallel behind
   // the body instead of reading as a balance pose.
-  if (isAirkick && celeb < 0.001) {
-    const tuck = airkickTuckAt(Math.min(kick.timer / AIRKICK_MS, 1));
+  if (isAirkick && celeb < LPF_DEAD_ZONE) {
+    const tuck = airkickTuck;
     leftUpperYaw  += -AIRKICK_ARM_YAW * tuck;
     rightUpperYaw += +AIRKICK_ARM_YAW * tuck;
   }
@@ -630,7 +655,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // angle is forward-from-hip in the pose rig. Only applies when
   // the victim isn't mid-push of their own (which would overwrite
   // the striking arm anyway via the push IK below).
-  if (reactInt > 0.001 && celeb < 0.001 && player.pushTimer <= 0) {
+  if (reactInt > LPF_DEAD_ZONE && celeb < LPF_DEAD_ZONE && !(pushing > 0)) {
     const throwAmp = REACT_ARM_THROW * reactInt;
     leftUpperArmAngle  += throwAmp;
     rightUpperArmAngle += throwAmp;
@@ -642,7 +667,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // variant-specific scripted trajectory. Only overrides the
   // striking side; the other arm keeps its cosmetic swing.
   const shoulderY = upperHipY + torsoH * tiltC * Math.cos(reactBodyRoll);
-  if (player.pushTimer > 0 && celeb < 0.001) {
+  if (pushing > 0 && celeb < LPF_DEAD_ZONE) {
     pushArmPose(player, scratchPushPose);
     if (player.pushArm === 'right') {
       rightUpperArmAngle = scratchPushPose.upperAngle;
@@ -662,7 +687,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // limp at the sides + forward slump (tilt applied above).
   // Skipped when celebrate or grieve are active (per-goal reactions
   // take priority over the final-match pose).
-  if (matchWin > 0.001 && celeb < 0.001 && grieve < 0.001) {
+  if (matchWin > LPF_DEAD_ZONE && celeb < LPF_DEAD_ZONE && grieve < LPF_DEAD_ZONE) {
     const w = matchWin;
     leftUpperArmAngle  = leftUpperArmAngle  * (1 - w) + MATCH_WIN_ARM_UPPER * w;
     leftLowerArmAngle  = leftLowerArmAngle  * (1 - w) + MATCH_WIN_ARM_LOWER * w;
@@ -671,10 +696,10 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     // Arms spread outward: left yaws outward (negative), right yaws outward (positive).
     // (Sign convention matches the grim fix — inward is + for left, − for right,
     //  so outward is the mirror.)
-    leftUpperYaw  = leftUpperYaw  * (1 - w) + (-0.25) * w;
-    rightUpperYaw = rightUpperYaw * (1 - w) + (+0.25) * w;
+    leftUpperYaw  = leftUpperYaw  * (1 - w) + (-MATCH_WIN_ARM_YAW) * w;
+    rightUpperYaw = rightUpperYaw * (1 - w) + (+MATCH_WIN_ARM_YAW) * w;
   }
-  if (matchLose > 0.001 && celeb < 0.001 && grieve < 0.001) {
+  if (matchLose > LPF_DEAD_ZONE && celeb < LPF_DEAD_ZONE && grieve < LPF_DEAD_ZONE) {
     const l = matchLose;
     leftUpperArmAngle  = leftUpperArmAngle  * (1 - l) + MATCH_LOSE_ARM_UPPER * l;
     rightUpperArmAngle = rightUpperArmAngle * (1 - l) + MATCH_LOSE_ARM_UPPER * l;
@@ -689,7 +714,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // grieve if both ever fire (they shouldn't — physics makes only
   // the scorer celebrate — but the interp keeps the transition
   // safe).
-  if (grieve > 0.001 && celeb < 0.001) {
+  if (grieve > LPF_DEAD_ZONE && celeb < LPF_DEAD_ZONE) {
     // Rocking body lean: baseline forward tilt + small sinusoidal
     // sway. Multiplied by `grieve` so the lean eases in from the
     // previous pose.

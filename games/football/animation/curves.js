@@ -8,12 +8,12 @@
 // windup → strike → settle) and return the channel's contribution
 // at that phase.
 
-import { easeInOut, easeOut } from '../renderer-math.js';
 import {
-  KICK_WINDUP_MS, KICK_DURATION_MS,
-  AIRKICK_MS, AIRKICK_PEAK_FRAC,
+  AIRKICK_PEAK_FRAC,
+  KICK_DURATION_MS, KICK_WINDUP_MS,
   STICKMAN_GLYPH_SIZE,
 } from '../physics.js';
+import { easeInOut, easeOut } from '../renderer-math.js';
 
 // ── Push body-english constants + sub-stage boundaries ───────
 // PUSH_TOTAL_TICKS = ceil(PUSH_ANIM_MS (1000) / TICK_MS (16)) = 63.

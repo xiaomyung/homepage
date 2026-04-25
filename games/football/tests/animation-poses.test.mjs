@@ -99,10 +99,18 @@ describe('animation/poses', () => {
         composeStickmanPose(snap, p, pose, s.kick, s.push);
       }
       assert.ok(snap.amplitude > 0.5);
-      // Arms swing contralaterally: left + right sum to 0 (opposite signs).
-      assert.ok(Math.abs(pose.lArmUpper + pose.rArmUpper) < 1e-6);
-      // At least one arm has non-zero angle (phase produced motion).
-      assert.ok(Math.abs(pose.lArmUpper) > 0.05, `lArmUpper=${pose.lArmUpper} should swing`);
+      // Arms swing contralaterally: their SWING components are
+      // equal-and-opposite around a shared backward bias, so their
+      // average equals the bias (not zero) but the per-arm offsets
+      // from that average are opposite signs.
+      const avg = (pose.lArmUpper + pose.rArmUpper) / 2;
+      assert.ok(avg < 0, `arm-swing centre avg=${avg} should be backward (negative)`);
+      const lOffset = pose.lArmUpper - avg;
+      const rOffset = pose.rArmUpper - avg;
+      assert.ok(Math.abs(lOffset + rOffset) < 1e-6,
+        `swing offsets should sum to 0 (l=${lOffset} r=${rOffset})`);
+      assert.ok(Math.abs(lOffset) > 0.05,
+        `lArmUpper offset=${lOffset} should swing`);
     });
 
     it('legs swing opposite to arms (contralateral) while walking', () => {

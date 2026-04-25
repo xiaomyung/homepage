@@ -2367,15 +2367,23 @@ test('kickLegExtension returns 0 for inactive kick', () => {
   assert.equal(kickLegExtension({ active: false }), 0);
 });
 
-test('kickLegExtension walks 0 → 0.7 → 1 → 0 across stages (ground)', () => {
+test('kickLegExtension walks 0 → 0.7 → 1 → 0 smoothly across stages (ground)', () => {
+  // Windup is split: load (0 → 0.7 of windup) ramps 0 → 0.7,
+  // then rise (0.7 → 1 of windup) ramps 0.7 → 1. Strike holds at 1,
+  // recovery decays to 0. No discontinuity at the windup/strike boundary.
   const k = { active: true, kind: 'ground', timer: 0 };
+  const loadEnd = KICK_WINDUP_MS * 0.7;
   assert.equal(kickLegExtension(k), 0, 'timer 0 → extension 0');
-  k.timer = KICK_WINDUP_MS / 2;
-  assert.ok(Math.abs(kickLegExtension(k) - 0.35) < 1e-9, 'mid-windup → 0.35');
+  k.timer = loadEnd / 2;
+  assert.ok(Math.abs(kickLegExtension(k) - 0.35) < 1e-9, 'mid-load → 0.35');
+  k.timer = loadEnd;
+  assert.ok(Math.abs(kickLegExtension(k) - 0.7) < 1e-9, 'load end → 0.7');
+  k.timer = (loadEnd + KICK_WINDUP_MS) / 2;
+  assert.ok(Math.abs(kickLegExtension(k) - 0.85) < 1e-9, 'mid-rise → 0.85');
   k.timer = KICK_WINDUP_MS - 0.001;
-  assert.ok(Math.abs(kickLegExtension(k) - 0.7) < 1e-3, 'windup end → 0.7');
+  assert.ok(kickLegExtension(k) > 0.999, 'windup end → ~1');
   k.timer = KICK_WINDUP_MS;
-  assert.equal(kickLegExtension(k), 1, 'strike start → 1');
+  assert.equal(kickLegExtension(k), 1, 'strike start → 1 (continuous with windup end)');
   k.timer = KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS - 1;
   assert.equal(kickLegExtension(k), 1, 'mid-strike → 1');
   k.timer = KICK_WINDUP_MS + KICK_STRIKE_WINDOW_MS;
@@ -2389,8 +2397,9 @@ test('kickLegExtension walks 0 → 0.7 → 1 → 0 across stages (ground)', () =
 test('kickLegExtension uses AIRKICK_PEAK_FRAC * AIRKICK_MS as windup for air', () => {
   const k = { active: true, kind: 'air', timer: 0 };
   const windupMs = AIRKICK_PEAK_FRAC * AIRKICK_MS;
-  k.timer = windupMs / 2;
-  assert.ok(Math.abs(kickLegExtension(k) - 0.35) < 1e-9, 'air mid-windup → 0.35');
+  const loadEnd  = windupMs * 0.7;
+  k.timer = loadEnd / 2;
+  assert.ok(Math.abs(kickLegExtension(k) - 0.35) < 1e-9, 'air mid-load → 0.35');
   k.timer = windupMs + KICK_STRIKE_WINDOW_MS / 2;
   assert.equal(kickLegExtension(k), 1, 'air strike → 1');
 });
@@ -2424,10 +2433,17 @@ test('kickLegPose at strike reaches the foot target', () => {
   assert.ok(Math.abs(footDown - 15.776) < 1e-6, `foot down should be 15.776, got ${footDown}`);
 });
 
-test('kickLegPose windup peak = 70% extension toward target', () => {
+test('kickLegPose at windup load-end (tEff=0.7) reaches the cock-back keyframe', () => {
+  // The foot path during windup is a three-keyframe trajectory:
+  //   load (tEff: 0 → 0.7)  rest → cock
+  //   rise (tEff: 0.7 → 1)  cock → target
+  // At the end of the load phase the foot should be at the cock-
+  // back position (20% of leg-length behind hip, 50% below) — NOT
+  // on the line from rest to ball. This is what gives the kick a
+  // visible windup pose instead of a snap-to-target.
   const k = {
     active: true, kind: 'ground', stage: 'windup',
-    timer: KICK_WINDUP_MS - 1,  // just before strike opens — peak windup
+    timer: KICK_WINDUP_MS * 0.7,  // exact end of the load phase
     footTargetX: 10, footTargetY: 4.224, footTargetZ: 0,
   };
   const out = { upperAngle: 0, lowerAngle: 0 };
@@ -2438,10 +2454,8 @@ test('kickLegPose windup peak = 70% extension toward target', () => {
   const kneeDown = U * Math.cos(out.upperAngle);
   const footFwd  = kneeFwd + L * Math.sin(out.lowerAngle);
   const footDown = kneeDown + L * Math.cos(out.lowerAngle);
-  // Target at peak windup: fwd = 0.7 * 10 = 7, down = 0.7 * 15.776 + 0.3 * 20 = 11.0432 + 6 = 17.0432.
-  const tEff = 0.7 * ((KICK_WINDUP_MS - 1) / KICK_WINDUP_MS);
-  const expectedFwd = 10 * tEff;
-  const expectedDown = 15.776 * tEff + legLen * (1 - tEff);
+  const expectedFwd  = -0.20 * legLen;  // 20% behind hip
+  const expectedDown =  0.50 * legLen;  // 50% below hip
   assert.ok(Math.abs(footFwd - expectedFwd) < 1e-3, `foot fwd expected ${expectedFwd}, got ${footFwd}`);
   assert.ok(Math.abs(footDown - expectedDown) < 1e-3, `foot down expected ${expectedDown}, got ${footDown}`);
 });

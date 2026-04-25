@@ -70,6 +70,16 @@ export function createAnimState(tick, player) {
     lastTick: tick,
     lastX: player.x,
     lastY: player.y,
+    // Cached motion-derived values — written on frames where
+    // physics ticked (dt > 0), re-read on no-tick render frames so
+    // the speed-slider doesn't drain the LPFs toward zero on
+    // fractional-speed / paused frames.
+    cachedHeading: player.heading ?? 0,
+    cachedForwardX: Math.cos(player.heading ?? 0),
+    cachedForwardZ: Math.sin(player.heading ?? 0),
+    cachedSpeed: 0,
+    cachedTargetTurn: 0,
+    cachedTargetStop: 0,
   };
 }
 
@@ -95,92 +105,137 @@ export function advanceAnimState(
   isMatchendWin = false, isMatchendLose = false,
 ) {
   const dt = tick > anim.lastTick ? tick - anim.lastTick : 0;
-  const denom = dt > 0 ? dt : 1;
-  const effVx = (player.x - anim.lastX) / denom;
-  const effVy = (player.y - anim.lastY) / denom;
-  anim.lastTick = tick;
-  anim.lastX = player.x;
-  anim.lastY = player.y;
 
-  const physicsHeading = player.heading ?? 0;
-  const speed = Math.sqrt(effVx * effVx + effVy * effVy);
-
-  // Animation heading — normally the physics heading, but during
-  // reposition the physics-side heading lags (stepReposition just
-  // translates position without updating heading). Face the motion
-  // direction instead so the stickman walks FACING kickoff instead
-  // of side-stepping. Smoothly interpolated via anim.animHeading
-  // so the turn doesn't snap.
-  let heading = physicsHeading;
-  if (isReposition && speed > 0.3) {
-    const motionHeading = Math.atan2(effVy * Z_STRETCH, effVx);
-    // Seed on first frame of reposition so we don't pop from an old
-    // physics heading to the new motion heading.
-    if (anim.animHeading == null) anim.animHeading = motionHeading;
-    const delta = wrapAngle(motionHeading - anim.animHeading);
-    anim.animHeading = wrapAngle(anim.animHeading + delta * STICKMAN_SMOOTH * 2);
-    heading = anim.animHeading;
-  } else {
-    // Not repositioning — track physics heading so re-entry into
-    // reposition smoothly interpolates from the current facing.
-    anim.animHeading = physicsHeading;
+  // Tick-rewind handling: when the simulation restarts (showcase
+  // replay, new match via `resetStateInPlace`, scenario re-init in
+  // the harness), `tick` jumps backwards. Without resyncing here,
+  // `anim.lastTick` would stay frozen at the old high value and
+  // every subsequent frame would compute `dt = 0` until physics
+  // caught up — the stickman would slide without animating for an
+  // entire match. Resync the reference frame so the next physics
+  // tick produces a sane `dt = 1`.
+  if (tick < anim.lastTick) {
+    anim.lastTick = tick;
+    anim.lastX    = player.x;
+    anim.lastY    = player.y;
   }
-  const forwardX = Math.cos(heading);
-  const forwardZ = Math.sin(heading);
 
-  // Walk tilt — sign from the component of motion along the player's
-  // heading. Positive = moving forward; negative = moving backward.
-  const effVworldZ = effVy * Z_STRETCH;
-  const forwardSpeed = effVx * forwardX + effVworldZ * forwardZ;
-  const targetAmplitude = Math.min(speed * 0.2, 1.0);
-  const targetTilt = speed > STICKMAN_RUN_THRESHOLD
-    ? Math.sign(forwardSpeed) * Math.min(
-        (speed - STICKMAN_RUN_THRESHOLD) * STICKMAN_TILT_PER_SPEED,
-        STICKMAN_TILT_MAX,
-      )
-    : 0;
-  const swingRate = 0.2 + speed * 0.04;
+  // Motion-dependent updates only run on frames where physics
+  // ticked. Speed-slider frames with no tick (slider < 1 or paused)
+  // would otherwise observe effVx = 0 / dt = 0, drain `amplitude`
+  // through the LPF, and visibly deflate the walk cycle — the
+  // animation must track PHYSICS time, not render time. On no-tick
+  // frames we re-emit the snapshot from cached anim state.
+  if (dt > 0) {
+    const denom = dt;
+    const effVx = (player.x - anim.lastX) / denom;
+    const effVy = (player.y - anim.lastY) / denom;
+    anim.lastTick = tick;
+    anim.lastX = player.x;
+    anim.lastY = player.y;
 
-  const targetCelebrate = isCelebrating  ? 1 : 0;
-  const targetGrieve    = isGrieving     ? 1 : 0;
-  const targetMatchWin  = isMatchendWin  ? 1 : 0;
-  const targetMatchLose = isMatchendLose ? 1 : 0;
-  const targetPushing   = player.pushTimer > 0 ? 1 : 0;
+    const physicsHeading = player.heading ?? 0;
+    const speed = Math.sqrt(effVx * effVx + effVy * effVy);
 
-  // TURN / STOP detection — both inferred from per-frame deltas.
-  // angVel = how fast the heading is swinging this tick; decel =
-  // how much speed dropped this tick. Scaled by the shared scales
-  // above so the smoothed `turn` / `stop` live in [0, 1].
-  const angVel = Math.abs(wrapAngle(heading - anim.prevHeading)) / denom;
-  const decel  = Math.max(0, (anim.prevSpeed - speed) / denom);
-  anim.prevHeading = heading;
-  anim.prevSpeed   = speed;
-  const targetTurn = Math.min(1, angVel / TURN_ANGVEL_SCALE);
-  const targetStop = Math.min(1, decel  / STOP_DECEL_SCALE);
+    // Animation heading — normally the physics heading, but during
+    // reposition the physics-side heading lags (stepReposition just
+    // translates position without updating heading). Face the motion
+    // direction instead so the stickman walks FACING kickoff instead
+    // of side-stepping. Smoothly interpolated via anim.animHeading
+    // so the turn doesn't snap.
+    let heading = physicsHeading;
+    if (isReposition && speed > 0.3) {
+      const motionHeading = Math.atan2(effVy * Z_STRETCH, effVx);
+      // Seed on first frame of reposition so we don't pop from an old
+      // physics heading to the new motion heading.
+      if (anim.animHeading == null) anim.animHeading = motionHeading;
+      const delta = wrapAngle(motionHeading - anim.animHeading);
+      anim.animHeading = wrapAngle(anim.animHeading + delta * STICKMAN_SMOOTH * 2);
+      heading = anim.animHeading;
+    } else {
+      // Not repositioning — track physics heading so re-entry into
+      // reposition smoothly interpolates from the current facing.
+      anim.animHeading = physicsHeading;
+    }
+    const forwardX = Math.cos(heading);
+    const forwardZ = Math.sin(heading);
 
-  // Push-progress edge detection: reset to 0 on the rising edge of
-  // pushTimer, then accumulate dt while it's positive.
-  if (player.pushTimer > 0) {
-    if (anim.prevPushTimer <= 0) anim.pushProgress = 0;
-    anim.pushProgress += dt;
-  } else {
-    anim.pushProgress = 0;
+    // Walk tilt — sign from the component of motion along the player's
+    // heading. Positive = moving forward; negative = moving backward.
+    const effVworldZ = effVy * Z_STRETCH;
+    const forwardSpeed = effVx * forwardX + effVworldZ * forwardZ;
+    // Amplitude drives the walk-swing magnitude. Bumped slope from
+    // 0.2 → 0.35 so slow walking has visible leg movement instead
+    // of the near-idle shuffle the old coefficient produced; cap
+    // stays at 1.0 so max thigh swing stays in the natural
+    // ~40° range (legSwing coefficient 0.7 × amp 1.0 = 0.7 rad).
+    const targetAmplitude = Math.min(speed * 0.35, 1.0);
+    const targetTilt = speed > STICKMAN_RUN_THRESHOLD
+      ? Math.sign(forwardSpeed) * Math.min(
+          (speed - STICKMAN_RUN_THRESHOLD) * STICKMAN_TILT_PER_SPEED,
+          STICKMAN_TILT_MAX,
+        )
+      : 0;
+    const swingRate = 0.2 + speed * 0.04;
+
+    const targetCelebrate = isCelebrating  ? 1 : 0;
+    const targetGrieve    = isGrieving     ? 1 : 0;
+    const targetMatchWin  = isMatchendWin  ? 1 : 0;
+    const targetMatchLose = isMatchendLose ? 1 : 0;
+    const targetPushing   = player.pushTimer > 0 ? 1 : 0;
+
+    // TURN / STOP detection — both inferred from per-frame deltas.
+    // angVel = how fast the heading is swinging this tick; decel =
+    // how much speed dropped this tick. Scaled by the shared scales
+    // above so the smoothed `turn` / `stop` live in [0, 1].
+    const angVel = Math.abs(wrapAngle(heading - anim.prevHeading)) / denom;
+    const decel  = Math.max(0, (anim.prevSpeed - speed) / denom);
+    anim.prevHeading = heading;
+    anim.prevSpeed   = speed;
+    const targetTurn = Math.min(1, angVel / TURN_ANGVEL_SCALE);
+    const targetStop = Math.min(1, decel  / STOP_DECEL_SCALE);
+
+    // Push-progress edge detection: reset to 0 on the rising edge of
+    // pushTimer, then accumulate dt while it's positive.
+    if (player.pushTimer > 0) {
+      if (anim.prevPushTimer <= 0) anim.pushProgress = 0;
+      anim.pushProgress += dt;
+    } else {
+      anim.pushProgress = 0;
+    }
+    anim.prevPushTimer = player.pushTimer;
+
+    // LPF smoothing + phase advancement.
+    anim.tilt      += (targetTilt      - anim.tilt)      * STICKMAN_SMOOTH;
+    anim.amplitude += (targetAmplitude - anim.amplitude) * STICKMAN_SMOOTH;
+    anim.celebrate += (targetCelebrate - anim.celebrate) * STICKMAN_SMOOTH;
+    anim.grieve    += (targetGrieve    - anim.grieve)    * STICKMAN_SMOOTH;
+    anim.matchWin  += (targetMatchWin  - anim.matchWin)  * STICKMAN_SMOOTH;
+    anim.matchLose += (targetMatchLose - anim.matchLose) * STICKMAN_SMOOTH;
+    anim.turn      += (targetTurn      - anim.turn)      * STICKMAN_SMOOTH;
+    anim.stop      += (targetStop      - anim.stop)      * STICKMAN_SMOOTH;
+    anim.pushing = targetPushing;
+    anim.phase          = (anim.phase          + swingRate        * dt) % TWO_PI;
+    anim.celebratePhase = (anim.celebratePhase + CELEB_PHASE_RATE  * dt) % TWO_PI;
+    anim.grievePhase    = (anim.grievePhase    + GRIEVE_PHASE_RATE * dt) % TWO_PI;
+
+    // Cache the tick-derived non-LPF scalars for no-tick render
+    // frames to pass through verbatim.
+    anim.cachedHeading    = heading;
+    anim.cachedForwardX   = forwardX;
+    anim.cachedForwardZ   = forwardZ;
+    anim.cachedSpeed      = speed;
+    anim.cachedTargetTurn = targetTurn;
+    anim.cachedTargetStop = targetStop;
   }
-  anim.prevPushTimer = player.pushTimer;
 
-  // LPF smoothing + phase advancement.
-  anim.tilt      += (targetTilt      - anim.tilt)      * STICKMAN_SMOOTH;
-  anim.amplitude += (targetAmplitude - anim.amplitude) * STICKMAN_SMOOTH;
-  anim.celebrate += (targetCelebrate - anim.celebrate) * STICKMAN_SMOOTH;
-  anim.grieve    += (targetGrieve    - anim.grieve)    * STICKMAN_SMOOTH;
-  anim.matchWin  += (targetMatchWin  - anim.matchWin)  * STICKMAN_SMOOTH;
-  anim.matchLose += (targetMatchLose - anim.matchLose) * STICKMAN_SMOOTH;
-  anim.turn      += (targetTurn      - anim.turn)      * STICKMAN_SMOOTH;
-  anim.stop      += (targetStop      - anim.stop)      * STICKMAN_SMOOTH;
-  anim.pushing = targetPushing;
-  anim.phase          = (anim.phase          + swingRate        * dt) % TWO_PI;
-  anim.celebratePhase = (anim.celebratePhase + CELEB_PHASE_RATE  * dt) % TWO_PI;
-  anim.grievePhase    = (anim.grievePhase    + GRIEVE_PHASE_RATE * dt) % TWO_PI;
+  // Re-use cached values when physics didn't tick this frame.
+  const heading   = anim.cachedHeading;
+  const forwardX  = anim.cachedForwardX;
+  const forwardZ  = anim.cachedForwardZ;
+  const speed     = anim.cachedSpeed;
+  const targetTurn = anim.cachedTargetTurn;
+  const targetStop = anim.cachedTargetStop;
 
   const kick = player.kick;
   const isKicking = !!(kick && kick.active);
@@ -210,6 +265,10 @@ export function advanceAnimState(
   out.dt             = dt;
   out.speed          = speed;
   out.swing          = Math.sin(anim.phase);
+  // cosine of phase used by the walk-leg composer to split swing
+  // vs stance per leg (swing phase of the right leg coincides with
+  // cos(phase) > 0; the left leg is 180° out of phase).
+  out.cosPhase       = Math.cos(anim.phase);
   out.amplitude      = anim.amplitude;
   out.walkTilt       = anim.tilt;
   out.celebrate      = anim.celebrate;

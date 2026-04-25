@@ -36,18 +36,62 @@ export const KICK_STRIKE_SPAN_T   = 0.15;
 export const KICK_FIRE_T          = KICK_WINDUP_MS / KICK_DURATION_MS;
 export const KICK_STRIKE_END_T    = Math.min(0.95, KICK_FIRE_T + KICK_STRIKE_SPAN_T);
 export const KICK_ARM_SWING       = Math.PI * 0.45;           // rad — counter-arm forward throw
-export const KICK_ARM_OPP_FRAC    = 0.35;                     // same-side arm small back-swing
-export const KICK_BACK_TILT       = 0.12;                     // rad — body lean back during windup
-export const KICK_FWD_TILT        = 0.22;                     // rad — body lean forward on strike
-export const KICK_CROUCH_DEPTH    = 0.12 * STICKMAN_GLYPH_SIZE; // body dip during windup
+export const KICK_ARM_OPP_FRAC    = 0.55;                     // same-side arm back-swing (counter-balance)
+export const KICK_BACK_TILT       = 0.18;                     // rad — body lean back during windup
+export const KICK_FWD_TILT        = 0.30;                     // rad — body lean forward on strike
+export const KICK_CROUCH_DEPTH    = 0.18 * STICKMAN_GLYPH_SIZE; // body dip during windup
 
 export const AIRKICK_STRIKE_SPAN_T = 0.20;
 export const AIRKICK_STRIKE_END_T  = Math.min(0.95, AIRKICK_PEAK_FRAC + AIRKICK_STRIKE_SPAN_T);
 export const AIRKICK_BACK_TILT     = 0.55;                    // rad — big back lean on volley
 
+// Airborne-specific overrides on the shared kick rig:
+//   • TUCK_THIGH / TUCK_SHIN — non-striking leg folds up under the
+//     hip (knee-up, foot tucked behind), instead of the ground-kick
+//     planted-leg micro-crouch.
+//   • ARM_SPLAY — both arms swing back-and-down for in-air balance,
+//     not opposite-forward like a ground kick's counter-swing.
+//   • ARM_YAW — outward yaw on each shoulder so the arms spread
+//     sideways rather than parallel.
+//   • HIP_TWIST_FRAC — volleys are more axial than rotational, so
+//     scale the shared hip twist down.
+export const AIRKICK_TUCK_THIGH    = 1.20;                    // rad (~69°) — knee-up at peak
+export const AIRKICK_TUCK_SHIN     = -1.40;                   // rad (~-80°) — shin folded back
+export const AIRKICK_ARM_SPLAY     = 0.45;                    // rad (~26°) — both arms back at peak
+export const AIRKICK_ARM_YAW       = 0.50;                    // rad (~29°) — outward shoulder yaw
+export const AIRKICK_ARM_ELBOW_FLEX = 0.40;                   // rad (~23°) — extra forearm bend on top of forearmAngleFor
+export const AIRKICK_HIP_TWIST_FRAC = 0.5;                    // shared kickHipTwist × this
+
 export const KICK_HIP_TWIST_MAX    = Math.PI * 0.11;          // ~20° at windup peak
-export const KICK_SUPPORT_CROUCH   = 0.2;                     // rad — upper-leg forward on support
+export const KICK_SUPPORT_CROUCH   = 0.35;                    // rad — upper-leg forward on support
 export const KICK_SUPPORT_SHIN_RATIO = 2;                     // shin rotates this × upper (opposite sign)
+
+// Blend window after `isKicking` flips on. The kick override pose
+// crossfades in over this duration so an in-stride kick doesn't
+// snap from "walk-cycle leg" to "neutral hanging" in a single
+// frame. Kept short (~3 frames at 60fps) so the wind-up itself
+// is not cosmetic.
+export const KICK_START_BLEND_MS   = 50;
+
+// ── Walk / run elbow flex ────────────────────────────────────
+// Real humans keep the elbow bent while walking or running — the
+// bend is phase-independent (elbow stays flexed through the whole
+// swing cycle rather than collapsing to straight at mid-swing) and
+// grows with speed: ~20° at a slow walk, ~90° at a sprint. Applied
+// only to the pure-locomotion path; kick/push/celebrate/matchend
+// keep their specialist arm poses (which use forearmAngleFor).
+export const WALK_ELBOW_BEND_MAX   = Math.PI * 0.42;          // rad — full bend at sprint (~75°)
+
+// ── Walk / run knee flex ─────────────────────────────────────
+// Real walking/running: the knee stays mostly straight during the
+// stance phase (foot on ground, body passing over) and folds hard
+// during swing (foot off ground, leg passing forward under the
+// hip). This is the OPPOSITE pattern to the old `shinAngleFor`
+// which bent proportional to |thigh|. New model: stance bend is a
+// small per-speed baseline; swing bend peaks at swing-midpoint and
+// drops back to the baseline at heel-strike / toe-off.
+export const WALK_STANCE_KNEE_BEND = 0.22;                    // rad — stance-phase bend (~13°) at full amp
+export const WALK_SWING_KNEE_BEND  = 1.00;                    // rad — added at swing midpoint (~57°) at full amp
 
 // ── Curve functions ──────────────────────────────────────────
 
@@ -210,6 +254,24 @@ export function airkickTiltAt(t) {
   if (t < AIRKICK_STRIKE_END_T) return -AIRKICK_BACK_TILT;
   const p = (t - AIRKICK_STRIKE_END_T) / (1 - AIRKICK_STRIKE_END_T);
   return -AIRKICK_BACK_TILT * (1 - easeInOut(p));
+}
+
+/**
+ * Tuck factor (0..1) for the non-striking leg during an airkick:
+ * ramps up as the player leaves the ground, holds at full tuck
+ * through the strike window, eases back to 0 as the player lands.
+ * Mirrors the airkickTilt envelope so the leg fold tracks the leap.
+ * Multiply by AIRKICK_TUCK_THIGH / AIRKICK_TUCK_SHIN at the call
+ * site to drive the trailing leg's hip + knee.
+ */
+export function airkickTuckAt(t) {
+  if (t < AIRKICK_PEAK_FRAC) {
+    const p = t / AIRKICK_PEAK_FRAC;
+    return easeOut(p);
+  }
+  if (t < AIRKICK_STRIKE_END_T) return 1;
+  const p = (t - AIRKICK_STRIKE_END_T) / (1 - AIRKICK_STRIKE_END_T);
+  return 1 - easeInOut(p);
 }
 
 /**

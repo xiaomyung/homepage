@@ -86,7 +86,7 @@ const KICK_NOISE_SCALE = 0.3;
 const KICK_NOISE_VERT = 0.5;
 const AIRKICK_MAX_Z = 20;
 export const AIRKICK_MS = 350;
-export const AIRKICK_PEAK_FRAC = 0.4;
+export const AIRKICK_PEAK_FRAC = 0.5;
 const AIRKICK_DZ_THRESHOLD = 0.5;
 // Ground-kick timing: windup → strike window → recovery → idle.
 // `KICK_WINDUP_MS` and `AIRKICK_PEAK_FRAC * AIRKICK_MS` mark the
@@ -1823,11 +1823,26 @@ function kickPhaseTimes(kick) {
   };
 }
 
+// Windup is split into two sub-phases so the foot never JUMPS:
+//   • load (0 → LOAD_FRAC of windup)        : 0 → WINDUP_PEAK_TEFF
+//   • rise (LOAD_FRAC → 1 of windup)        : WINDUP_PEAK_TEFF → 1
+// This guarantees the strike phase starts with the leg already at
+// full extension, so the windup→strike boundary has no discontinuity
+// (the previous "tEff hops 0.7 → 1.0 in a single tick" caused the
+// last 30% of leg travel to teleport in one frame).
+const WINDUP_LOAD_FRAC = 0.7;
 export function kickLegExtension(kick) {
   if (!kick || !kick.active) return 0;
   const { windupMs, strikeEndMs, durationMs } = kickPhaseTimes(kick);
   const t = kick.timer;
-  if (t < windupMs) return WINDUP_PEAK_TEFF * (t / windupMs);
+  const loadEndMs = windupMs * WINDUP_LOAD_FRAC;
+  if (t < loadEndMs) {
+    return WINDUP_PEAK_TEFF * (t / loadEndMs);
+  }
+  if (t < windupMs) {
+    const riseT = (t - loadEndMs) / (windupMs - loadEndMs);
+    return WINDUP_PEAK_TEFF + (1 - WINDUP_PEAK_TEFF) * riseT;
+  }
   if (t < strikeEndMs) return 1;
   const recT = (t - strikeEndMs) / Math.max(1, durationMs - strikeEndMs);
   return Math.max(0, 1 - recT);
@@ -1844,7 +1859,18 @@ export function kickLegExtension(kick) {
 export function pushArmExtension(pushTimer) {
   if (pushTimer <= 0) return 0;
   const t = 1 - (pushTimer / PUSH_ANIM_MS);
-  if (t < PUSH_WINDUP_FRAC) return PUSH_WINDUP_PEAK_TEFF * (t / PUSH_WINDUP_FRAC);
+  // Same load+rise split as kickLegExtension: the last 30% of the
+  // windup ramps from PUSH_WINDUP_PEAK_TEFF up to 1 instead of
+  // jumping at the windup→strike boundary, so the fist doesn't
+  // teleport the last 30% of its travel in one frame.
+  const loadEndT = PUSH_WINDUP_FRAC * WINDUP_LOAD_FRAC;
+  if (t < loadEndT) {
+    return PUSH_WINDUP_PEAK_TEFF * (t / loadEndT);
+  }
+  if (t < PUSH_WINDUP_FRAC) {
+    const riseT = (t - loadEndT) / (PUSH_WINDUP_FRAC - loadEndT);
+    return PUSH_WINDUP_PEAK_TEFF + (1 - PUSH_WINDUP_PEAK_TEFF) * riseT;
+  }
   if (t < PUSH_STRIKE_FRAC) return 1;
   const recT = (t - PUSH_STRIKE_FRAC) / Math.max(1e-6, 1 - PUSH_STRIKE_FRAC);
   return Math.max(0, 1 - recT);
@@ -1964,6 +1990,18 @@ export function pushArmPose(player, out) {
  *
  * Pure, allocation-free into `out`. `out` is returned.
  */
+// Three-key cock-back foot path. Without an intermediate "cock"
+// keyframe the foot travels in a straight line from rest to the
+// ball, which reads as "snap to ball". A real kicker first loads
+// the leg back-and-up (knee tucked, foot pulled behind) and only
+// then drives forward into the strike. The path during windup is:
+//   load (tEff: 0 → WINDUP_PEAK_TEFF):      rest → cock
+//   rise (tEff: WINDUP_PEAK_TEFF → 1):      cock → target
+// Strike holds at target. Recovery does NOT pass through cock
+// (that would look like a re-load); it lerps target → rest
+// directly so the leg settles after follow-through.
+const KICK_COCK_FWD_FRAC = 0.20;  // foot 20% of leg-length behind hip
+const KICK_COCK_UP_FRAC  = 0.50;  // foot at 50% of leg-length below hip
 export function kickLegPose(kick, hipWX, hipWY, hipWZ, forwardX, forwardZ, out) {
   if (!kick || !kick.active) {
     out.upperAngle = 0;
@@ -1977,8 +2015,25 @@ export function kickLegPose(kick, hipWX, hipWY, hipWZ, forwardX, forwardZ, out) 
   const fwd = dx * forwardX + dz * forwardZ;
   const up  = dy;
   const legLen = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG;
-  const targetFwd = fwd * tEff;
-  const targetUp  = up * tEff + (-legLen) * (1 - tEff);
+  const cockFwd = -KICK_COCK_FWD_FRAC * legLen;
+  const cockUp  = -KICK_COCK_UP_FRAC  * legLen;
+
+  let targetFwd, targetUp;
+  if (kick.stage === 'recovery') {
+    // Recovery: target → rest, no detour through cock.
+    targetFwd = fwd * tEff;
+    targetUp  = up * tEff + (-legLen) * (1 - tEff);
+  } else if (tEff < WINDUP_PEAK_TEFF) {
+    // Load: rest → cock.
+    const p = tEff / WINDUP_PEAK_TEFF;
+    targetFwd =       0 * (1 - p) + cockFwd * p;
+    targetUp  = -legLen * (1 - p) + cockUp  * p;
+  } else {
+    // Rise + strike-hold: cock → target.
+    const p = (tEff - WINDUP_PEAK_TEFF) / (1 - WINDUP_PEAK_TEFF);
+    targetFwd = cockFwd * (1 - p) + fwd * p;
+    targetUp  = cockUp  * (1 - p) + up  * p;
+  }
   solve2BoneIK(targetFwd, targetUp, STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG, _scratchIKRes);
   out.upperAngle = _scratchIKRes.upperAngle;
   out.lowerAngle = _scratchIKRes.lowerAngle;

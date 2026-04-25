@@ -42,8 +42,14 @@ import {
 import { shinAngleFor, forearmAngleFor } from '../renderer-math.js';
 import {
   KICK_ARM_OPP_FRAC, KICK_SUPPORT_SHIN_RATIO,
+  AIRKICK_TUCK_THIGH, AIRKICK_TUCK_SHIN,
+  AIRKICK_ARM_SPLAY, AIRKICK_ARM_YAW, AIRKICK_ARM_ELBOW_FLEX,
+  AIRKICK_HIP_TWIST_FRAC,
+  KICK_START_BLEND_MS,
   PUSH_TOTAL_TICKS,
-  kickArmAngleAt, kickDipAt, kickTiltAt, airkickTiltAt,
+  WALK_ELBOW_BEND_MAX,
+  WALK_STANCE_KNEE_BEND, WALK_SWING_KNEE_BEND,
+  kickArmAngleAt, kickDipAt, kickTiltAt, airkickTiltAt, airkickTuckAt,
   kickHipTwistAt, kickSupportCrouchAt,
   pushBodyDipAt, pushHopAt, pushBodyTiltAt,
   pushLegStanceAt, pushLegSquatAt,
@@ -241,8 +247,14 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     const kickT   = Math.min(kick.timer / totalMs, 1);
     kickTiltOffset    = isAirkick ? airkickTiltAt(kickT) : kickTiltAt(kickT);
     kickArmAngle      = kickArmAngleAt(kickT);
-    kickBodyDip       = kickDipAt(kickT);
-    kickHipTwist      = kickHipTwistAt(kickT);
+    // Ground-style torso dip is meaningful only when the player is
+    // planted; in the air the leap already lifts the hip, so a
+    // simultaneous downward dip just fights `airZ`.
+    kickBodyDip       = isAirkick ? 0 : kickDipAt(kickT);
+    // Volleys are more axial than rotational — halve the shared hip
+    // twist for in-air kicks so the body reads as "leap + strike"
+    // rather than a planted torque.
+    kickHipTwist      = kickHipTwistAt(kickT) * (isAirkick ? AIRKICK_HIP_TWIST_FRAC : 1);
     kickSupportCrouch = kickSupportCrouchAt(kickT);
   }
 
@@ -351,10 +363,17 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   const lHipZ = baseZ - twistedRightZ * STICKMAN_HIP_OFX;
 
   // ── Walk swing base (arms contralateral, legs contralateral) ─
-  const armSwing = swing * 0.85 * amplitude;
+  // Arm coefficient slightly under the leg coefficient — real
+  // runners rotate at the shoulder a bit less than at the hip,
+  // and the elbow bend below adds some hand excursion on top.
+  // The swing centre is biased BACKWARD so the back-swing reaches
+  // further than the forward-swing, matching how runners' arms
+  // sit slightly behind the torso line at neutral.
+  const armSwing = swing * 0.72 * amplitude;
   const legSwing = -swing * 0.7  * amplitude;
-  let leftArmAngle  =  armSwing;
-  let rightArmAngle = -armSwing;
+  const armSwingBias = -0.18 * amplitude;  // ~-10° shift at full amp
+  let leftArmAngle  =  armSwing + armSwingBias;
+  let rightArmAngle = -armSwing + armSwingBias;
   let leftLegAngle  =  legSwing;
   let rightLegAngle = -legSwing;
 
@@ -379,11 +398,42 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     rightArmAngle = rightArmAngle * celebInv + armA * celeb;
   }
 
-  // ── Per-leg (upper, lower) base: cosmetic knee follow-through ─
+  // ── Per-leg (upper, lower) base ──────────────────────────
+  // Pure-locomotion knee flex: humans keep the knee mostly straight
+  // during stance (foot on ground) and fold it hard during swing
+  // (foot off ground, passing forward under the hip). We detect
+  // swing vs stance per leg from cosPhase: for the right leg, swing
+  // phase coincides with cos(phase) > 0 (legAngle = sin(phase) * ...
+  // is increasing); the left leg is 180° out of phase so its swing
+  // phase is cos(phase) < 0. `swingT` peaks at swing midpoint and
+  // drops to 0 at mid-stance via (1 ± cosPhase) / 2.
+  //
+  // Other states (kick / push / celebrate / matchend / grieve) keep
+  // the legacy `shinAngleFor` so their authored leg curves stay
+  // intact; those blocks override the walk base below.
+  const walkLegsActive = !isKicking
+    && !(pushing > 0)
+    && celeb < 0.001
+    && grieve < 0.001
+    && matchWin < 0.001
+    && matchLose < 0.001;
   let leftUpperAngle  = leftLegAngle;
-  let leftLowerAngle  = shinAngleFor(leftLegAngle);
   let rightUpperAngle = rightLegAngle;
-  let rightLowerAngle = shinAngleFor(rightLegAngle);
+  let leftLowerAngle;
+  let rightLowerAngle;
+  if (walkLegsActive) {
+    const cosPhase = animSnap.cosPhase || 0;
+    const rightSwingT = (1 + cosPhase) * 0.5;
+    const leftSwingT  = (1 - cosPhase) * 0.5;
+    const ampFrac = Math.min(1, amplitude);
+    const stanceBend = WALK_STANCE_KNEE_BEND * ampFrac;
+    const swingBend  = WALK_SWING_KNEE_BEND  * ampFrac;
+    leftLowerAngle  = leftLegAngle  - stanceBend - swingBend * leftSwingT;
+    rightLowerAngle = rightLegAngle - stanceBend - swingBend * rightSwingT;
+  } else {
+    leftLowerAngle  = shinAngleFor(leftLegAngle);
+    rightLowerAngle = shinAngleFor(rightLegAngle);
+  }
 
   // Celebrate legs — symmetric squat that drives the jump. Peaks at
   // full flex when the hip is at its lowest (crouch) and fully
@@ -398,17 +448,49 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     rightLowerAngle = rightLowerAngle * celebInv + (-legFlex) * celeb;
   }
 
-  // Kick override: right leg → IK to kick.footTarget; support leg
-  // (left) micro-crouches; arms swap to the kick counter-swing.
+  // Kick override: right leg → IK to kick.footTarget; the support
+  // (left) leg + arms differ by kick kind:
+  //   ground — left leg micro-crouches under the hip (planted);
+  //            arms counter-swing (one forward, one slightly back).
+  //   air    — left leg tucks UP under the hip (knee + foot lifted
+  //            for clearance and balance); both arms swing back-and-
+  //            out for in-air balance, splayed via shoulder yaw.
   // Celebrate outranks the kick override (celeb > 0.001 skips this).
+  //
+  // Start blend: the kick pose ramps in over the first ~50 ms after
+  // `isKicking` flips on, so the leg/arm angles fade from the prior
+  // walk-cycle pose into the kick pose instead of snapping. Without
+  // this, an in-stride kick reads as the leg teleporting to neutral.
   if (isKicking && celeb < 0.001) {
+    const startBlend = Math.min(1, kick.timer / KICK_START_BLEND_MS);
+    const walkRU = rightUpperAngle, walkRL = rightLowerAngle;
+    const walkLU = leftUpperAngle,  walkLL = leftLowerAngle;
+    const walkLA = leftArmAngle,    walkRA = rightArmAngle;
+
     kickLegPose(kick, rHipX, hipBaseY, rHipZ, forwardX, forwardZ, scratchKickPose);
-    rightUpperAngle = scratchKickPose.upperAngle;
-    rightLowerAngle = scratchKickPose.lowerAngle;
-    leftUpperAngle = leftLegAngle + kickSupportCrouch;
-    leftLowerAngle = shinAngleFor(leftLegAngle) - KICK_SUPPORT_SHIN_RATIO * kickSupportCrouch;
-    leftArmAngle  = kickArmAngle;
-    rightArmAngle = -kickArmAngle * KICK_ARM_OPP_FRAC;
+    let kickRU = scratchKickPose.upperAngle;
+    let kickRL = scratchKickPose.lowerAngle;
+    let kickLU, kickLL, kickLA, kickRA;
+    if (isAirkick) {
+      const tuck = airkickTuckAt(Math.min(kick.timer / AIRKICK_MS, 1));
+      kickLU = AIRKICK_TUCK_THIGH * tuck;
+      kickLL = AIRKICK_TUCK_SHIN  * tuck;
+      const armBack = -AIRKICK_ARM_SPLAY * tuck;
+      kickLA = armBack;
+      kickRA = armBack;
+    } else {
+      kickLU = leftLegAngle + kickSupportCrouch;
+      kickLL = shinAngleFor(leftLegAngle) - KICK_SUPPORT_SHIN_RATIO * kickSupportCrouch;
+      kickLA = kickArmAngle;
+      kickRA = -kickArmAngle * KICK_ARM_OPP_FRAC;
+    }
+
+    rightUpperAngle = walkRU * (1 - startBlend) + kickRU * startBlend;
+    rightLowerAngle = walkRL * (1 - startBlend) + kickRL * startBlend;
+    leftUpperAngle  = walkLU * (1 - startBlend) + kickLU * startBlend;
+    leftLowerAngle  = walkLL * (1 - startBlend) + kickLL * startBlend;
+    leftArmAngle    = walkLA * (1 - startBlend) + kickLA * startBlend;
+    rightArmAngle   = walkRA * (1 - startBlend) + kickRA * startBlend;
   }
 
   // Push legs: boxing-stance split (one leg forward, one back) during
@@ -450,11 +532,51 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     }
   }
 
-  // ── Per-arm (upper, lower) base: cosmetic elbow follow-through ─
+  // ── Per-arm (upper, lower) base ──────────────────────────
+  // Pure-locomotion elbow bend: phase-independent flex that scales
+  // with speed (0° idle → ~90° sprint). Real humans keep the elbow
+  // bent through the whole swing cycle instead of snapping straight
+  // at mid-swing, and the bend deepens as speed rises. For kick /
+  // push / celebrate / matchend / grieve we fall back to the legacy
+  // angle-proportional `forearmAngleFor` so those specialist poses
+  // keep the elbow behaviour they were authored against.
+  const pureLocomotion = !isKicking
+    && !(pushing > 0)
+    && celeb < 0.001
+    && grieve < 0.001
+    && matchWin < 0.001
+    && matchLose < 0.001;
   let leftUpperArmAngle  = leftArmAngle;
-  let leftLowerArmAngle  = forearmAngleFor(leftArmAngle);
   let rightUpperArmAngle = rightArmAngle;
-  let rightLowerArmAngle = forearmAngleFor(rightArmAngle);
+  let leftLowerArmAngle;
+  let rightLowerArmAngle;
+  if (pureLocomotion) {
+    // Drive the elbow bend off the LPF-smoothed `amplitude` rather
+    // than raw `speed`. `amplitude` converges in ~6–7 frames, so
+    // accelerations ramp the bend smoothly; raw-speed-driven bend
+    // would snap instantly and make stops/starts look jittery.
+    const bendFrac = Math.min(1, amplitude);
+    const walkElbowBend = WALK_ELBOW_BEND_MAX * bendFrac;
+    leftLowerArmAngle  = leftArmAngle  + walkElbowBend;
+    rightLowerArmAngle = rightArmAngle + walkElbowBend;
+  } else {
+    leftLowerArmAngle  = forearmAngleFor(leftArmAngle);
+    rightLowerArmAngle = forearmAngleFor(rightArmAngle);
+  }
+
+  // Airkick forearm flex — `forearmAngleFor` alone gives only ~5°
+  // of bend on a back-swung arm, which reads as a straight stick
+  // hanging behind the body. Layer a small tuck-scaled forward
+  // bend on top so the elbows visibly flex when arms swing back
+  // for in-air balance. Scaled by `tuck` so it ramps with the
+  // leap and unwinds on landing — no flex at idle / kick start.
+  if (isAirkick && celeb < 0.001) {
+    const tuck = airkickTuckAt(Math.min(kick.timer / AIRKICK_MS, 1));
+    const extraFlex = AIRKICK_ARM_ELBOW_FLEX * tuck;
+    leftLowerArmAngle  += extraFlex;
+    rightLowerArmAngle += extraFlex;
+  }
+
   let leftUpperYaw = 0, leftLowerYaw = 0;
   let rightUpperYaw = 0, rightLowerYaw = 0;
 
@@ -465,6 +587,16 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   if (celeb > 0.001) {
     leftUpperYaw  = leftUpperYaw  + (-CELEB_ARM_YAW) * celeb;
     rightUpperYaw = rightUpperYaw + (+CELEB_ARM_YAW) * celeb;
+  }
+
+  // Airkick yaw — both arms splay outward for in-air balance. Same
+  // tuck envelope so the splay ramps with the leap and unwinds on
+  // landing. Without yaw the back-swung arms hang parallel behind
+  // the body instead of reading as a balance pose.
+  if (isAirkick && celeb < 0.001) {
+    const tuck = airkickTuckAt(Math.min(kick.timer / AIRKICK_MS, 1));
+    leftUpperYaw  += -AIRKICK_ARM_YAW * tuck;
+    rightUpperYaw += +AIRKICK_ARM_YAW * tuck;
   }
 
   // Hit-reaction arm fling — both arms jerk forward from inertia when

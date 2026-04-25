@@ -70,6 +70,37 @@ describe('animation/state', () => {
       assert.equal(snap.state, 'WALK');
     });
 
+    it('resyncs lastTick when tick rewinds (showcase replay / new match)', () => {
+      // Regression: in the showcase loop, players are reused across
+      // matches via `resetStateInPlace`. Each new match restarts at
+      // tick=0 while `anim.lastTick` still holds the previous match's
+      // final tick. Without a rewind handler, dt would compute as 0
+      // forever and the stickman would slide without animating.
+      const p = makePlayer({ x: 0 });
+      const a = createAnimState(0, p);
+      // Run a "match" — many ticks of motion.
+      for (let t = 1; t <= 100; t++) {
+        p.x = t * 5;
+        advanceAnimState(a, p, t, false, {});
+      }
+      assert.equal(a.lastTick, 100);
+      // New "match" — tick restarts at 0, player resets to origin.
+      p.x = 0;
+      advanceAnimState(a, p, 0, false, {});
+      // Tick rewind must have been detected and lastTick resynced.
+      assert.equal(a.lastTick, 0);
+      // Now run a few normal ticks and verify amplitude responds to
+      // motion (not stuck because dt was permanently 0).
+      let snap;
+      for (let t = 1; t <= 30; t++) {
+        p.x = t * 5;
+        snap = advanceAnimState(a, p, t, false, {});
+      }
+      assert.ok(snap.amplitude > 0.5,
+        `amplitude=${snap.amplitude} should ramp up after match restart`);
+      assert.equal(snap.state, 'WALK');
+    });
+
     it('amplitude LPF converges toward speed*0.2', () => {
       const p = makePlayer({ x: 0 });
       const a = createAnimState(0, p);

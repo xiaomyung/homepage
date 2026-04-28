@@ -1,6 +1,6 @@
 # homepage
 
-Personal homelab dashboard — a static page with a live infra banner, health-check dots for every self-hosted service, an ASCII Schwarzschild black hole background, and a football mini-game whose AI players are trained via neuroevolution in the browser.
+Personal homelab dashboard — a static page with a live infra banner, health-check dots for every self-hosted service, an ASCII Schwarzschild black hole background, and a football mini-game where two deterministic AI stickmen play continuous live matches.
 
 ## Running locally
 
@@ -13,13 +13,9 @@ git clone https://github.com/xiaomyung/homepage.git
 cd homepage
 ```
 
-Open two terminals:
+Single terminal:
 
 ```sh
-# Terminal 1 — football evolution broker
-node games/football/api/broker.mjs
-
-# Terminal 2 — dev server (static files + API proxy)
 node dev-server.mjs
 ```
 
@@ -29,7 +25,7 @@ Open **http://localhost:8000**.
 
 - **Service cards** show as offline — the health checks probe `*.home.arpa` domains that only resolve on the homelab. This is expected.
 - **Banner** shows `—` for every field — the stats endpoint needs node-exporter and Docker, which aren't present locally. This is expected.
-- **Football game** works fully — the showcase match, training workers, evolution, and stats panel all run locally.
+- **Football game** works fully — pure client-side controller-vs-controller showcase matches loop continuously.
 - **Black hole background** renders normally.
 
 ### Windows notes
@@ -47,63 +43,66 @@ Works as-is with any Node 22+ install (Homebrew, nvm, fnm, distro package).
 | `index.html` | Dashboard markup, banner, service cards, football section |
 | `style.css` | Monochrome dark theme, responsive grid, animations |
 | `app.js` | Health checks, banner updater, stats loader, grid capping |
-| `dev-server.mjs` | Local dev: static files + `/api/football` and `/api/stats` proxy |
-| `setup.sh` | Idempotent production bring-up (systemd units + Caddy) |
+| `dev-server.mjs` | Local dev: static files + `/api/stats` proxy |
+| `setup.sh` | Idempotent production bring-up (systemd unit + Caddy) |
 | `requirements.txt` | Optional: Playwright for the headless screenshot dev tool |
 | `stats/app.mjs` | `/api/stats` shim — parses node-exporter metrics + Docker status |
 | `stats/homepage-stats.service` | systemd unit for the stats shim |
 | `games/blackhole/blackhole.js` | ASCII Schwarzschild lens background animation |
 | `games/football/main.js` | Football game entry point |
 | `games/football/physics.js` | Headless physics engine (DOM-free, pure math) |
-| `games/football/renderer.js` | Three.js 3D renderer (pooled capsule + sphere meshes) |
+| `games/football/renderer.js` | Three.js 3D renderer (pooled capsule + sphere meshes, name labels, role dots) |
 | `games/football/animation/` | Pure animation pipeline: state.js + poses.js + curves.js + sampler |
-| `games/football/nn.js` | Feedforward neural net (25→16→9, LeakyReLU + tanh) |
-| `games/football/fallback.js` | Handcoded fallback heuristic (frozen baseline opponent) |
-| `games/football/worker.js` | Web Worker for headless training matches |
-| `games/football/training-orchestrator.js` | Client-side matchmaker + sync loop |
-| `games/football/matchmaker.js` | Deterministic matchup picker (pop + fallback rotation) |
-| `games/football/ui.js` | Scoreboard, stats panel, fitness graph, config controls |
-| `games/football/api/broker.mjs` | Node broker: population store, breeding, stats API |
-| `games/football/evolution/ga.mjs` | Genetic algorithm: tournament selection, crossover, mutation |
-| `games/football/evolution/build-warm-start.mjs` | Offline tool: generates `warm_start_weights.json` |
-| `games/football/tests/` | Node test runner tests — physics, nn, fallback, broker, matchmaker, animation/*, frame-loop, stamina, runtime-timer, fitness, reset-pipeline, etc. |
-| `games/football/debug/` | Dev tools: test-renderer harness, headless profiler, Playwright screenshot scripts |
+| `games/football/ai/controller.js` | Public seam: `decide(state, side) → Float64Array(9)` |
+| `games/football/ai/perception.js` | Pure: state → situational facts |
+| `games/football/ai/decision.js` | Pure: facts + role hysteresis → tactical intent |
+| `games/football/ai/action.js` | Pure: intent → 9-float action vector |
+| `games/football/ai/tuning.js` | All controller tunables in one file |
+| `games/football/ai/names.js` | Footballer-name pool, seeded picker |
+| `games/football/ui.js` | Scoreboard (role dots, names, score, timer), camera toggles |
+| `games/football/tests/` | Node test runner tests — physics, ai/*, animation/*, frame-loop, stamina |
+| `games/football/debug/` | Dev tools: test-renderer harness, Playwright screenshot scripts |
 | `fonts/` | Vendored Iosevka Term woff2 (regular + medium) |
 
 Three.js is loaded from a pinned `unpkg` CDN URL in `renderer.js` —
 no vendored copy.
 
-## Football AI
+## Football scrimmage
 
-Below the dashboard, two AI stickmen play football. Showcase matches loop automatically. Click **[ start ]** to begin training — browser web workers run headless matches in the background.
+Below the dashboard, two stickmen play continuous 30 s matches. The
+controller is fully deterministic — pure-press behaviour with role
+hysteresis, asymmetric goalie reflex, and per-side personality
+seeded from each match's seed.
 
 ### Architecture
 
-- **Neural net:** 25→16→9 (LeakyReLU hidden, tanh output, 569 weights). Inputs 20–24 are derived (possession / ball threat / goal distances) so the small net mostly routes pre-cooked features into the action.
-- **Inputs:** player/opponent positions + velocities, stamina, ball state (3D), goal positions, field width — plus the derived features above. All normalized to [-1, 1].
-- **Outputs:** movement (2D), kick toggle + direction (3D) + power, push toggle + power.
-- **Training:** fully client-side. Web Workers run headless physics matches, report results to the broker. Broker aggregates and triggers breeding when every brain has enough matches.
-- **Genetic algorithm:** population 50, tournament selection (k=5), two-point crossover, Gaussian mutation with weight decay, 5 elites carried forward, ~6% random injection per generation.
-- **Warm start:** generation 0 is seeded from a supervised-learning distillation of the fallback heuristic, not random weights.
-- **Animation:** purely derived — `animation/state.js` advances LPF factors + phase, `animation/poses.js` composes a layered pose; physics state is never written from the animation layer (preserves bit-deterministic showcase replay).
-
-### Broker API
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/football/population` | GET | Full population snapshot (weights + metadata) |
-| `/api/football/results` | POST | Aggregated match results from client workers |
-| `/api/football/showcase` | GET | Brain pair + seed + weights snapshots for the visual match (1:1 fallback-mode vs brain-vs-brain replays) |
-| `/api/football/stats` | GET | Generation, fitness, match counts, runtime |
-| `/api/football/history` | GET | Fitness history for the graph (downsampled) |
-| `/api/football/config` | GET/POST | Evolution tunables |
-| `/api/football/reset` | POST | Wipe population, re-seed from warm start |
+- **Controller pipeline** (under `games/football/ai/`):
+  `perception.js` → `decision.js` → `action.js` → 9-float action
+  vector. `controller.js` exports the public `decide(state, side)`
+  seam; all constants live in `tuning.js`. Pure functions — the
+  only mutated state is `state.aiRoleState[side]` for role hysteresis.
+- **Inputs:** read directly off the public physics state (player
+  positions/velocities, ball state, stamina, pause flags, field
+  geometry). No NN-style sensor encoder, no normalised feature
+  vector — situational facts are derived in `perception.js`.
+- **Outputs:** movement (2D), kick toggle + direction (3D) + power,
+  push toggle + power. Same 9-slot vector the physics engine
+  consumed under the old NN pipeline.
+- **Animation:** purely derived — `animation/state.js` advances LPF
+  factors + phase, `animation/poses.js` composes a layered pose;
+  physics state is never written from the animation layer.
+- **Future learning:** the controller seam is a single function
+  signature. A future learned policy ships as another module that
+  exports the same `decide(state, side) → Float64Array(9)` and
+  swaps in via one import.
 
 ### Controls
 
-- **[ start ] / [ stop ]** — toggle background training workers
-- **[ options ]** — stats panel, fitness graph, worker count, freecam, follow-cam, test-renderer link, reset
-- **Auto-pause** — training stops when the tab is hidden or the app is backgrounded
+- **[ options ]** — toggles the panel: freecam + follow-ball
+  toggles, test-renderer link.
+- The **[ start ] / [ stop ] / [ reset ]** buttons in the panel
+  are stubs — they sit in the DOM as layout placeholders for when
+  learning gets re-introduced; clicking does nothing today.
 
 ### Animation debug harness
 
@@ -120,8 +119,7 @@ options panel via the **[ test renderer ]** button.
 1. Add a Caddy site block with `header Access-Control-Allow-Origin "https://xiaomyung.com"`
 2. Add a `redir /<shortcut> https://<service>.home.arpa permanent` in the `xiaomyung.com` entry-point block
 3. Add an `<a class="card">` in the appropriate `<section>` in `index.html` — `href` to the shortcut, `data-check` to the direct URL
-4. Bump `?v=N` in the `<link>` tag if `style.css` was touched
-5. `sudo systemctl reload caddy`
+4. Reload Caddy
 
 Not every service deserves a card — the dashboard is a launcher, not a status board. If a service has no UI worth visiting, skip the card.
 
@@ -133,7 +131,7 @@ On a fresh clone with Node 22+, Caddy, and systemd available:
 ./setup.sh
 ```
 
-This installs the systemd units for the stats shim and football broker, injects the API reverse-proxy blocks into the Caddyfile, and verifies the endpoints respond.
+This installs the systemd unit for the stats shim, ensures the `/api/stats` reverse-proxy block exists in the Caddyfile, and verifies the endpoint responds. The football page is fully client-side — no server piece to install for it.
 
 ### Optional: Playwright screenshot tool
 

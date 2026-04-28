@@ -84,18 +84,13 @@ function opponentBlocksLane(bx, by, dirX, dirY, ox, oy) {
   return Math.hypot(perpX, perpY) < NEAR_BLOCK_RADIUS;
 }
 
-/** Self's goal line is threatened: ball heading toward own goal at speed,
- *  past midfield on the dangerous side. */
+/** Self's goal line is threatened: ball is on own half AND moving
+ *  toward own goal faster than the threat threshold. */
 function ballThreatensOwnGoal(field, ball, side) {
   const ownIsLeft = side === 'left';
-  const ballOnDangerSide = ownIsLeft
-    ? ball.x < field.midX + field.width * GOALIE_THREAT_X_FRAC * 0
-    : ball.x > field.midX - field.width * GOALIE_THREAT_X_FRAC * 0;
-  // Simpler: ball past midfield on own side.
   const onOwnHalf = ownIsLeft ? ball.x < field.midX : ball.x > field.midX;
   if (!onOwnHalf) return false;
-  const headingToGoal = ownIsLeft ? ball.vx < -GOALIE_THREAT_VEL : ball.vx > GOALIE_THREAT_VEL;
-  return headingToGoal;
+  return ownIsLeft ? ball.vx < -GOALIE_THREAT_VEL : ball.vx > GOALIE_THREAT_VEL;
 }
 
 /** Predicted y-coordinate of ball when it crosses self's goal line. */
@@ -116,14 +111,12 @@ function pushOpportunity(self, opp, ball) {
   const by = ball.y;
   const selfToOpp = Math.hypot(oc.x - sc.x, oc.y - sc.y);
   if (selfToOpp > PUSH_RANGE_X * PUSH_RANGE_FRAC) return false;
-  // Opp between self and ball: dot of (opp-self) and (ball-self) > 0.
   const sx = oc.x - sc.x;
   const sy = oc.y - sc.y;
   const bxr = bx - sc.x;
   const byr = by - sc.y;
   const dot = sx * bxr + sy * byr;
   if (dot <= 0) return false;
-  // Self facing opp.
   const wantAngle = Math.atan2(oc.y - sc.y, oc.x - sc.x);
   return Math.abs(wrapAngle(wantAngle - self.heading)) < PUSH_FACE_TOL;
 }

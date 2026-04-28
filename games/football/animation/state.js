@@ -159,24 +159,30 @@ export function advanceAnimState(
     const physicsHeading = player.heading ?? 0;
     const speed = Math.sqrt(effVx * effVx + effVy * effVy);
 
-    // Animation heading — normally the physics heading, but during
-    // reposition the physics-side heading lags (stepReposition just
-    // translates position without updating heading). Face the motion
-    // direction instead so the stickman walks FACING kickoff instead
-    // of side-stepping. Smoothly interpolated via anim.animHeading
-    // so the turn doesn't snap.
+    // Animation heading — normally physics heading, with two overrides:
+    //   1. REPOSITION: physics-side stepReposition only translates,
+    //      doesn't update heading. Face the motion direction so the
+    //      stickman walks FACING kickoff instead of side-stepping.
+    //   2. MATCHEND: rotate to face the camera (heading = π/2, toward
+    //      +z) so winner/loser poses read for the audience instead
+    //      of edge-on. Same LPF pattern as REPOSITION so the rotation
+    //      eases in over ~0.5s.
+    // Both are interpolated via anim.animHeading so the turn doesn't snap.
     let heading = physicsHeading;
+    const isMatchendPose = isMatchendWin || isMatchendLose;
     if (isReposition && speed > REPOSITION_SPEED_GATE) {
       const motionHeading = Math.atan2(effVy * Z_STRETCH, effVx);
-      // Seed on first frame of reposition so we don't pop from an old
-      // physics heading to the new motion heading.
       if (anim.animHeading == null) anim.animHeading = motionHeading;
       const delta = wrapAngle(motionHeading - anim.animHeading);
       anim.animHeading = wrapAngle(anim.animHeading + delta * STICKMAN_SMOOTH * 2);
       heading = anim.animHeading;
+    } else if (isMatchendPose) {
+      const FACE_CAMERA_HEADING = Math.PI / 2;
+      if (anim.animHeading == null) anim.animHeading = physicsHeading;
+      const delta = wrapAngle(FACE_CAMERA_HEADING - anim.animHeading);
+      anim.animHeading = wrapAngle(anim.animHeading + delta * STICKMAN_SMOOTH * 2);
+      heading = anim.animHeading;
     } else {
-      // Not repositioning — track physics heading so re-entry into
-      // reposition smoothly interpolates from the current facing.
       anim.animHeading = physicsHeading;
     }
     const forwardX = Math.cos(heading);

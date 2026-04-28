@@ -13,7 +13,7 @@ import {
   ACTION_KICK_POWER,
   ACTION_PUSH_GATE,
   ACTION_PUSH_POWER,
-  NN_OUTPUT_SIZE,
+  ACTION_VEC_SIZE as PHYSICS_ACTION_VEC_SIZE,
   PLAYER_WIDTH,
   PLAYER_HEIGHT,
   FIELD_HEIGHT,
@@ -34,7 +34,7 @@ import {
   LOB_BALL_FAST,
 } from './tuning.js';
 
-export const ACTION_VEC_SIZE = NN_OUTPUT_SIZE;
+export const ACTION_VEC_SIZE = PHYSICS_ACTION_VEC_SIZE;
 
 function moveToward(self, tx, ty, captureRadius = 0) {
   const cx = self.x + PLAYER_WIDTH / 2;

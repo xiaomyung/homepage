@@ -540,7 +540,7 @@ export const ACTION_KICK_DZ    = 5;
 export const ACTION_KICK_POWER = 6;
 export const ACTION_PUSH_GATE  = 7;
 export const ACTION_PUSH_POWER = 8;
-export const NN_OUTPUT_SIZE    = 9;
+export const ACTION_VEC_SIZE    = 9;
 
 /** Strike threshold in ms of `pushTimer` remaining, keyed by the
  *  pusher's pushType. Jab fist has to extend furthest and connects
@@ -2659,118 +2659,6 @@ function stepReposition(p, tx, ty) {
     p.x = tx;
     p.y = ty;
   }
-}
-
-/* ── NN input builder ────────────────────────────────────────── */
-
-export const NN_INPUT_SIZE = 25;
-
-/**
- * Action-repeat stride (a.k.a. frame-skip). The NN evaluates a fresh
- * action every `NN_ACTION_STRIDE` physics ticks; on the in-between
- * ticks the *previous* action vector is reused verbatim. Physics
- * still runs every tick, so ball trajectories and collisions stay
- * at the native 16 ms/tick resolution — only the decision cadence
- * widens.
- *
- * This is the classic RL "frame skip" optimisation: 2× here cuts NN
- * forward compute in half for essentially free, because our policy
- * is a slow control loop (walk + occasional kick) and action-repeat
- * over one extra 16 ms tick is imperceptible.
- *
- * CRITICAL: this constant must be the same number used by **both**
- * the headless worker and the visual showcase loop. Per memory
- * `feedback_training_visual_parity.md`, any mismatch causes the
- * brains you train to behave differently from the brains you watch,
- * and fitness selection silently picks up a bias. Keep both call
- * sites pointed at this single source of truth.
- */
-export const NN_ACTION_STRIDE = 3;
-
-/**
- * Build the NN input vector for one player, normalized to [-1, 1].
- * Length is NN_INPUT_SIZE.
- *
- * Raw state (0–19): self/opp pos+vel, ball pos+vel+z, target-goal
- * line, own-goal line, field width, heading cos/sin.
- *
- * Derived signals (20–24): pre-computed answers to questions the
- * teacher asks every tick. The NN can derive these from the raw
- * state given enough capacity, but exposing them directly cuts the
- * imitation sample complexity substantially.
- *   20 — possession:            sign+magnitude of whoever reaches the ball first
- *   21 — ball_speed_to_my_goal: signed component of ball velocity toward own goal
- *   22 — ball_range_to_my_goal: normalized distance from ball to own goal
- *   23 — self_dist_to_own_goal: normalized distance from me to own goal
- *   24 — self_dist_to_opp_goal: normalized distance from me to opponent goal
- */
-export function buildInputs(state, which, out) {
-  if (!out) out = new Array(NN_INPUT_SIZE);
-  const f = state.field;
-  const p = state[which];
-  const opp = which === 'p1' ? state.p2 : state.p1;
-  const b = state.ball;
-  const fw = f.width;
-  const tgx = p.side === 'left' ? f.goalLineR : f.goalLineL;
-  const ogx = p.side === 'left' ? f.goalLineL : f.goalLineR;
-
-  out[0]  = (p.x / fw) * 2 - 1;
-  out[1]  = (p.y / FIELD_HEIGHT) * 2 - 1;
-  out[2]  = p.vx / MAX_PLAYER_SPEED;
-  out[3]  = p.vy / MAX_PLAYER_SPEED;
-  out[4]  = p.stamina * 2 - 1;
-  out[5]  = (opp.x / fw) * 2 - 1;
-  out[6]  = (opp.y / FIELD_HEIGHT) * 2 - 1;
-  out[7]  = opp.vx / MAX_PLAYER_SPEED;
-  out[8]  = opp.vy / MAX_PLAYER_SPEED;
-  out[9]  = (b.x / fw) * 2 - 1;
-  out[10] = (b.y / FIELD_HEIGHT) * 2 - 1;
-  out[11] = b.z / CEILING;
-  out[12] = b.vx / MAX_KICK_POWER;
-  out[13] = b.vy / MAX_KICK_POWER;
-  out[14] = b.vz / MAX_KICK_POWER;
-  out[15] = (tgx / fw) * 2 - 1;
-  out[16] = (ogx / fw) * 2 - 1;
-  out[17] = (fw / FIELD_WIDTH_REF) * 2 - 1;
-  out[18] = Math.cos(p.heading);
-  out[19] = Math.sin(p.heading);
-
-  // Derived signals — computed inline to avoid the extra fallback
-  // import; `buildInputs` is on the hot path (~50k calls/sec during
-  // training) so we want zero allocation and zero cross-module jumps.
-  const cx = p.x + PLAYER_WIDTH / 2;
-  const cy = p.y + PLAYER_HEIGHT / 2;
-  const ocx = opp.x + PLAYER_WIDTH / 2;
-  const ocy = opp.y + PLAYER_HEIGHT / 2;
-  const myDx = b.x - cx, myDy = b.y - cy;
-  const oppDx = b.x - ocx, oppDy = b.y - ocy;
-  const myDist = Math.hypot(myDx, myDy);
-  const oppDist = Math.hypot(oppDx, oppDy);
-  // Possession: positive = I'm closer. Normalise by half field width
-  // so the magnitude has a sensible [-1, 1] range.
-  const possHalfWidth = fw * 0.5;
-  out[20] = (oppDist - myDist) / possHalfWidth;
-
-  // Ball velocity component toward OWN goal (negative = receding).
-  // Magnitude normalised by MAX_KICK_POWER so shots read as ~1.
-  const ownGoalY = FIELD_HEIGHT / 2;
-  const ownDX = ogx - b.x, ownDY = ownGoalY - b.y;
-  const ownDLen = Math.hypot(ownDX, ownDY) || 1;
-  out[21] = (b.vx * ownDX + b.vy * ownDY) / (ownDLen * MAX_KICK_POWER);
-
-  // Ball range to own goal, normalised (1 = full field length away).
-  out[22] = Math.min(1, ownDLen / fw);
-
-  // Self distances to own/opp goal, normalised.
-  const selfOwnDist = Math.hypot(ogx - cx, ownGoalY - cy);
-  const selfOppDist = Math.hypot(tgx - cx, ownGoalY - cy);
-  out[23] = Math.min(1, selfOwnDist / fw);
-  out[24] = Math.min(1, selfOppDist / fw);
-
-  for (let i = 0; i < NN_INPUT_SIZE; i++) {
-    out[i] = clamp(out[i], -1, 1);
-  }
-  return out;
 }
 
 /* ── Helpers ──────────────────────────────────────────────────── */

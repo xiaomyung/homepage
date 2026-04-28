@@ -57,19 +57,64 @@ async function main() {
   renderer.setFollowCam(true);
   followCamCtl.refresh();
 
-  // Visibility-change recovery skeleton (full WebGL recovery + try/catch
-  // wrapper land in commit 8). When tab returns to visible after a long
-  // hide, restart the showcase from a fresh seed so a stale physics
-  // state can't surface a frozen render.
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
-      lastFrameTime = 0;
-      tickAccumulator = 0;
-    }
-  });
+  installRecovery(canvas);
 
   nextShowcase();
   requestAnimationFrame(frame);
+}
+
+/**
+ * Recovery hooks for the long-lived showcase:
+ *   - visibilitychange: when tab returns to `visible` and state.tick
+ *     hasn't advanced in 2s, force a fresh match + reset the rAF
+ *     accumulator. Catches the case where rAF was throttled to zero
+ *     while hidden and the tab thinks it's still in the middle of a
+ *     stale match.
+ *   - webglcontextlost/restored: dispose + recreate. Browsers can
+ *     evict the canvas's WebGL context under memory pressure or when
+ *     another tab steals contexts, leaving the page permanently blank
+ *     until the user closes and reopens.
+ *
+ * No heap watchdog: with training gone, sustained heap pressure is
+ * gone; the prior auto-reload-at-75% added complexity without
+ * addressing the actual blank-page failure mode.
+ */
+let lastVisibleTick = 0;
+let lastVisibleAt = 0;
+function installRecovery(canvas) {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (showcaseState) lastVisibleTick = showcaseState.tick;
+      lastVisibleAt = performance.now();
+      return;
+    }
+    lastFrameTime = 0;
+    tickAccumulator = 0;
+    const stalledMs = performance.now() - lastVisibleAt;
+    if (showcaseState && stalledMs > 2000 && showcaseState.tick === lastVisibleTick) {
+      nextShowcase();
+    }
+  });
+
+  canvas.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault();
+    console.warn('[football] WebGL context lost — waiting for restore');
+  }, false);
+  canvas.addEventListener('webglcontextrestored', () => {
+    console.warn('[football] WebGL context restored — reinitialising');
+    try {
+      renderer.dispose?.();
+    } catch (err) {
+      console.error('[football] renderer dispose failed:', err);
+    }
+    renderer = new Renderer(canvas);
+    renderer.autoResize();
+    renderer.setFollowCam(true);
+    window.__footballRenderer = renderer;
+    nextShowcase();
+    lastFrameTime = 0;
+    tickAccumulator = 0;
+  }, false);
 }
 
 function nextShowcase() {
@@ -98,6 +143,17 @@ function nextShowcase() {
 
 function frame(now) {
   requestAnimationFrame(frame);
+  try {
+    frameInner(now);
+  } catch (err) {
+    console.error('[football] frame error — recovering with new match:', err);
+    try { nextShowcase(); } catch { /* swallow */ }
+    lastFrameTime = 0;
+    tickAccumulator = 0;
+  }
+}
+
+function frameInner(now) {
   if (!currentMatch) { lastFrameTime = now; return; }
   const { state } = currentMatch;
 

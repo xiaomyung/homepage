@@ -19,37 +19,32 @@ import {
   phaseAfterStatsPoll,
 } from './api/reset-client.js';
 import { DEFAULT_DOT_INTERVAL_MS, RESPAWN_STAGE, RELOAD_STAGE } from './api/reset-pipeline.js';
-import { runWarmStart } from './warm-start-orchestrator.js';
-import { WARM_START_HYPERPARAMS } from './evolution/warm-start-lib.js';
 
 /* ── Scoreboard ─────────────────────────────────────────── */
 
 export function createScoreboard() {
   const el = {
-    p1Tag: document.getElementById('game-p1-tag'),
+    p1Dot: document.getElementById('game-p1-dot'),
     p1Name: document.getElementById('game-p1-name'),
-    p2Tag: document.getElementById('game-p2-tag'),
+    p2Dot: document.getElementById('game-p2-dot'),
     p2Name: document.getElementById('game-p2-name'),
     score: document.getElementById('game-score'),
     timer: document.getElementById('game-timer'),
   };
 
   return {
-    setMatchup(p1, p2Source) {
-      el.p1Tag.textContent = '[nn]';
-      el.p1Name.textContent = (p1?.name ?? '—').toLowerCase();
-      if (p2Source && p2Source.type === 'fallback') {
-        el.p2Tag.textContent = '[fb]';
-        el.p2Name.textContent = 'fallback';
-      } else {
-        el.p2Tag.textContent = '[nn]';
-        el.p2Name.textContent = (p2Source?.name ?? '—').toLowerCase();
-      }
-      // Remember names so setWinner can look them up by 'left'/'right'.
-      el._p1Name = (p1?.name ?? '—').toLowerCase();
-      el._p2Name = p2Source && p2Source.type === 'fallback'
-        ? 'fallback'
-        : (p2Source?.name ?? '—').toLowerCase();
+    setMatchup(p1, p2) {
+      const p1Name = (p1?.name ?? '—').toLowerCase();
+      const p2Name = (p2?.name ?? '—').toLowerCase();
+      el.p1Name.textContent = p1Name;
+      el.p2Name.textContent = p2Name;
+      el._p1Name = p1Name;
+      el._p2Name = p2Name;
+    },
+    /** Update role indicator dots. role[side] in {null, 'contender', 'support'}. */
+    setRoles(leftRole, rightRole) {
+      el.p1Dot.dataset.role = leftRole || '';
+      el.p2Dot.dataset.role = rightRole || '';
     },
     setScore(scoreL, scoreR) {
       el.score.textContent = `${scoreL} — ${scoreR}`;

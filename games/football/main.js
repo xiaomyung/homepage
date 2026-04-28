@@ -142,6 +142,12 @@ function frame(now) {
     (state.tick * TICK_MS) / 1000,
     MATCH_DURATION_MS / 1000,
   );
+  const lr = state.aiRoleState?.left?.role;
+  const rr = state.aiRoleState?.right?.role;
+  scoreboard.setRoles(
+    state.pauseState !== null ? null : lr,
+    state.pauseState !== null ? null : rr,
+  );
   renderer.renderState(state);
 }
 

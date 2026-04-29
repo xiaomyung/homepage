@@ -150,6 +150,32 @@ test('Push intent fires when push opportunity true', () => {
   assert.equal(intent.push, true);
 });
 
+test('Push intent suppressed when opp is exhausted (mercy gate)', () => {
+  const state = freshState();
+  state.p1.x = 100; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
+  state.p2.x = 105; state.p2.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
+  state.ball.x = 130; state.ball.y = FIELD_HEIGHT / 2;
+  state.p1.heading = 0;
+  state.p2.exhausted = true;
+  state.p2.stamina = 0;
+
+  const intent = decideFor(state, 'p1');
+  assert.equal(intent.push, false);
+});
+
+test('Push gate covers the opp-winding-up branch too', () => {
+  const state = freshState();
+  state.p1.x = 100; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
+  state.p2.x = 200; state.p2.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
+  state.ball.x = 250; state.ball.y = FIELD_HEIGHT / 2;
+  state.p1.heading = 0;
+  state.p2.kick.active = true;
+  state.p2.exhausted = true;
+
+  const intent = decideFor(state, 'p1');
+  assert.equal(intent.push, false);
+});
+
 test('NEUTRAL intent on pause state', () => {
   const state = freshState();
   state.pauseState = 'celebrate';

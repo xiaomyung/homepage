@@ -133,7 +133,12 @@ export function decide(state, which, perception) {
 
   const role = resolveRole(state, self.side, perception, opp);
 
-  const push = perception.pushOpportunity || (perception.oppWindingUp && perception.selfDistToBall < perception.oppDistToBall + 30);
+  // Mercy gate: don't push an exhausted opponent. They can't react
+  // (their NEUTRAL intent zeros all gates) so it would just be
+  // pummelling a downed body. Resumes when opp recovers to
+  // STAMINA_EXHAUSTION_THRESHOLD = 0.5 and physics clears the flag.
+  const push = !perception.oppExhausted
+    && (perception.pushOpportunity || (perception.oppWindingUp && perception.selfDistToBall < perception.oppDistToBall + 30));
 
   // Pure-press target: chase the ball directly. The attackKickSpot is
   // good geometry for a "set up a clean shot" approach but it parks the

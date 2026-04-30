@@ -75,6 +75,23 @@ test('CONTENDER_KICK fires kick gate with positive power', () => {
   assert.ok(v[ACTION_KICK_DX] > 0, 'kick direction X should point toward right goal for left side');
 });
 
+test('CONTENDER_KICK still nudges toward ball (anti-wiggle)', async () => {
+  const { CONTENDER_KICK_NUDGE_MAGNITUDE } = await import('../ai/tuning.js');
+  const state = freshState();
+  state.p1.x = 380; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
+  state.p1.heading = 0;
+  state.ball.x = 400; state.ball.y = FIELD_HEIGHT / 2;
+  const perception = perceive(state, 'p1');
+  const intent = { kind: INTENT_KINDS.CONTENDER_KICK, role: 'contender', push: false };
+  const v = encode(state, 'p1', perception, intent, personality);
+  // Player is left of ball — MOVE_X should be positive at the nudge magnitude.
+  assert.ok(v[ACTION_MOVE_X] > 0, `expected positive nudge toward ball, got ${v[ACTION_MOVE_X]}`);
+  const mag = Math.hypot(v[ACTION_MOVE_X], v[ACTION_MOVE_Y]);
+  // Magnitude approx CONTENDER_KICK_NUDGE_MAGNITUDE (within rounding for unit-vec).
+  assert.ok(Math.abs(mag - CONTENDER_KICK_NUDGE_MAGNITUDE) < 0.05,
+    `expected nudge magnitude near ${CONTENDER_KICK_NUDGE_MAGNITUDE}, got ${mag}`);
+});
+
 test('SUPPORT moves toward kick spot (presses ball)', () => {
   const state = freshState();
   state.p1.x = 100; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;

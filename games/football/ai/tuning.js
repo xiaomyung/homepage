@@ -18,6 +18,16 @@ export const CONTENDER_MARGIN_TICKS = 2;
 export const STAMINA_CONSERVE_THRESHOLD = 0.30;
 export const STAMINA_CONSERVE_MAGNITUDE = 0.7;
 
+// CONTENDER_KICK still emits a small forward MOVE so the player keeps
+// nudging into the ball at low speed. Without it, MOVE=0 stops the
+// player and freezes heading; any small ball drift then breaks the
+// face cone, the intent flips back to CONTENDER_RUN, and the visible
+// effect is wiggling-near-the-ball. The half-speed nudge keeps the
+// heading tracking the ball; once tryStartKick succeeds and
+// kick.active=true, physics' applyAction returns before applyMovement
+// so the kick animation isn't disturbed.
+export const CONTENDER_KICK_NUDGE_MAGNITUDE = 0.4;
+
 export const KICK_AIM_OFFSET_RANGE = 0.03;
 export const PUSH_POWER_RANGE = 0.10;
 export const KICK_POWER_NEAR = 0.6;

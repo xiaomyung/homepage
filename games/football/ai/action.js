@@ -32,6 +32,7 @@ import {
   LOB_OPPONENT_BLOCK_DIST,
   LOB_KICK_DZ,
   LOB_BALL_FAST,
+  CONTENDER_KICK_NUDGE_MAGNITUDE,
 } from './tuning.js';
 
 export const ACTION_VEC_SIZE = PHYSICS_ACTION_VEC_SIZE;
@@ -133,7 +134,8 @@ export function encode(state, which, perception, intent, personality) {
       target = intent.target;
       break;
     case INTENT_KINDS.CONTENDER_KICK:
-      target = null;
+      // Nudge into the ball — see CONTENDER_KICK_NUDGE_MAGNITUDE in tuning.js.
+      target = { x: state.ball.x, y: state.ball.y };
       break;
     case INTENT_KINDS.CONTENDER_RUN:
     case INTENT_KINDS.SUPPORT:
@@ -154,7 +156,10 @@ export function encode(state, which, perception, intent, personality) {
     // align for a kick.
     const captureRadius = intent.kind === INTENT_KINDS.GOALIE ? FALLBACK_CAPTURE_RADIUS : 0;
     const { mx, my } = moveToward(self, target.x, target.y, captureRadius);
-    const mag = magnitudeFor(self, perception);
+    let mag = magnitudeFor(self, perception);
+    if (intent.kind === INTENT_KINDS.CONTENDER_KICK) {
+      mag *= CONTENDER_KICK_NUDGE_MAGNITUDE;
+    }
     out[ACTION_MOVE_X] = mx * mag;
     out[ACTION_MOVE_Y] = my * mag;
   }

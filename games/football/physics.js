@@ -119,7 +119,7 @@ export const PUSH_RANGE_X = 30;
 // range from top-to-top, plus a small slack for animation timing.
 const PUSH_RANGE_SLACK_Y = 1;
 export const PUSH_RANGE_Y = PLAYER_HEIGHT + PUSH_RANGE_SLACK_Y;
-const MAX_PUSH_FORCE = 200;
+const MAX_PUSH_FORCE = 100;
 const PUSH_DAMP = 0.88;
 const PUSH_APPLY = 0.12;
 const PUSH_VEL_THRESHOLD = 0.5;

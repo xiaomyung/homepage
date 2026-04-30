@@ -698,14 +698,13 @@ export function facingToward(p, worldX, worldZ, tol) {
 
 /* ── Movement ─────────────────────────────────────────────────── */
 
-// Motion input dead zone. Snaps small commanded moves to 0 so
-// imitation-trained NNs emitting ±0.05 noise don't produce 10 sign
-// flips per second of actual motion — each of which burns
-// DIRECTION_CHANGE_DRAIN stamina. Matches `FALLBACK_DEAD_ZONE` in
-// fallback.js so teacher and student share the same effective
-// quantization; the teacher already emits exact 0 below this
-// threshold, so this change is a no-op for fallback behaviour.
-const MOVE_INPUT_DEAD_ZONE = 0.15;
+// Motion input dead zone. Floating-point-only filtering for the
+// deterministic controller (which never emits noise); previously
+// 0.15 to absorb NN ±0.05 jitter, but the deterministic AI needs
+// fine lateral corrections to align with the ball's physics-y, and
+// 0.15 silently zeroed those. Bump back up if/when learning
+// returns and NN output is noisy.
+const MOVE_INPUT_DEAD_ZONE = 0.02;
 
 function applyMovement(state, p, moveX, moveY) {
   if (Math.abs(moveX) < MOVE_INPUT_DEAD_ZONE) moveX = 0;

@@ -176,6 +176,27 @@ test('Action vector all values finite', () => {
   }
 });
 
+test('CONTENDER_RUN slows on approach (anti-overshoot)', () => {
+  const state = freshState();
+  // Far from ball — should run at full magnitude.
+  state.p1.x = 50; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
+  state.ball.x = 400; state.ball.y = FIELD_HEIGHT / 2;
+  let perception = perceive(state, 'p1');
+  let intent = { kind: INTENT_KINDS.CONTENDER_RUN, role: 'contender', target: { x: 400, y: FIELD_HEIGHT / 2 }, push: false };
+  let v = encode(state, 'p1', perception, intent, personality);
+  const farMag = Math.hypot(v[ACTION_MOVE_X], v[ACTION_MOVE_Y]);
+  assert.ok(farMag > 0.9, `far magnitude should be ~1.0, got ${farMag}`);
+
+  // Close to ball — should be at the slowdown floor.
+  state.p1.x = 396; // ~5 units from ball center
+  perception = perceive(state, 'p1');
+  intent = { kind: INTENT_KINDS.CONTENDER_RUN, role: 'contender', target: { x: 400, y: FIELD_HEIGHT / 2 }, push: false };
+  v = encode(state, 'p1', perception, intent, personality);
+  const closeMag = Math.hypot(v[ACTION_MOVE_X], v[ACTION_MOVE_Y]);
+  assert.ok(closeMag < farMag, `close magnitude (${closeMag}) should be less than far magnitude (${farMag})`);
+  assert.ok(closeMag <= 0.5, `close magnitude should hit the slowdown floor, got ${closeMag}`);
+});
+
 test('Kick power scales with distance to opp goal', () => {
   const state = freshState();
   state.p1.heading = 0;

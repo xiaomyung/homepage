@@ -33,6 +33,8 @@ import {
   LOB_KICK_DZ,
   LOB_BALL_FAST,
   CONTENDER_KICK_NUDGE_MAGNITUDE,
+  APPROACH_RAMP_DIST,
+  APPROACH_MIN_MAGNITUDE,
 } from './tuning.js';
 
 export const ACTION_VEC_SIZE = PHYSICS_ACTION_VEC_SIZE;
@@ -158,7 +160,13 @@ export function encode(state, which, perception, intent, personality) {
     const { mx, my } = moveToward(self, target.x, target.y, captureRadius);
     let mag = magnitudeFor(self, perception);
     if (intent.kind === INTENT_KINDS.CONTENDER_KICK) {
-      mag *= CONTENDER_KICK_NUDGE_MAGNITUDE;
+      mag = Math.min(mag, CONTENDER_KICK_NUDGE_MAGNITUDE);
+    }
+    if (intent.kind === INTENT_KINDS.CONTENDER_RUN || intent.kind === INTENT_KINDS.SUPPORT) {
+      // Distance-based approach slowdown — see APPROACH_RAMP_DIST in tuning.js.
+      const t = Math.min(1, perception.selfDistToBall / APPROACH_RAMP_DIST);
+      const approachMag = APPROACH_MIN_MAGNITUDE + (1 - APPROACH_MIN_MAGNITUDE) * t;
+      mag = Math.min(mag, approachMag);
     }
     out[ACTION_MOVE_X] = mx * mag;
     out[ACTION_MOVE_Y] = my * mag;

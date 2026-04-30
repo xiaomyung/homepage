@@ -149,11 +149,11 @@ export function decide(state, which, perception) {
   // itself keeps the player nudging it until heading + reach align.
   let ballTarget = { x: state.ball.x, y: state.ball.y };
 
-  // Sidestep when in pair contact: bias the target perpendicular to the
-  // self→opp axis, toward the side where the original target lies. The
-  // controller stops pressing straight into the opp and tries to circle
-  // around instead.
-  if (perception.selfDistToOpp < SIDESTEP_TRIGGER_DIST) {
+  // Sidestep when in true pair contact AND can't kick — bias the target
+  // perpendicular to the self→opp axis, toward the side where the
+  // original target lies. Kick reach takes priority: if the player can
+  // already kick we don't want to bias them sideways and miss the shot.
+  if (perception.selfDistToOpp < SIDESTEP_TRIGGER_DIST && !perception.selfHasKickReach) {
     const ox = perception.oppCx - perception.selfCx;
     const oy = perception.oppCy - perception.selfCy;
     const oLen = Math.hypot(ox, oy) || 1;

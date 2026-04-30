@@ -139,7 +139,7 @@ export function decide(state, which, perception) {
   // (their NEUTRAL intent zeros all gates) so it would just be
   // pummelling a downed body. Resumes when opp recovers to
   // STAMINA_EXHAUSTION_THRESHOLD = 0.5 and physics clears the flag.
-  const push = !perception.oppExhausted
+  const pushAvailable = !perception.oppExhausted
     && (perception.pushOpportunity || (perception.oppWindingUp && perception.selfDistToBall < perception.oppDistToBall + 30));
 
   // Pure-press target: chase the ball directly. The attackKickSpot is
@@ -173,23 +173,27 @@ export function decide(state, which, perception) {
     };
   }
 
+  // Push is suppressed when the player can also kick — pushing locks
+  // the player for ~1s (windup + recovery) and burns the kick window.
+  // The lob branch in action.js::kickApproach handles opp-on-lane via
+  // air kick, so we don't need to refuse the kick when oppBlocksLane.
   if (role === ROLE_CONTENDER) {
-    if (perception.selfHasKickReach && !perception.oppBlocksLane && !opp.kick.active) {
+    if (perception.selfHasKickReach && !opp.kick.active) {
       const oppCanReach = canKickReach(state, opp, FALLBACK_SAFETY_MARGIN);
       const myD = perception.selfDistToBall;
       const oppD = perception.oppDistToBall;
       const yieldToOpp = oppCanReach && (oppD < myD || (oppD === myD && self.side === 'right'));
       if (!yieldToOpp) {
-        return { kind: INTENT_CONTENDER_KICK, role, push };
+        return { kind: INTENT_CONTENDER_KICK, role, push: false };
       }
     }
-    return { kind: INTENT_CONTENDER_RUN, role, target: ballTarget, push };
+    return { kind: INTENT_CONTENDER_RUN, role, target: ballTarget, push: pushAvailable };
   }
 
   // SUPPORT — pure-press: also chase the ball, just from farther away.
-  if (perception.selfHasKickReach && !perception.oppBlocksLane && !opp.kick.active) {
-    return { kind: INTENT_CONTENDER_KICK, role, push };
+  if (perception.selfHasKickReach && !opp.kick.active) {
+    return { kind: INTENT_CONTENDER_KICK, role, push: false };
   }
 
-  return { kind: INTENT_SUPPORT, role, target: ballTarget, push };
+  return { kind: INTENT_SUPPORT, role, target: ballTarget, push: pushAvailable };
 }

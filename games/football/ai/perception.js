@@ -136,6 +136,7 @@ export function perceive(state, which) {
 
   const selfDistToBall = dist(sc.x, sc.y, ball.x, ball.y);
   const oppDistToBall = dist(oc.x, oc.y, ball.x, ball.y);
+  const selfDistToOpp = dist(sc.x, sc.y, oc.x, oc.y);
 
   const selfInterceptTicks = interceptTicks(ball, self);
   const oppInterceptTicks = interceptTicks(ball, opp);
@@ -168,7 +169,7 @@ export function perceive(state, which) {
   return {
     selfCx: sc.x, selfCy: sc.y,
     oppCx: oc.x, oppCy: oc.y,
-    selfDistToBall, oppDistToBall,
+    selfDistToBall, oppDistToBall, selfDistToOpp,
     selfInterceptTicks, oppInterceptTicks,
     ballPredShort, ballPredLong,
     attackKickSpot: kickSpot,

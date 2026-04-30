@@ -28,6 +28,16 @@ export const STAMINA_CONSERVE_MAGNITUDE = 0.7;
 // so the kick animation isn't disturbed.
 export const CONTENDER_KICK_NUDGE_MAGNITUDE = 0.4;
 
+// Lateral sidestep — when self is within SIDESTEP_TRIGGER_DIST of opp,
+// the move target is biased perpendicular to the self→opp axis (toward
+// the side that puts target nearer). Stops players dwelling at pair
+// contact and reads as "try to circle around" instead of "press into".
+// Trigger distance is a few units beyond the new pair-collision min
+// (2 * STICKMAN_HEAD_RADIUS = 8) so the bias engages before contact.
+export const SIDESTEP_TRIGGER_DIST = 14;
+export const SIDESTEP_OFFSET = 12;
+
+
 export const KICK_AIM_OFFSET_RANGE = 0.03;
 export const PUSH_POWER_RANGE = 0.10;
 export const KICK_POWER_NEAR = 0.6;

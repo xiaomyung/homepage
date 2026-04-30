@@ -89,7 +89,7 @@ test('Pause state -> all gates -1, MOVE=0', () => {
   assert.equal(v[ACTION_MOVE_Y], 0);
 });
 
-test('Anti-corner-camp regression: players move on >80% of non-pause ticks across 600-tick match', () => {
+test('Anti-corner-camp regression: players engage on >80% of free ticks across 600-tick match', () => {
   const state = freshState(123);
   // Start both players in opposite corners — the failure mode being tested.
   state.p1.x = 30;
@@ -104,9 +104,13 @@ test('Anti-corner-camp regression: players move on >80% of non-pause ticks acros
   state.recordEvents = false;
   state.headless = true;
 
-  let p1Moves = 0;
-  let p2Moves = 0;
-  let liveTicks = 0;
+  // "Free" tick = neither paused nor self-blocked (kick/push/exhausted).
+  // Push and kick windows are forms of engagement, not standing still,
+  // so we exclude them from the denominator.
+  let p1Moves = 0, p1Free = 0;
+  let p2Moves = 0, p2Free = 0;
+
+  const isBlocked = (p) => p.exhausted || p.kick.active || p.pushTimer > 0 || p.reactTimer > 0;
 
   const TOTAL = 600;
   for (let i = 0; i < TOTAL; i++) {
@@ -114,19 +118,24 @@ test('Anti-corner-camp regression: players move on >80% of non-pause ticks acros
       physicsTick(state, null, null);
       continue;
     }
-    liveTicks++;
     const a1 = decide(state, 'p1');
     const a2 = decide(state, 'p2');
-    if (Math.hypot(a1[ACTION_MOVE_X], a1[ACTION_MOVE_Y]) > 0.05) p1Moves++;
-    if (Math.hypot(a2[ACTION_MOVE_X], a2[ACTION_MOVE_Y]) > 0.05) p2Moves++;
+    if (!isBlocked(state.p1)) {
+      p1Free++;
+      if (Math.hypot(a1[ACTION_MOVE_X], a1[ACTION_MOVE_Y]) > 0.05) p1Moves++;
+    }
+    if (!isBlocked(state.p2)) {
+      p2Free++;
+      if (Math.hypot(a2[ACTION_MOVE_X], a2[ACTION_MOVE_Y]) > 0.05) p2Moves++;
+    }
     physicsTick(state, a1, a2);
     if (state.matchOver) break;
   }
 
-  const p1Frac = p1Moves / liveTicks;
-  const p2Frac = p2Moves / liveTicks;
-  assert.ok(p1Frac > 0.8, `p1 moved on ${(p1Frac * 100).toFixed(1)}% of live ticks (need > 80%)`);
-  assert.ok(p2Frac > 0.8, `p2 moved on ${(p2Frac * 100).toFixed(1)}% of live ticks (need > 80%)`);
+  const p1Frac = p1Moves / Math.max(1, p1Free);
+  const p2Frac = p2Moves / Math.max(1, p2Free);
+  assert.ok(p1Frac > 0.8, `p1 moved on ${(p1Frac * 100).toFixed(1)}% of free ticks (need > 80%)`);
+  assert.ok(p2Frac > 0.8, `p2 moved on ${(p2Frac * 100).toFixed(1)}% of free ticks (need > 80%)`);
 });
 
 test('Anti-corner-camp regression: ball gets touched (some kick fires) over 600 ticks', () => {

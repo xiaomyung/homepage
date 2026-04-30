@@ -1253,7 +1253,12 @@ function tryBodyContact(state, p, collider, wx, wy, wz, wvx, wvy, wvz, colliderR
  * velocity components.
  */
 function resolvePlayerPairCollision(p1, p2, pre1x, pre1y, pre2x, pre2y) {
-  const r = 2 * STICKMAN_TORSO_RADIUS;
+  // Personal-space radius. Larger than the torso capsule (2 * 3.3 = 6.6)
+  // because the visible silhouette includes the head sphere and arm
+  // capsules, and at minimum-torso-touch the heads visibly overlap.
+  // 2 * STICKMAN_HEAD_RADIUS = 8 keeps the heads exactly tangent and
+  // makes pair contact read as 'next to' instead of 'merged'.
+  const r = 2 * STICKMAN_HEAD_RADIUS;
   // Pre-tick centers in world coords.
   const preC1x = pre1x + PLAYER_WIDTH / 2;
   const preC1z = (pre1y + PLAYER_HEIGHT / 2) * Z_STRETCH;

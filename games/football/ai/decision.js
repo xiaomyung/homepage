@@ -17,6 +17,8 @@ import {
   CONTENDER_MARGIN_TICKS,
   ROLE_HYSTERESIS_TICKS,
   FALLBACK_SAFETY_MARGIN,
+  SIDESTEP_TRIGGER_DIST,
+  SIDESTEP_OFFSET,
 } from './tuning.js';
 
 import { canKickReach } from '../physics.js';
@@ -145,7 +147,31 @@ export function decide(state, which, perception) {
   // player a few units shy of the ball — if canKickReach fails inside
   // the capture-radius window the player gets stuck. Chasing the ball
   // itself keeps the player nudging it until heading + reach align.
-  const ballTarget = { x: state.ball.x, y: state.ball.y };
+  let ballTarget = { x: state.ball.x, y: state.ball.y };
+
+  // Sidestep when in pair contact: bias the target perpendicular to the
+  // self→opp axis, toward the side where the original target lies. The
+  // controller stops pressing straight into the opp and tries to circle
+  // around instead.
+  if (perception.selfDistToOpp < SIDESTEP_TRIGGER_DIST) {
+    const ox = perception.oppCx - perception.selfCx;
+    const oy = perception.oppCy - perception.selfCy;
+    const oLen = Math.hypot(ox, oy) || 1;
+    const ux = ox / oLen;
+    const uy = oy / oLen;
+    const tx = ballTarget.x - perception.selfCx;
+    const ty = ballTarget.y - perception.selfCy;
+    // Cross product picks which perpendicular side puts target ahead:
+    // positive cross => target is left of self→opp axis, negative => right.
+    const cross = ux * ty - uy * tx;
+    const sign = cross >= 0 ? 1 : -1;
+    const perpX = -uy * sign;
+    const perpY = ux * sign;
+    ballTarget = {
+      x: ballTarget.x + perpX * SIDESTEP_OFFSET,
+      y: ballTarget.y + perpY * SIDESTEP_OFFSET,
+    };
+  }
 
   if (role === ROLE_CONTENDER) {
     if (perception.selfHasKickReach && !perception.oppBlocksLane && !opp.kick.active) {

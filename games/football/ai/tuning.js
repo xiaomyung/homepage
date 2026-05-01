@@ -7,8 +7,8 @@ import { TICK_MS, PLAYER_WIDTH, BALL_RADIUS } from '../physics.js';
 
 export const ACTION_STRIDE_TICKS = 1;
 
-export const MATCH_DURATION_MS = 30000;
-export const MAX_SHOWCASE_TICKS = 4000;
+export const MATCH_DURATION_MS = 60000;
+export const MAX_SHOWCASE_TICKS = 8000;
 
 export const PREDICTION_HORIZON_TICKS = Math.round(500 / TICK_MS);
 

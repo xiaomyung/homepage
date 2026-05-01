@@ -5,13 +5,16 @@
 # Requires: node (>=22), sudo, systemctl, caddy already installed system-wide.
 # Adds:
 #   - systemd unit homepage-stats.service     (Node, /api/stats shim)
-#   - systemd unit football-evolution.service  (Node, football broker)
-#   - Caddyfile blocks for /api/stats* and /api/football/* (if missing)
+#   - Caddyfile block for /api/stats* (if missing)
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CADDYFILE="/etc/caddy/Caddyfile"
+
+# Retire the football broker if it was installed by an older revision.
+sudo systemctl disable --quiet football-evolution.service 2>/dev/null || true
+sudo systemctl stop --quiet football-evolution.service 2>/dev/null || true
 
 # ── systemd units ─────────────────────────────────────────────────────────────
 install_unit() {
@@ -23,13 +26,9 @@ install_unit() {
 }
 
 install_unit "${HERE}/stats/homepage-stats.service"
-install_unit "${HERE}/games/football/api/football-evolution.service"
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now homepage-stats.service
-# Football broker is installed but NOT started by default — training is
-# CPU-heavy on the clients it serves, so start manually:
-#   sudo systemctl start football-evolution.service
 
 # ── Caddy /api/stats route ────────────────────────────────────────────────────
 echo "==> Ensuring /api/stats handle block in ${CADDYFILE}"
@@ -77,5 +76,4 @@ fi
 echo "==> Verifying"
 sleep 1
 curl -fsS https://xiaomyung.com/api/stats > /dev/null && echo "    /api/stats   OK"
-curl -fsS https://xiaomyung.com/api/football/stats > /dev/null 2>&1 && echo "    /api/football OK" || true
 echo "==> Done."

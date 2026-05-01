@@ -285,6 +285,14 @@ export class Renderer {
     // cost vs the original _p1Shadow / _p2Shadow).
     this._playerShadows = [this._makeShadow(), this._makeShadow()];
     this._playerShadowCursor = 0;
+
+    // Player name labels — one billboarded sprite per side. Texture
+    // regenerated on name change; position pushed each frame from the
+    // head bone. Overlap-fade computed from screen-space distance.
+    this._nameLabels = [this._makeNameLabel(), this._makeNameLabel()];
+    this._nameLabels.forEach((l) => l.mesh.visible = false);
+    this._nameLabelTmpA = new THREE.Vector3();
+    this._nameLabelTmpB = new THREE.Vector3();
     // Pool of ball shadows — one per ball mesh (matched by index).
     this._ballShadows = [this._makeShadow()];
     this._ballShadowCursor = 0;
@@ -676,6 +684,10 @@ export class Renderer {
       this._addStickman(p, COLOR_TEXT, tick, isScorer, isGrieving, pReposition, isMatchendWin, isMatchendLose);
       this._placePlayerShadow(p);
     }
+    // Player name labels — drives the two billboarded sprites above
+    // the heads. Names come from state.matchNames; positions come from
+    // each player's last-rendered head pose stashed on player.anim.
+    this._updateNameLabels(state, players);
     for (let i = this._stickmanTorsoCursor; i < prevTorsoCursor; i++) {
       this._stickmanTorsoOutline[i].visible = false;
       this._stickmanTorsoFill[i].visible = false;
@@ -1372,6 +1384,10 @@ export class Renderer {
     //    legs are 2-bone with per-segment angles from the pose.
     this._placeTorso(pose.baseX, pose.upperHipY, pose.baseZ, pose.neckX, pose.neckY, pose.neckZ, color, player.stamina);
     this._placeSph(pose.headX, pose.headY, pose.headZ, STICKMAN_HEAD_RADIUS, color);
+    // Stash for the name-label pass.
+    anim.lastHeadX = pose.headX;
+    anim.lastHeadY = pose.headY;
+    anim.lastHeadZ = pose.headZ;
     this._placeArm(pose.lShX, pose.shoulderY, pose.lShZ, pose.lArmUpper, pose.lArmLower, pose.forwardX, pose.forwardZ, color, pose.lArmUpperYaw, pose.lArmLowerYaw);
     this._placeArm(pose.rShX, pose.shoulderY, pose.rShZ, pose.rArmUpper, pose.rArmLower, pose.forwardX, pose.forwardZ, color, pose.rArmUpperYaw, pose.rArmLowerYaw);
     this._placeLeg(pose.lHipX, pose.hipBaseY, pose.lHipZ, pose.lLegUpper, pose.lLegLower, pose.forwardX, pose.forwardZ, color);
@@ -1415,6 +1431,90 @@ export class Renderer {
       mesh.quaternion.identity();
     }
     mesh.material.color.setRGB(color[0], color[1], color[2]);
+  }
+
+  /** Position both name-label sprites at each player's head with a
+   *  small Y offset, set the texture from state.matchNames, and apply
+   *  overlap fade based on screen-space label distance. */
+  _updateNameLabels(state, players) {
+    const names = state.matchNames;
+    if (!names || players.length < 2) {
+      this._nameLabels.forEach((l) => l.mesh.visible = false);
+      return;
+    }
+    const labels = this._nameLabels;
+    const offsetY = STICKMAN_HEAD_RADIUS + 5;
+    for (let i = 0; i < 2; i++) {
+      const p = players[i];
+      const anim = this._animByPlayer.get(p);
+      // Fall back to player center if anim hasn't rendered yet.
+      const headX = anim?.lastHeadX ?? (p.x + PLAYER_WIDTH / 2);
+      const headY = anim?.lastHeadY ?? STICKMAN_LIMB_FULL_H * 2;
+      const headZ = anim?.lastHeadZ ?? (p.y * Z_STRETCH);
+      labels[i].mesh.position.set(headX, headY + offsetY, headZ);
+      labels[i].mesh.visible = true;
+      this._setLabelText(labels[i], i === 0 ? names.p1 : names.p2);
+    }
+    // Overlap fade: project both label positions to screen-space,
+    // compute pixel distance, fade alpha to 0 below threshold.
+    const camera = this.camera;
+    const a = this._nameLabelTmpA.copy(labels[0].mesh.position).project(camera);
+    const b = this._nameLabelTmpB.copy(labels[1].mesh.position).project(camera);
+    const w = this.renderer.domElement.width / 2;
+    const h = this.renderer.domElement.height / 2;
+    const dx = (a.x - b.x) * w;
+    const dy = (a.y - b.y) * h;
+    const pixelDist = Math.hypot(dx, dy);
+    const FADE_BELOW = 80;
+    const FADE_FULL = 30;
+    let alpha = 1;
+    if (pixelDist < FADE_BELOW) {
+      alpha = Math.max(0, (pixelDist - FADE_FULL) / (FADE_BELOW - FADE_FULL));
+    }
+    labels[0].mat.opacity = alpha;
+    labels[1].mat.opacity = alpha;
+  }
+
+  /** Allocate one billboarded name-label sprite. Returns
+   *  { mesh, canvas, ctx, texture, name }. Texture is updated lazily
+   *  via _setLabelText. */
+  _makeNameLabel() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    const mat = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Sprite(mat);
+    // World-space scale tuned so labels read as small floating tags
+    // at the camera's working distance without overpowering the figure.
+    mesh.scale.set(36, 9, 1);
+    mesh.renderOrder = 999;
+    this.scene.add(mesh);
+    return { mesh, canvas, ctx, texture, mat, name: '' };
+  }
+
+  _setLabelText(label, rawName) {
+    const name = (rawName || '').toLowerCase();
+    if (label.name === name) return;
+    label.name = name;
+    const { ctx, canvas, texture } = label;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.font = '500 38px "Iosevka Term", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#cdd6f4';
+    ctx.shadowColor = 'rgba(0,0,0,0.9)';
+    ctx.shadowBlur = 6;
+    ctx.fillText(name, canvas.width / 2, canvas.height / 2);
+    texture.needsUpdate = true;
   }
 
   /** Place the next shadow from the player-shadow pool under

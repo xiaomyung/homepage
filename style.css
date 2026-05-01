@@ -301,9 +301,21 @@ body {
   white-space: nowrap;
 }
 
-.game-sb-tag {
-  color: var(--text-dim);
-  font-size: 0.55rem;
+.game-sb-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--text);
+  transition: background-color 0.15s ease;
+}
+.game-sb-dot[data-role="contender"] {
+  background: var(--red);
+  box-shadow: 0 0 4px var(--red-glow);
+}
+.game-sb-dot[data-role="support"] {
+  background: var(--green);
+  box-shadow: 0 0 4px var(--green-glow);
 }
 
 .game-sb-name {

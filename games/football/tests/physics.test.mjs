@@ -1248,6 +1248,90 @@ test('both players regain full stamina when a goal is scored', () => {
   assert.equal(state.p2.exhausted, false);
 });
 
+/* ── In-progress action animation cleared on play-stop ────────────
+ *
+ * applyAction / advancePush / advanceReactTimer are gated off while
+ * `pauseState !== null`. Without an explicit clear at the play-stop
+ * boundary, kick.active / pushTimer / reactTimer freeze through the
+ * entire celebrate → matchend pause and the pose composer renders a
+ * stretched-forward leg or thrown-forward arm indefinitely. The
+ * matchend pose only overrides arms, so a frozen kick leg leaks
+ * through. Same for ball-out → reposition.
+ */
+
+test('goal clears in-progress kick/push/react animation state', () => {
+  const state = freshState();
+  const f = state.field;
+
+  // Simulate p1 mid-kick when the goal scores.
+  state.p1.kick.active = true;
+  state.p1.kick.timer = 80;
+  state.p1.kick.fired = true;
+  state.p1.airZ = 12;
+  // p2 mid-push, with a pending strike about to commit.
+  state.p2.pushTimer = 500;
+  state.p2.pendingPushVictim = state.p1;
+  state.p2.pendingPushVx = 5;
+  state.p2.pendingPushVy = 0;
+  // p1 already taking a hit reaction.
+  state.p1.reactTimer = 200;
+  state.p1.reactForce = 0.7;
+  state.p1.reactDirX = 1;
+
+  state.ball.x = 120;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = -5;
+  state.ball.vy = 0;
+  state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  for (let i = 0; i < 40 && state.pauseState !== 'celebrate'; i++) {
+    tick(state, NOOP, NOOP);
+  }
+  assert.equal(state.pauseState, 'celebrate', 'goal should have triggered celebrate pause');
+
+  assert.equal(state.p1.kick.active, false, 'p1 kick must clear on goal');
+  assert.equal(state.p1.kick.timer, 0);
+  assert.equal(state.p1.kick.fired, false);
+  assert.equal(state.p1.airZ, 0);
+  assert.equal(state.p2.pushTimer, 0, 'p2 push must clear on goal');
+  assert.equal(state.p2.pendingPushVictim, null);
+  assert.equal(state.p2.pendingPushVx, 0);
+  assert.equal(state.p1.reactTimer, 0, 'p1 hit-reaction must clear on goal');
+  assert.equal(state.p1.reactForce, 0);
+});
+
+test('ball out clears in-progress kick/push/react animation state', () => {
+  const state = freshState();
+  const f = state.field;
+
+  state.p1.kick.active = true;
+  state.p1.kick.timer = 60;
+  state.p1.kick.fired = true;
+  state.p2.pushTimer = 400;
+  state.p2.pendingPushVictim = state.p1;
+  state.p2.pendingPushVx = 3;
+
+  // Drive the ball off the right field edge OUTSIDE the goal mouth
+  // so OOB fires (not a goal).
+  state.ball.x = f.width - 5;
+  state.ball.y = 5;
+  state.ball.z = 0;
+  state.ball.vx = 6;
+  state.ball.vy = 0;
+  state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  for (let i = 0; i < 10 && state.pauseState === null; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.pauseState, 'reposition', 'ball out should pause reposition');
+
+  assert.equal(state.p1.kick.active, false, 'p1 kick must clear on ball-out');
+  assert.equal(state.p1.kick.timer, 0);
+  assert.equal(state.p2.pushTimer, 0, 'p2 push must clear on ball-out');
+  assert.equal(state.p2.pendingPushVictim, null);
+});
+
 /* ── Headless / training-mode fast path ────────────────────────
  *
  * `state.headless = true` is the training worker's contract: every

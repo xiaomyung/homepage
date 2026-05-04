@@ -2486,19 +2486,7 @@ function resetToKickoff(state) {
     p.y = cy;
     p.vx = 0; p.vy = 0;
     p.pushVx = 0; p.pushVy = 0;
-    p.airZ = 0;
-    p.pushTimer = 0;
-    p.pendingPushVictim = null;
-    p.pendingPushVx = 0;
-    p.pendingPushVy = 0;
-    p.reactTimer = 0;
-    p.reactForce = 0;
-    p.reactDirX = 0;
-    p.reactDirZ = 0;
-    p.reactLatSign = 1;
-    p.kick.active = false;
-    p.kick.timer = 0;
-    p.kick.fired = false;
+    clearInProgressActions(p);
   }
 
   state.pauseState = null;
@@ -2506,6 +2494,35 @@ function resetToKickoff(state) {
   state.goalScorer = null;
   state.graceFrames = 0;
   state.lastKickTick = state.tick;
+}
+
+/** Zero in-progress kick / push / hit-reaction state on a player.
+ *
+ *  Why: applyAction, advancePush, and advanceReactTimer are all gated
+ *  off while `state.pauseState !== null`, so a player who was mid-kick
+ *  (or mid-push, or recoiling) when play stopped would otherwise keep
+ *  `kick.active = true` / `pushTimer > 0` / `reactTimer > 0` frozen
+ *  through the entire celebrate → matchend pause. The pose composer
+ *  reads those flags directly and renders the leg stretched forward
+ *  or the arm thrown forward indefinitely — the matchend arm override
+ *  doesn't touch legs, and the LPF dead-zone tail uncovers the kick
+ *  layer once celebrate fades. Clearing here at the play-stop boundary
+ *  lets the celebrate/grieve/matchend overrides take over a clean base
+ *  pose. */
+function clearInProgressActions(p) {
+  p.airZ = 0;
+  p.pushTimer = 0;
+  p.pendingPushVictim = null;
+  p.pendingPushVx = 0;
+  p.pendingPushVy = 0;
+  p.reactTimer = 0;
+  p.reactForce = 0;
+  p.reactDirX = 0;
+  p.reactDirZ = 0;
+  p.reactLatSign = 1;
+  p.kick.active = false;
+  p.kick.timer = 0;
+  p.kick.fired = false;
 }
 
 function scoreGoal(state, side) {
@@ -2522,6 +2539,11 @@ function scoreGoal(state, side) {
   state.p2.stamina = 1;
   state.p1.exhausted = false;
   state.p2.exhausted = false;
+
+  // Stop any frozen mid-action animation from bleeding into the
+  // celebrate / matchend pose. See clearInProgressActions for why.
+  clearInProgressActions(state.p1);
+  clearInProgressActions(state.p2);
 
   if (side === 'left') {
     // Ball into LEFT goal = RIGHT scored
@@ -2580,6 +2602,11 @@ function ballOut(state) {
     resetToKickoff(state);
     return;
   }
+  // Same play-stop clear as scoreGoal — without it a kick / push that
+  // happened to be in-flight when the ball went out would freeze for
+  // the whole reposition walk.
+  clearInProgressActions(state.p1);
+  clearInProgressActions(state.p2);
   // Ball keeps moving — gravity settles it naturally wherever it is.
   // Reposition pause drives the players back to kickoff; at the end
   // of the waiting pause, resetBall snaps the ball to midfield.

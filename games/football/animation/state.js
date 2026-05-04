@@ -120,10 +120,20 @@ export function createAnimState(tick, player) {
  *  behaviour and lets teleporting scenarios zero out walk animation
  *  by syncing anim.lastX after a jump.
  */
+/** Low-pass an animation heading toward `target`, seeding `animHeading`
+ *  with `seed` on first use. Returns the new `animHeading`. */
+function lpfHeading(anim, seed, target) {
+  if (anim.animHeading == null) anim.animHeading = seed;
+  const delta = wrapAngle(target - anim.animHeading);
+  anim.animHeading = wrapAngle(anim.animHeading + delta * STICKMAN_SMOOTH * 2);
+  return anim.animHeading;
+}
+
 export function advanceAnimState(
   anim, player, tick, isCelebrating, out,
   isGrieving = false, isReposition = false,
   isMatchendWin = false, isMatchendLose = false,
+  faceCameraSmooth = false, faceEachOtherSmooth = false,
 ) {
   const dt = tick > anim.lastTick ? tick - anim.lastTick : 0;
 
@@ -158,29 +168,30 @@ export function advanceAnimState(
     const physicsHeading = player.heading ?? 0;
     const speed = Math.sqrt(effVx * effVx + effVy * effVy);
 
-    // Animation heading — normally physics heading, with two overrides:
-    //   1. REPOSITION: physics-side stepReposition only translates,
-    //      doesn't update heading. Face the motion direction so the
-    //      stickman walks FACING kickoff instead of side-stepping.
-    //   2. MATCHEND: rotate to face the camera (heading = π/2, toward
-    //      +z) so winner/loser poses read for the audience instead
-    //      of edge-on. Same LPF pattern as REPOSITION so the rotation
-    //      eases in over ~0.5s.
-    // Both are interpolated via anim.animHeading so the turn doesn't snap.
-    let heading = physicsHeading;
+    // Animation heading — normally physics heading, with three
+    // smoothed overrides:
+    //   1. REPOSITION (walk-back): physics' stepReposition only
+    //      translates, doesn't update heading. Face the motion
+    //      direction so the stickman walks FACING kickoff instead of
+    //      side-stepping.
+    //   2. faceCameraSmooth (matchend pose / legacy MATCHEND_WIN/LOSE):
+    //      rotate to FACE_CAMERA_HEADING so winner/loser read for
+    //      the audience instead of edge-on.
+    //   3. faceEachOtherSmooth (matchend neutral): rotate from
+    //      camera-facing back to physics heading so players settle
+    //      facing each other before the next kickoff.
+    // All three blend through anim.animHeading so the turn eases.
+    let heading;
     if (isReposition && speed > REPOSITION_SPEED_GATE) {
       const motionHeading = Math.atan2(effVy * Z_STRETCH, effVx);
-      if (anim.animHeading == null) anim.animHeading = motionHeading;
-      const delta = wrapAngle(motionHeading - anim.animHeading);
-      anim.animHeading = wrapAngle(anim.animHeading + delta * STICKMAN_SMOOTH * 2);
-      heading = anim.animHeading;
-    } else if (isMatchendWin || isMatchendLose) {
-      if (anim.animHeading == null) anim.animHeading = physicsHeading;
-      const delta = wrapAngle(FACE_CAMERA_HEADING - anim.animHeading);
-      anim.animHeading = wrapAngle(anim.animHeading + delta * STICKMAN_SMOOTH * 2);
-      heading = anim.animHeading;
+      heading = lpfHeading(anim, motionHeading, motionHeading);
+    } else if (isMatchendWin || isMatchendLose || faceCameraSmooth) {
+      heading = lpfHeading(anim, physicsHeading, FACE_CAMERA_HEADING);
+    } else if (faceEachOtherSmooth) {
+      heading = lpfHeading(anim, physicsHeading, physicsHeading);
     } else {
       anim.animHeading = physicsHeading;
+      heading = physicsHeading;
     }
     const forwardX = Math.cos(heading);
     const forwardZ = Math.sin(heading);

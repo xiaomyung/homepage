@@ -13,6 +13,7 @@ import {
   resetStateInPlace,
   createSeededRng,
   tick as physicsTick,
+  endMatchByTime,
   TICK_MS,
 } from './physics.js';
 import { decide, derivePersonality } from './ai/controller.js';
@@ -166,11 +167,21 @@ function frameInner(now) {
 
   const matchDurationTicks = Math.ceil(MATCH_DURATION_MS / TICK_MS);
 
-  if (state.matchOver || state.tick >= matchDurationTicks || state.tick > MAX_SHOWCASE_TICKS) {
+  // Match over (cinematic done, finalizeMatch fired) — start the
+  // next match. MAX_SHOWCASE_TICKS is a hard safety cap in case the
+  // matchend machine ever wedges.
+  if (state.matchOver || state.tick > MAX_SHOWCASE_TICKS) {
     nextShowcase();
     lastFrameTime = now;
     tickAccumulator = 0;
     return;
+  }
+
+  // Match clock expired with no winner — kick off the time-up matchend
+  // (walk-back-only, no celebrate/grieve). Idempotent if it's already
+  // running.
+  if (state.tick >= matchDurationTicks && state.pauseState === null) {
+    endMatchByTime(state);
   }
 
   if (lastFrameTime === 0) lastFrameTime = now;
@@ -201,10 +212,10 @@ function frameInner(now) {
   } else {
     scoreboard.setScore(state.scoreL, state.scoreR);
   }
-  scoreboard.setTimer(
-    (state.tick * TICK_MS) / 1000,
-    MATCH_DURATION_MS / 1000,
-  );
+  // Clamp at MATCH_DURATION_MS so the display doesn't overshoot
+  // while the time-up matchend reposition runs.
+  const elapsedMs = Math.min(state.tick * TICK_MS, MATCH_DURATION_MS);
+  scoreboard.setTimer(elapsedMs / 1000, MATCH_DURATION_MS / 1000);
   const lr = state.aiRoleState?.left?.role;
   const rr = state.aiRoleState?.right?.role;
   scoreboard.setRoles(

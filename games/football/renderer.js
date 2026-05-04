@@ -671,17 +671,44 @@ export class Renderer {
                          : p === state.p1 ? 'left' : p === state.p2 ? 'right' : null;
 
       const pCelebrating = pPause === 'celebrate';
-      const pReposition  = pPause === 'reposition';
       const pMatchend    = pPause === 'matchend';
+      const pMatchEndPhase = state.matchEndPhase;
 
-      const isScorer  = pCelebrating && pGoalScorer === p;
-      const isGrieving = pCelebrating && pGoalScorer && pGoalScorer !== p;
+      // Per-player flags drive both pose layers and the heading
+      // override in animation/state.js. The matchend cinematic layers
+      // its phases onto these existing flags:
+      //   reposition phase → walk-back, motion-direction heading
+      //   pose phase       → face camera + winner celebrates / loser grieves
+      //   neutral phase    → smooth turn back to face-each-other
+      let isScorer    = pCelebrating && pGoalScorer === p;
+      let isGrieving  = pCelebrating && pGoalScorer && pGoalScorer !== p;
+      let isReposition = pPause === 'reposition';
+      let faceCameraSmooth = false;
+      let faceEachOtherSmooth = false;
       let isMatchendWin = false, isMatchendLose = false;
+
       if (pMatchend && pWinner && pSide) {
-        isMatchendWin  = pSide === pWinner;
-        isMatchendLose = pSide !== pWinner;
+        const isWinner = pSide === pWinner;
+        if (pMatchEndPhase === 'reposition') {
+          isReposition = true;
+        } else if (pMatchEndPhase === 'pose') {
+          faceCameraSmooth = true;
+          isScorer = isWinner;
+          isGrieving = !isWinner;
+        } else if (pMatchEndPhase === 'neutral') {
+          faceEachOtherSmooth = true;
+        } else {
+          // Defensive fallback for harness scenarios that set
+          // pauseState='matchend' without matchEndPhase — keep the
+          // legacy static MATCHEND_WIN/LOSE pose.
+          isMatchendWin  = isWinner;
+          isMatchendLose = !isWinner;
+        }
       }
-      this._addStickman(p, COLOR_TEXT, tick, isScorer, isGrieving, pReposition, isMatchendWin, isMatchendLose);
+      this._addStickman(
+        p, COLOR_TEXT, tick, isScorer, isGrieving, isReposition,
+        isMatchendWin, isMatchendLose, faceCameraSmooth, faceEachOtherSmooth,
+      );
       this._placePlayerShadow(p);
     }
     // Player name labels — drives the two billboarded sprites above
@@ -1000,7 +1027,14 @@ export class Renderer {
     const deadBall = state.matchOver
       || state.pauseState !== null
       || state.graceFrames > 0;
-    const zoomTarget   = deadBall ? FOLLOW_ZOOM_DEAD : FOLLOW_ZOOM_LIVE;
+    // Matchend 'pose' phase tightens the camera back to LIVE zoom for
+    // a cinematic dolly-in on the winner/loser; the spring handles the
+    // ease in/out as matchEndPhase transitions.
+    const matchendDollyIn = state.pauseState === 'matchend'
+      && state.matchEndPhase === 'pose';
+    const zoomTarget   = matchendDollyIn ? FOLLOW_ZOOM_LIVE
+                       : deadBall        ? FOLLOW_ZOOM_DEAD
+                       :                   FOLLOW_ZOOM_LIVE;
     const posTarget    = deadBall ? midX : actionX;
     const lookTarget   = deadBall ? midX : actionX;
     const sideForLead  = deadBall ? 0 : ballSide;
@@ -1362,7 +1396,7 @@ export class Renderer {
    * straight down, +π/2 points forward, +π points straight up
    * (celebration).
    */
-  _addStickman(player, color, tick, isCelebrating, isGrieving = false, isReposition = false, isMatchendWin = false, isMatchendLose = false) {
+  _addStickman(player, color, tick, isCelebrating, isGrieving = false, isReposition = false, isMatchendWin = false, isMatchendLose = false, faceCameraSmooth = false, faceEachOtherSmooth = false) {
     // 1. Fetch / init the smoothed animation state for this player.
     let anim = this._animByPlayer.get(player);
     if (!anim) {
@@ -1373,6 +1407,7 @@ export class Renderer {
     const animSnap = advanceAnimState(
       anim, player, tick, isCelebrating, this._scratchAnimSnap,
       isGrieving, isReposition, isMatchendWin, isMatchendLose,
+      faceCameraSmooth, faceEachOtherSmooth,
     );
     // 3. Compose the full pose — walk + kick + push + celebrate all
     //    layered into one flat numeric pose via animation/poses.js.

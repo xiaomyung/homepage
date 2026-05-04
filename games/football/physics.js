@@ -166,7 +166,17 @@ const GOAL_MOUTH_Y_MAX = (FIELD_HEIGHT + GOAL_MOUTH_WIDTH) / 2;
 // Match
 const WIN_SCORE = 3;
 const CELEBRATE_TICKS = Math.ceil(1500 / TICK_MS);
-const MATCHEND_PAUSE_TICKS = Math.ceil(3000 / TICK_MS);
+// Matchend cinematic — three sub-phases under pauseState='matchend',
+// dispatched via state.matchEndPhase:
+//   'reposition' — both players walk to kickoff (cap on stuck reposition)
+//   'pose'       — face camera, dolly-in, winner celebrates / loser grieves
+//   'neutral'    — face each other, dolly-out, brief settle, then finalize
+// Camera dolly is driven by the renderer's follow-cam zoom spring
+// (target switches per phase); animation heading override is driven
+// by faceCameraSmooth / faceEachOtherSmooth flags from the renderer.
+const MATCHEND_REPOSITION_MAX_TICKS = Math.ceil(4000 / TICK_MS);
+const MATCHEND_POSE_TICKS    = Math.ceil(4000 / TICK_MS);
+const MATCHEND_NEUTRAL_TICKS = Math.ceil(2500 / TICK_MS);
 const RESPAWN_GRACE = 30;
 const REPOSITION_SPEED = 6;
 const REPOSITION_TOL = 5;
@@ -360,6 +370,7 @@ export function resetStateInPlace(state, field, rng) {
   state.stallCount = 0;
   state.pauseState = null;
   state.pauseTimer = 0;
+  state.matchEndPhase = null;
   state.goalScorer = null;
   state.matchOver = false;
   state.winner = null;
@@ -402,6 +413,8 @@ export function createState(field, rng = createSeededRng(0)) {
     stallCount: 0,
     pauseState: null, // null | 'celebrate' | 'matchend' | 'reposition' | 'waiting'
     pauseTimer: 0,
+    // Sub-phase under pauseState='matchend': 'reposition' | 'pose' | 'neutral'
+    matchEndPhase: null,
     goalScorer: null,
     matchOver: false,
     winner: null,
@@ -447,8 +460,14 @@ export function tick(state, p1Act, p2Act) {
     // ball down so a scored shot settles visibly into the net
     // instead of freezing mid-flight. Score check is suppressed by
     // the grace-frame gate set in scoreGoal, and the inner-net
-    // absorber handles wall contact without a bounce.
-    if (state.pauseState !== 'matchend') updateBall(state);
+    // absorber handles wall contact without a bounce. Skipped only
+    // for the static matchend pose / neutral phases — the match is
+    // decided and the ball is irrelevant; reposition still runs ball
+    // physics so the scored shot finishes settling during the walk
+    // back.
+    const skipBall = state.pauseState === 'matchend'
+      && (state.matchEndPhase === 'pose' || state.matchEndPhase === 'neutral');
+    if (!skipBall) updateBall(state);
     return state;
   }
 
@@ -2491,6 +2510,7 @@ function resetToKickoff(state) {
 
   state.pauseState = null;
   state.pauseTimer = 0;
+  state.matchEndPhase = null;
   state.goalScorer = null;
   state.graceFrames = 0;
   state.lastKickTick = state.tick;
@@ -2569,25 +2589,29 @@ function scoreGoal(state, side) {
     return;
   }
 
-  // Ball keeps moving under gravity through the celebrate pause so a
-  // scored shot visibly settles into the net instead of freezing in
-  // mid-air. `inGoal` routes goal-box collisions through the inner
-  // absorbing resolver (dampens completely, falls); graceFrames
-  // suppresses any re-trigger of the scoring gate until the reset.
+  // Ball keeps moving under gravity through the pause so a scored
+  // shot visibly settles into the net instead of freezing in mid-air.
+  // `inGoal` routes goal-box collisions through the inner absorbing
+  // resolver; graceFrames suppresses any re-trigger of the scoring
+  // gate until the reset.
   state.ball.inGoal = true;
   state.graceFrames = RESPAWN_GRACE;
-  state.pauseState = 'celebrate';
-  state.pauseTimer = CELEBRATE_TICKS;
 
-  // Winning goal: flag the winner now, but still run the full
-  // celebrate animation. The advancePause celebrate handler detects
-  // `state.winner` on pause-end and jumps straight to matchend
-  // (bypassing reposition/waiting). Previously we overwrote
-  // pauseState to 'matchend' here, which skipped the scorer's
-  // celebrate pose entirely on the winning strike.
+  // Winning goal: skip the at-spot celebrate, walk straight back to
+  // kickoff and run the matchend cinematic. The big "winner / loser"
+  // moment happens at the centre after both players are repositioned,
+  // not at the goal mouth.
   if (state.scoreL >= WIN_SCORE || state.scoreR >= WIN_SCORE) {
     state.winner = state.scoreL >= WIN_SCORE ? 'left' : 'right';
+    state.goalScorer = null;
+    state.pauseState = 'matchend';
+    state.matchEndPhase = 'reposition';
+    state.pauseTimer = MATCHEND_REPOSITION_MAX_TICKS;
+    return;
   }
+
+  state.pauseState = 'celebrate';
+  state.pauseTimer = CELEBRATE_TICKS;
 }
 
 function ballOut(state) {
@@ -2636,30 +2660,25 @@ function finalizeMatch(state) {
   state.matchOver = true;
   state.pauseState = null;
   state.pauseTimer = 0;
+  state.matchEndPhase = null;
 }
 
 /* ── Pause state machine ──────────────────────────────────────── */
 
 function advancePause(state) {
   if (state.pauseState === 'matchend') {
-    state.pauseTimer--;
-    if (state.pauseTimer <= 0) finalizeMatch(state);
+    advanceMatchend(state);
     return;
   }
 
   if (state.pauseState === 'celebrate') {
     state.pauseTimer--;
     if (state.pauseTimer <= 0) {
-      if (state.winner) {
-        // Winning goal just celebrated — go straight to matchend
-        // (no reposition; the match is over).
-        state.pauseState = 'matchend';
-        state.pauseTimer = MATCHEND_PAUSE_TICKS;
-      } else {
-        state.pauseState = 'reposition';
-        state.pauseTimer = 0;
-        state.goalScorer = null;
-      }
+      // Winning goals never enter celebrate — scoreGoal routes them
+      // straight to 'matchend'. So this is always a non-decisive goal.
+      state.pauseState = 'reposition';
+      state.pauseTimer = 0;
+      state.goalScorer = null;
     }
     return;
   }
@@ -2695,6 +2714,76 @@ function advancePause(state) {
       resetToKickoff(state);
     }
   }
+}
+
+/** Trigger the time-up matchend flow: walk both players back to
+ *  kickoff and then finalize. No celebrate/grieve cinematic since
+ *  there's no winner to highlight. Idempotent. */
+export function endMatchByTime(state) {
+  if (state.pauseState !== null || state.matchOver) return;
+  clearInProgressActions(state.p1);
+  clearInProgressActions(state.p2);
+  state.pauseState = 'matchend';
+  state.matchEndPhase = 'reposition';
+  state.pauseTimer = MATCHEND_REPOSITION_MAX_TICKS;
+  state.winner = null;
+  state.goalScorer = null;
+}
+
+/** Matchend cinematic phase machine. Sub-phases under
+ *  pauseState='matchend' transition reposition → pose → neutral →
+ *  finalize. Camera dolly + face-camera / face-each-other heading
+ *  overrides are read off `state.matchEndPhase` by the renderer.
+ *
+ *  Time-up matchends (no winner) skip pose + neutral and finalize
+ *  the moment both players reach kickoff. */
+function advanceMatchend(state) {
+  if (state.matchEndPhase === 'reposition') {
+    const f = state.field;
+    const tx1 = kickoffSpawnX(f, 'left');
+    const tx2 = kickoffSpawnX(f, 'right');
+    const cy = FIELD_HEIGHT / 2;
+    state.p1.stamina = Math.min(1, state.p1.stamina + STAMINA_REGEN);
+    state.p2.stamina = Math.min(1, state.p2.stamina + STAMINA_REGEN);
+    stepReposition(state.p1, tx1, cy);
+    stepReposition(state.p2, tx2, cy);
+    state.pauseTimer--;
+    const arrived =
+      Math.abs(state.p1.x - tx1) < REPOSITION_TOL &&
+      Math.abs(state.p2.x - tx2) < REPOSITION_TOL &&
+      Math.abs(state.p1.y - cy) < REPOSITION_TOL &&
+      Math.abs(state.p2.y - cy) < REPOSITION_TOL;
+    if (arrived || state.pauseTimer <= 0) {
+      // Snap physics heading to face-each-other so the upcoming
+      // pose / neutral phases LPF onto a clean reference (stepReposition
+      // only translates — heading was whatever it was at goal time).
+      state.p1.heading = 0;
+      state.p2.heading = Math.PI;
+      if (state.winner) {
+        state.matchEndPhase = 'pose';
+        state.pauseTimer = MATCHEND_POSE_TICKS;
+      } else {
+        // No winner = time-up matchend: walk-back is the entire flow.
+        finalizeMatch(state);
+      }
+    }
+    return;
+  }
+  if (state.matchEndPhase === 'pose') {
+    state.pauseTimer--;
+    if (state.pauseTimer <= 0) {
+      state.matchEndPhase = 'neutral';
+      state.pauseTimer = MATCHEND_NEUTRAL_TICKS;
+    }
+    return;
+  }
+  if (state.matchEndPhase === 'neutral') {
+    state.pauseTimer--;
+    if (state.pauseTimer <= 0) finalizeMatch(state);
+    return;
+  }
+  // Defensive: unknown phase (shouldn't happen) — finalize cleanly.
+  finalizeMatch(state);
 }
 
 function stepReposition(p, tx, ty) {

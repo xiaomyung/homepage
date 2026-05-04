@@ -43,6 +43,7 @@ import {
   ACTION_PUSH_GATE,
   ACTION_PUSH_POWER,
   ACTION_VEC_SIZE,
+  endMatchByTime,
 } from '../physics.js';
 
 /** Build a 9-float action vector by action-slot name rather than
@@ -2692,7 +2693,7 @@ test('resetStateInPlace: swapping the rng produces a different stream than befor
 
 /* ── Winner celebration flow (visual path, recent feature) ────── */
 
-test('winning goal sets celebrate pause AND flags winner (not matchend directly)', () => {
+test('winning goal goes straight to matchend reposition (no at-spot celebrate)', () => {
   const state = freshState();
   state.headless = false;
   state.recordEvents = false;
@@ -2711,12 +2712,43 @@ test('winning goal sets celebrate pause AND flags winner (not matchend directly)
   tick(state, null, null);
 
   assert.equal(state.scoreL, 3, 'left-side scored the winning goal');
-  assert.equal(state.pauseState, 'celebrate', 'must stay in celebrate for the animation, not jump to matchend');
+  assert.equal(state.pauseState, 'matchend', 'winning goal skips celebrate and enters matchend immediately');
+  assert.equal(state.matchEndPhase, 'reposition', 'matchend opens on the reposition (walk-back) phase');
   assert.equal(state.winner, 'left', 'winner must be flagged at the scoring tick');
-  assert.equal(state.matchOver, false, 'match is not over yet — celebrate then matchend');
+  assert.equal(state.goalScorer, null, 'no celebrate-at-spot on a winning goal');
+  assert.equal(state.matchOver, false, 'match is not over until the cinematic completes');
 });
 
-test('visual celebrate → matchend transition when winner is set', () => {
+test('time-up matchend (no winner) walks back then finalizes — no pose/neutral', () => {
+  const state = freshState();
+  state.headless = false;
+  state.recordEvents = false;
+
+  // Move both players away from kickoff so reposition has work to do.
+  state.p1.x = 300; state.p1.y = 30;
+  state.p2.x = 350; state.p2.y = 20;
+
+  endMatchByTime(state);
+  assert.equal(state.pauseState, 'matchend');
+  assert.equal(state.matchEndPhase, 'reposition');
+  assert.equal(state.winner, null, 'time-up matchend has no winner');
+
+  // Idempotent — second call while already in matchend is a no-op.
+  endMatchByTime(state);
+  assert.equal(state.matchEndPhase, 'reposition');
+
+  // Run reposition to completion. With no winner, finalize fires
+  // directly on arrival — no pose / neutral phase.
+  for (let i = 0; i < 600 && !state.matchOver; i++) {
+    tick(state, null, null);
+  }
+  assert.equal(state.matchOver, true, 'time-up matchend finalizes after walk-back');
+  assert.equal(state.pauseState, null);
+  assert.equal(state.matchEndPhase, null);
+  assert.equal(state.winner, null);
+});
+
+test('matchend phase machine: reposition → pose → neutral → finalize', () => {
   const state = freshState();
   state.headless = false;
   state.recordEvents = false;
@@ -2728,18 +2760,23 @@ test('visual celebrate → matchend transition when winner is set', () => {
   state.graceFrames = 0;
   tick(state, null, null);
 
-  assert.equal(state.pauseState, 'celebrate');
-  const celebrateTicks = state.pauseTimer;
-  assert.ok(celebrateTicks > 0);
+  assert.equal(state.pauseState, 'matchend');
+  assert.equal(state.matchEndPhase, 'reposition');
 
-  // Run the celebrate countdown. During celebrate, advancePause still
-  // lets the ball roll under gravity, so the transition test gates on
-  // the pauseState flip, not a fixed tick count.
-  for (let i = 0; i < celebrateTicks + 5; i++) {
+  // Reposition completes once both players reach their kickoff spots.
+  // Cap at the safety horizon so a stuck reposition still fails loudly.
+  for (let i = 0; i < 600 && state.matchEndPhase === 'reposition'; i++) {
     tick(state, null, null);
-    if (state.pauseState === 'matchend') break;
   }
-  assert.equal(state.pauseState, 'matchend', 'after celebrate expires on a winning goal we jump to matchend, skipping reposition');
+  assert.equal(state.matchEndPhase, 'pose', 'reposition advances to pose when both at kickoff');
+
+  for (let i = 0; i < 1000 && state.matchEndPhase === 'pose'; i++) tick(state, null, null);
+  assert.equal(state.matchEndPhase, 'neutral', 'pose advances to neutral after timer expires');
+
+  for (let i = 0; i < 1000 && state.matchEndPhase === 'neutral'; i++) tick(state, null, null);
+  assert.equal(state.matchOver, true, 'neutral phase finalizes the match');
+  assert.equal(state.pauseState, null);
+  assert.equal(state.matchEndPhase, null);
 });
 
 test('non-winning goal celebrates then reposition (no matchend)', () => {

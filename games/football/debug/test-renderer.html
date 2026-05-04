@@ -1028,24 +1028,6 @@ try {
           state.pauseTimer = 999;
         },
       },
-      {
-        label: 'matchend · winner celebrates / loser grieves',
-        init(state) {
-          // Place both at their kickoff spots so the camera frames
-          // them like the live matchend cinematic.
-          state.p1.x = 430; state.p1.y = 27; state.p1.heading = 0;
-          state.p2.x = 480; state.p2.y = 27; state.p2.heading = Math.PI;
-          state.pauseState = 'matchend';
-          state.matchEndPhase = 'pose';
-          state.pauseTimer = 999;
-          state.winner = 'left';
-          state.goalScorer = null;
-          state.ball.y = OFFSCREEN_Y; state.ball.frozen = true;
-        },
-        step(state) {
-          state.pauseTimer = 999;
-        },
-      },
     ],
   });
 

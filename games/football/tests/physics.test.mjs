@@ -345,6 +345,39 @@ test('push impulse is deferred to the strike tick, not applied on windup', () =>
     `strike tick out of expected range: ${strikeTick}`);
 });
 
+test('push misses if victim escapes range during the windup', () => {
+  // Pusher gates on range at windup start (tryPush) AND again at
+  // strike commit (advancePush). Without the strike-commit gate, a
+  // pre-computed impulse from tryPush would still land on a victim
+  // who already ran away — the bug this test pins down.
+  const state = freshState();
+  state.p1.x = state.field.midX - 10;
+  state.p2.x = state.field.midX + 10;
+  state.p1.y = state.p2.y = FIELD_HEIGHT / 2;
+
+  tick(state, pushAction(1), NOOP);
+  assert.ok(state.p1.pushTimer > 0, 'push should have started');
+
+  // Teleport the victim well outside PUSH_RANGE_X before strike fires.
+  state.p2.x = state.field.midX + 200;
+
+  // Run past strike commit (~tick 27 with 16ms/tick stride). state.events
+  // is cleared at the top of every tick, so collect the miss event by
+  // sampling each frame.
+  let missEvent = null;
+  for (let i = 0; i < 40; i++) {
+    tick(state, NOOP, NOOP);
+    const ev = state.events.find(e => e.type === 'push_missed');
+    if (ev) missEvent = ev;
+  }
+
+  assert.equal(state.p2.pushVx, 0, 'no impulse on a victim that escaped');
+  assert.equal(state.p2.reactTimer, 0, 'no hit-reaction on a missed push');
+  assert.equal(state.p1.pendingPushVictim, null, 'pending impulse must be cleared');
+  assert.ok(missEvent, 'push_missed event should be emitted at strike tick');
+  assert.equal(missEvent.reason, 'out_of_range');
+});
+
 test('push does not land when players are out of range', () => {
   const state = freshState();
   // Separate them far beyond push range

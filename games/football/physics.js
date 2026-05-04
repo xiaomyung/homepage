@@ -575,6 +575,24 @@ function advancePush(state, p) {
   const threshold = PUSH_STRIKE_TIMER[p.pushType] || PUSH_STRIKE_TIMER.jab;
   if (p.pendingPushVictim && prevTimer > threshold && p.pushTimer <= threshold) {
     const victim = p.pendingPushVictim;
+    // Re-check range + facing at strike time. The windup is ~400ms,
+    // long enough for the victim to back out of reach — without this
+    // gate the pre-computed impulse from tryPush would still land on
+    // a victim who already ran away. Pusher's animation continues
+    // through recovery as a whiff so they still pay the cooldown.
+    if (!pushStillInRange(state, p, victim)) {
+      p.pendingPushVictim = null;
+      p.pendingPushVx = 0;
+      p.pendingPushVy = 0;
+      if (state.recordEvents) {
+        state.events.push({
+          type: 'push_missed',
+          pusher: p === state.p1 ? 'p1' : 'p2',
+          reason: 'out_of_range',
+        });
+      }
+      return true;
+    }
     victim.pushVx = p.pendingPushVx;
     victim.pushVy = p.pendingPushVy;
     // Hit-reaction state. Stored on the victim so the pose composer
@@ -2230,6 +2248,18 @@ function executeKick(state, p) {
 // `PUSH_RANGE_X` gate, they just shape the animation differently.
 const PUSH_UPPERCUT_RANGE = 14;
 const PUSH_HOOK_RANGE     = 22;
+
+/** Same gates as tryPush, used at the strike-commit tick to verify
+ *  the victim hasn't escaped the range/facing cone during the windup. */
+function pushStillInRange(state, pusher, victim) {
+  const f = state.field;
+  const pusherCenterX = pusher.x + f.playerWidth / 2;
+  const victimCenterX = victim.x + f.playerWidth / 2;
+  if (Math.abs(pusherCenterX - victimCenterX) > PUSH_RANGE_X) return false;
+  if (Math.abs(pusher.y - victim.y) > PUSH_RANGE_Y) return false;
+  const victimZ = (victim.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  return facingToward(pusher, victimCenterX, victimZ, PUSH_FACE_TOL);
+}
 
 function tryPush(state, pusher, victim, powerNorm) {
   const f = state.field;

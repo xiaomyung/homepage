@@ -18,28 +18,14 @@ export const CONTENDER_MARGIN_TICKS = 2;
 export const STAMINA_CONSERVE_THRESHOLD = 0.30;
 export const STAMINA_CONSERVE_MAGNITUDE = 0.7;
 
-// CONTENDER_KICK still emits a small forward MOVE so the player keeps
-// nudging into the ball at low speed. Without it, MOVE=0 stops the
-// player and freezes heading; any small ball drift then breaks the
-// face cone, the intent flips back to CONTENDER_RUN, and the visible
-// effect is wiggling-near-the-ball. The half-speed nudge keeps the
-// heading tracking the ball; once tryStartKick succeeds and
-// kick.active=true, physics' applyAction returns before applyMovement
-// so the kick animation isn't disturbed.
-export const CONTENDER_KICK_NUDGE_MAGNITUDE = 0.4;
-
-// Inertia handling: with PLAYER_ACCEL = 0.5/tick, stopping from full
-// speed (10) takes 20 ticks and ~100 world units. Without slowdown on
-// approach, the player runs onto the ball at full speed and then one
-// tick of CONTENDER_KICK movement carries them past — kick gets
-// rejected with 'facing_away' because the ball is now behind them.
-//
-// Linear magnitude ramp: at distance ≥ APPROACH_RAMP_DIST the player
-// runs full speed; at distance 0 they're at APPROACH_MIN_MAGNITUDE.
-// 80-unit ramp gives ~12 ticks of decel from full speed, which is
-// enough to end up at a controlled 4 units/tick at the ball.
+// Distance-based approach slowdown so the player arrives at the kick
+// spot with low velocity instead of full speed. Linear ramp: at
+// distance ≥ RAMP runs full speed; at distance 0 sits at MIN. The
+// MIN floor is small but non-zero so the player keeps making fine
+// y-corrections under the world-proportional pursuit (a hard zero
+// would freeze any sub-dead-zone perp residue at the ball).
 export const APPROACH_RAMP_DIST = 80;
-export const APPROACH_MIN_MAGNITUDE = 0.4;
+export const APPROACH_MIN_MAGNITUDE = 0.15;
 
 // Lateral sidestep — only when self is at true pair contact AND
 // can't kick. Trigger distance is just outside the pair-collision

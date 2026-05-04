@@ -59,7 +59,8 @@ test('equal-distance produces equal intercept ticks', () => {
   assert.equal(facts1.selfInterceptTicks, facts2.selfInterceptTicks);
 });
 
-test('attackKickSpot lies on ball -> opp goal line for left side', () => {
+test('attackKickSpot lies on ball -> opp goal line for left side', async () => {
+  const { PLAYER_HEIGHT: PH } = await import('../physics.js');
   const state = freshState();
   state.p1.x = 200; state.p1.y = FIELD_HEIGHT / 2;
   state.ball.x = 400; state.ball.y = FIELD_HEIGHT / 2;
@@ -70,7 +71,10 @@ test('attackKickSpot lies on ball -> opp goal line for left side', () => {
   // kickSpot should be just behind ball (toward midfield from ball, since
   // we're aiming toward right goal which is past the ball).
   assert.ok(kickSpot.x < state.ball.x, 'kickSpot should be on ball-side of ball -> right goal line');
-  assert.ok(Math.abs(kickSpot.y - state.ball.y) < 1, 'y-coordinate close to ball when ball is at field centre');
+  // y-coordinate is offset by PLAYER_HEIGHT/2 above ball.y so center-targeting
+  // by moveToward parks the player's HIP on the ball's y for kicking.
+  assert.ok(Math.abs(kickSpot.y - state.ball.y - PH / 2) < 0.01,
+    `kickSpot.y should be ball.y + PLAYER_HEIGHT/2, got ${kickSpot.y}`);
 });
 
 test('attackKickSpot mirror for right side', () => {

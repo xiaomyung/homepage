@@ -813,6 +813,8 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   pose.rArmUpperYaw = rightUpperYaw;   pose.rArmLowerYaw = rightLowerYaw;
   pose.lLegUpper = leftUpperAngle; pose.lLegLower = leftLowerAngle;
   pose.rLegUpper = rightUpperAngle; pose.rLegLower = rightLowerAngle;
+  pose.lLegHipYaw = 0;
+  pose.rLegHipYaw = isKicking ? (scratchKickPose.legYaw || 0) : 0;
   pose.forwardX = forwardX; pose.forwardZ = forwardZ;
   return pose;
 }

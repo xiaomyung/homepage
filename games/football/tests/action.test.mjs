@@ -75,8 +75,7 @@ test('CONTENDER_KICK fires kick gate with positive power', () => {
   assert.ok(v[ACTION_KICK_DX] > 0, 'kick direction X should point toward right goal for left side');
 });
 
-test('CONTENDER_KICK still nudges toward ball (anti-wiggle)', async () => {
-  const { CONTENDER_KICK_NUDGE_MAGNITUDE } = await import('../ai/tuning.js');
+test('CONTENDER_KICK leaves MOVE at zero (player has arrived, plant + strike)', () => {
   const state = freshState();
   state.p1.x = 380; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
   state.p1.heading = 0;
@@ -84,12 +83,12 @@ test('CONTENDER_KICK still nudges toward ball (anti-wiggle)', async () => {
   const perception = perceive(state, 'p1');
   const intent = { kind: INTENT_KINDS.CONTENDER_KICK, role: 'contender', push: false };
   const v = encode(state, 'p1', perception, intent, personality);
-  // Player is left of ball — MOVE_X should be positive at the nudge magnitude.
-  assert.ok(v[ACTION_MOVE_X] > 0, `expected positive nudge toward ball, got ${v[ACTION_MOVE_X]}`);
-  const mag = Math.hypot(v[ACTION_MOVE_X], v[ACTION_MOVE_Y]);
-  // Magnitude approx CONTENDER_KICK_NUDGE_MAGNITUDE (within rounding for unit-vec).
-  assert.ok(Math.abs(mag - CONTENDER_KICK_NUDGE_MAGNITUDE) < 0.05,
-    `expected nudge magnitude near ${CONTENDER_KICK_NUDGE_MAGNITUDE}, got ${mag}`);
+  // Approach already aligned heading; nudging during windup would shift
+  // the hip and break foot-ball contact at strike time.
+  assert.equal(v[ACTION_MOVE_X], 0, `CONTENDER_KICK should not move, got MOVE_X=${v[ACTION_MOVE_X]}`);
+  assert.equal(v[ACTION_MOVE_Y], 0, `CONTENDER_KICK should not move, got MOVE_Y=${v[ACTION_MOVE_Y]}`);
+  // Kick gate still fires.
+  assert.equal(v[ACTION_KICK_GATE], 1);
 });
 
 test('SUPPORT moves toward kick spot (presses ball)', () => {
@@ -174,6 +173,28 @@ test('Action vector all values finite', () => {
   for (let i = 0; i < v.length; i++) {
     assert.ok(Number.isFinite(v[i]), `slot ${i} non-finite: ${v[i]}`);
   }
+});
+
+test('CONTENDER_RUN pursuit closes y proportionally to world distance, not physics distance', async () => {
+  // Z_STRETCH = 4.7 compresses physics y vs world z. A pure physics-distance
+  // unit vector under-weights y (player closes x fast, y slow → arrives
+  // y-mismatched). World-proportional moveToward closes y at a rate
+  // proportional to the world depth offset.
+  const { Z_STRETCH } = await import('../physics.js');
+  const state = freshState();
+  state.p1.x = 50; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2 - 5;
+  state.ball.x = 400; state.ball.y = FIELD_HEIGHT / 2 + 0;
+  const perception = perceive(state, 'p1');
+  const intent = { kind: INTENT_KINDS.CONTENDER_RUN, role: 'contender', target: { x: 400, y: FIELD_HEIGHT / 2 }, push: false };
+  const v = encode(state, 'p1', perception, intent, personality);
+
+  // The unit-vector ratio my/mx should match (dyWorld/dx), not (dyPhys/dx).
+  const dx = state.ball.x - (state.p1.x + 18 / 2);
+  const dyPhys = state.ball.y - (state.p1.y + PLAYER_HEIGHT / 2);
+  const expectedRatio = (dyPhys * Z_STRETCH) / dx;
+  const actualRatio = v[ACTION_MOVE_Y] / v[ACTION_MOVE_X];
+  assert.ok(Math.abs(actualRatio - expectedRatio) < 0.01,
+    `expected my/mx ≈ dyWorld/dx = ${expectedRatio.toFixed(3)}, got ${actualRatio.toFixed(3)}`);
 });
 
 test('CONTENDER_RUN slows on approach (anti-overshoot)', () => {

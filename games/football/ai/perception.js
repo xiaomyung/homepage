@@ -62,7 +62,12 @@ function predictBallXY(ball, ticks) {
   return { x: ball.x + ball.vx * ticks, y: ball.y + ball.vy * ticks };
 }
 
-/** Point just behind the ball on the line ball -> opp goal centre. */
+/** Point just behind the ball on the line ball -> opp goal centre.
+ *  The y offset shifts by +PLAYER_HEIGHT/2 because moveToward targets the
+ *  player CENTER (`p.y + PLAYER_HEIGHT/2`) while canKickReach checks the
+ *  HIP at `p.y`. Without the shift, center-targeting parks the hip ~3
+ *  physics-y units short of the ball — and via Z_STRETCH that becomes
+ *  ~14 world units of perp offset, well past the foot/ball contact gap. */
 function attackKickSpot(field, ball, side) {
   const tgx = side === 'left' ? field.goalLineR : field.goalLineL;
   const tgy = FIELD_HEIGHT / 2;
@@ -71,7 +76,7 @@ function attackKickSpot(field, ball, side) {
   const len = Math.hypot(dx, dy) || 1;
   return {
     x: ball.x - (dx / len) * ATTACK_OFFSET,
-    y: ball.y - (dy / len) * ATTACK_OFFSET,
+    y: ball.y - (dy / len) * ATTACK_OFFSET + PLAYER_HEIGHT / 2,
   };
 }
 

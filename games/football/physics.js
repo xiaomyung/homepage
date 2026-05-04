@@ -648,8 +648,15 @@ function applyAction(state, p, out) {
 
   if (p.exhausted) { p.vx = 0; p.vy = 0; return; }
 
-  applyMovement(state, p, out[ACTION_MOVE_X], out[ACTION_MOVE_Y]);
-
+  // Order: kick + push gates BEFORE movement. The controller's perception
+  // sees the player's pre-tick state when computing canKickReach / push
+  // gates; running movement first would shift heading + position before
+  // the gate test, so a borderline reach the controller correctly saw
+  // could fail at tryStartKick. With this order, controller perception
+  // and physics gate test sample the same state — they agree by
+  // construction. Movement still applies in the same tick (during
+  // CONTENDER_KICK the action vector zeros MOVE anyway, so this matters
+  // only for the failing-gate case).
   if (out[ACTION_PUSH_GATE] > 0) {
     const opp = p === state.p1 ? state.p2 : state.p1;
     tryPush(state, p, opp, out[ACTION_PUSH_POWER]);
@@ -664,6 +671,8 @@ function applyAction(state, p, out) {
       out[ACTION_KICK_POWER],
     );
   }
+
+  applyMovement(state, p, out[ACTION_MOVE_X], out[ACTION_MOVE_Y]);
 }
 
 /* ── Angle helpers ────────────────────────────────────────────── */
@@ -1686,27 +1695,30 @@ function predictBallAtStrike(ball, ticks, out) {
 }
 
 /** Compute foot world position by IK'ing toward `kick.footTarget`.
- *  Writes (x, y=vertical, z=depth) into `out`. */
+ *  Writes (x, y=vertical, z=depth) into `out`. The leg yaws at the hip
+ *  by `local.perp` (capped at LATERAL_FOOT_FLEX) so the foot lands on
+ *  a ball that's off the sagittal plane — a natural-looking side-of-
+ *  foot hook, not a stiff straight-ahead strike. */
 const _scratchIKRes = { upperAngle: 0, lowerAngle: 0, footFwd: 0, footUp: 0 };
 function ikFootWorld(p, out) {
   const k = p.kick;
-  // Center hip matches the reach-gate anchor in `tryStartKick` so
-  // a ball that passes the gate has the same kill zone at strike
-  // time — otherwise balls inside the left-hip arc cleared the
-  // gate but never met the right-hip foot sphere, burning 288 ms
-  // per miss. The renderer still draws the right leg from its
-  // offset hip for visual flavor; the ~2.64 world-unit gap between
-  // the visible foot and the physics foot is well inside
-  // (FOOT_RADIUS + BALL_RADIUS ≈ 5.7), so the eye still reads a
-  // clean foot-ball contact.
   const hip = hipAnchor(p, _scratchHip);
   const local = projectHipLocal(hip, p.heading, k.footTargetX, k.footTargetY, k.footTargetZ, _scratchLocal);
+  // Lateral flex: the foot reaches up to LATERAL_FOOT_FLEX world units
+  // off the sagittal plane. The IK solver still works in 2D (fwd, up),
+  // but we apply the perp offset as a hip yaw afterwards. The 2D leg
+  // length budget is reduced by `perpEff` (Pythagorean) so a ball
+  // off-axis still lives inside a reachable cylinder.
+  const perpEff = clamp(local.perp, -LATERAL_FOOT_FLEX, LATERAL_FOOT_FLEX);
   solve2BoneIK(local.fwd, local.up, STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG, _scratchIKRes);
   const fwdX = Math.cos(p.heading);
   const fwdZ = Math.sin(p.heading);
-  out.x = hip.x + _scratchIKRes.footFwd * fwdX;
+  // perp axis = heading rotated 90° in the floor plane: (-sin h, _, cos h).
+  const perpX = -fwdZ;
+  const perpZ = fwdX;
+  out.x = hip.x + _scratchIKRes.footFwd * fwdX + perpEff * perpX;
   out.y = hip.y + _scratchIKRes.footUp;
-  out.z = hip.z + _scratchIKRes.footFwd * fwdZ;
+  out.z = hip.z + _scratchIKRes.footFwd * fwdZ + perpEff * perpZ;
   return out;
 }
 
@@ -1721,12 +1733,28 @@ function ikFootWorld(p, out) {
  * reach balls, avoiding flapping at the edge. Pure, allocation-
  * free (reuses the module scratch buffers).
  */
+// Lateral foot flex: real footballers hook the ball with a side-of-foot
+// strike when the ball isn't dead ahead. We let the kicking leg yaw at
+// the hip so the foot can reach a ball that's offset perpendicular to
+// the sagittal plane, capped at LATERAL_FOOT_FLEX world units. Contact
+// succeeds when the lateral offset is within (foot+ball) of the flex
+// limit. The cap keeps the leg motion looking like a natural twist
+// rather than a sideways spread.
+export const LATERAL_FOOT_FLEX = 6;
+const FOOT_BALL_CONTACT_R = FOOT_RADIUS + BALL_RADIUS;
+const FOOT_LATERAL_REACH = LATERAL_FOOT_FLEX + FOOT_BALL_CONTACT_R;
+
 export function canKickReach(state, p, safetyMargin = 0) {
   const predicted = predictBallAtStrike(state.ball, strikeLeadTicks('ground'), _scratchPredicted);
   const hip = hipAnchor(p, _scratchHip);
   const local = projectHipLocal(hip, p.heading, predicted.x, predicted.y, predicted.z, _scratchLocal);
-  const dist = Math.hypot(local.fwd, local.up, local.perp);
+  // 3D reach budget uses the sagittal projection (fwd, up) plus the
+  // lateral component capped at the flex limit — beyond LATERAL_FOOT_FLEX
+  // the foot can't reach the ball laterally even with the leg twist.
+  const perpEff = clamp(local.perp, -LATERAL_FOOT_FLEX, LATERAL_FOOT_FLEX);
+  const dist = Math.hypot(local.fwd, local.up, perpEff);
   if (dist > KICK_REACH_MAX - safetyMargin) return false;
+  if (Math.abs(local.perp) > FOOT_LATERAL_REACH - safetyMargin) return false;
   const facePivotX = p.x + PLAYER_WIDTH / 2;
   const facePivotZ = p.y * Z_STRETCH;
   const wantAngle = Math.atan2(predicted.z - facePivotZ, predicted.x - facePivotX);
@@ -1756,8 +1784,21 @@ function tryStartKick(state, p, dx, dy, dz, power) {
   // the gate but never meet the foot sphere.
   const hip = hipAnchor(p, _scratchHip);
   const local = projectHipLocal(hip, p.heading, predicted.x, predicted.y, predicted.z, _scratchLocal);
-  const dist = Math.hypot(local.fwd, local.up, local.perp);
   const which = p === state.p1 ? 'p1' : 'p2';
+  // Lateral flex caps how far the foot can hook off the sagittal plane.
+  // Ball outside that envelope is a guaranteed no_contact even after
+  // the leg yaws fully, so reject before burning a 288 ms animation.
+  if (Math.abs(local.perp) > FOOT_LATERAL_REACH) {
+    if (state.recordEvents) {
+      state.events.push({ type: 'kick_missed', player: which, reason: 'out_of_reach' });
+    }
+    return false;
+  }
+  // Reach budget: leg solves in (fwd, up); the perp axis is consumed
+  // by the leg yaw so distances inside LATERAL_FOOT_FLEX don't eat
+  // into the 2D leg-length budget. Mirrors canKickReach exactly.
+  const perpEff = clamp(local.perp, -LATERAL_FOOT_FLEX, LATERAL_FOOT_FLEX);
+  const dist = Math.hypot(local.fwd, local.up, perpEff);
   if (dist > KICK_REACH_MAX) {
     if (state.recordEvents) {
       state.events.push({ type: 'kick_missed', player: which, reason: 'out_of_reach' });
@@ -2045,29 +2086,41 @@ export function kickLegPose(kick, hipWX, hipWY, hipWZ, forwardX, forwardZ, out) 
   const dz = kick.footTargetZ - hipWZ;
   const fwd = dx * forwardX + dz * forwardZ;
   const up  = dy;
+  // Lateral component (perpendicular to heading in the floor plane).
+  // Capped at LATERAL_FOOT_FLEX so the leg yaw stays in a natural
+  // hooking range. Renderer reads `legYaw` and rotates the upper leg
+  // around the vertical hip axis.
+  const perp = -dx * forwardZ + dz * forwardX;
+  const legYaw = clamp(perp, -LATERAL_FOOT_FLEX, LATERAL_FOOT_FLEX);
   const legLen = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG;
   const cockFwd = -KICK_COCK_FWD_FRAC * legLen;
   const cockUp  = -KICK_COCK_UP_FRAC  * legLen;
 
-  let targetFwd, targetUp;
+  let targetFwd, targetUp, yawScale;
   if (kick.stage === 'recovery') {
     // Recovery: target → rest, no detour through cock.
     targetFwd = fwd * tEff;
     targetUp  = up * tEff + (-legLen) * (1 - tEff);
+    yawScale = tEff;
   } else if (tEff < WINDUP_PEAK_TEFF) {
-    // Load: rest → cock.
+    // Load: rest → cock. Yaw blends from 0 (rest) to full (cocked).
     const p = tEff / WINDUP_PEAK_TEFF;
     targetFwd =       0 * (1 - p) + cockFwd * p;
     targetUp  = -legLen * (1 - p) + cockUp  * p;
+    yawScale = p;
   } else {
     // Rise + strike-hold: cock → target.
     const p = (tEff - WINDUP_PEAK_TEFF) / (1 - WINDUP_PEAK_TEFF);
     targetFwd = cockFwd * (1 - p) + fwd * p;
     targetUp  = cockUp  * (1 - p) + up  * p;
+    yawScale = 1;
   }
   solve2BoneIK(targetFwd, targetUp, STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG, _scratchIKRes);
   out.upperAngle = _scratchIKRes.upperAngle;
   out.lowerAngle = _scratchIKRes.lowerAngle;
+  // Renderer-visible hip yaw (radians) for the kicking leg. Computed
+  // here rather than at the renderer so a leg-length change auto-rescales.
+  out.legYaw = Math.atan2(legYaw * yawScale, Math.max(1e-3, Math.abs(targetFwd)));
   return out;
 }
 

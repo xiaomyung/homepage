@@ -17,6 +17,7 @@ import {
   PLAYER_WIDTH,
   PLAYER_HEIGHT,
   FIELD_HEIGHT,
+  Z_STRETCH,
 } from '../physics.js';
 
 import { INTENT_KINDS } from './decision.js';
@@ -32,23 +33,32 @@ import {
   LOB_OPPONENT_BLOCK_DIST,
   LOB_KICK_DZ,
   LOB_BALL_FAST,
-  CONTENDER_KICK_NUDGE_MAGNITUDE,
   APPROACH_RAMP_DIST,
   APPROACH_MIN_MAGNITUDE,
 } from './tuning.js';
 
 export const ACTION_VEC_SIZE = PHYSICS_ACTION_VEC_SIZE;
 
+/**
+ * Unit-vector pursuit toward a physics-space target, normalised in WORLD
+ * coords. Physics depth is compressed by Z_STRETCH (4.7) so a naive
+ * physics-space normalisation under-weighted dy and the player closed x
+ * faster than y, arriving at the ball with a perp offset that broke
+ * foot-ball contact. Normalising in world coords closes both axes
+ * proportionally to what the eye sees. The returned (mx, my) is the
+ * world-direction unit vector — physics' applyMovement then divides
+ * targetVy by Z_STRETCH to produce visually-symmetric motion.
+ */
 function moveToward(self, tx, ty, captureRadius = 0) {
   const cx = self.x + PLAYER_WIDTH / 2;
   const cy = self.y + PLAYER_HEIGHT / 2;
   const dx = tx - cx;
-  const dy = ty - cy;
-  const d = Math.hypot(dx, dy);
+  const dyWorld = (ty - cy) * Z_STRETCH;
+  const d = Math.hypot(dx, dyWorld);
   if (captureRadius > 0 && d <= captureRadius) return { mx: 0, my: 0 };
   if (d < 1e-6) return { mx: 0, my: 0 };
   let mx = dx / d;
-  let my = dy / d;
+  let my = dyWorld / d;
   if (Math.abs(mx) < FALLBACK_DEAD_ZONE) mx = 0;
   if (Math.abs(my) < FALLBACK_DEAD_ZONE) my = 0;
   return { mx, my };
@@ -129,15 +139,15 @@ export function encode(state, which, perception, intent, personality) {
     return out;
   }
 
-  // Movement target per intent kind.
+  // Movement target per intent kind. CONTENDER_KICK and the windup of an
+  // already-active kick both leave MOVE at (0, 0): the player has arrived
+  // at the kick spot and any drift during windup would shift the hip
+  // (and therefore the foot world position relative to the frozen foot
+  // target) and break contact. The approach run already aligned heading.
   let target = null;
   switch (intent.kind) {
     case INTENT_KINDS.GOALIE:
       target = intent.target;
-      break;
-    case INTENT_KINDS.CONTENDER_KICK:
-      // Nudge into the ball — see CONTENDER_KICK_NUDGE_MAGNITUDE in tuning.js.
-      target = { x: state.ball.x, y: state.ball.y };
       break;
     case INTENT_KINDS.CONTENDER_RUN:
     case INTENT_KINDS.SUPPORT:
@@ -147,27 +157,19 @@ export function encode(state, which, perception, intent, personality) {
       target = null;
   }
 
-  if (self.kick.active) {
-    target = perception.ballPredShort;
-  }
+  if (self.kick.active) target = null;
 
   if (target) {
     // Capture radius only applies to GOALIE (target is a fixed goal-line
-    // point) — for moving targets (the ball) we want continuous pursuit
-    // so the player keeps nudging into the ball until heading + reach
-    // align for a kick.
+    // point); CONTENDER_RUN/SUPPORT pursue continuously toward attackKickSpot
+    // and the slowdown ramp brings them to a controlled arrival.
     const captureRadius = intent.kind === INTENT_KINDS.GOALIE ? FALLBACK_CAPTURE_RADIUS : 0;
     const { mx, my } = moveToward(self, target.x, target.y, captureRadius);
     let mag = magnitudeFor(self, perception);
-    if (intent.kind === INTENT_KINDS.CONTENDER_KICK) {
-      mag = Math.min(mag, CONTENDER_KICK_NUDGE_MAGNITUDE);
-    }
-    if (intent.kind === INTENT_KINDS.CONTENDER_RUN || intent.kind === INTENT_KINDS.SUPPORT) {
-      // Distance-based approach slowdown — see APPROACH_RAMP_DIST in tuning.js.
-      const t = Math.min(1, perception.selfDistToBall / APPROACH_RAMP_DIST);
-      const approachMag = APPROACH_MIN_MAGNITUDE + (1 - APPROACH_MIN_MAGNITUDE) * t;
-      mag = Math.min(mag, approachMag);
-    }
+    // Distance-based approach slowdown — see APPROACH_RAMP_DIST in tuning.js.
+    const t = Math.min(1, perception.selfDistToBall / APPROACH_RAMP_DIST);
+    const approachMag = APPROACH_MIN_MAGNITUDE + (1 - APPROACH_MIN_MAGNITUDE) * t;
+    mag = Math.min(mag, approachMag);
     out[ACTION_MOVE_X] = mx * mag;
     out[ACTION_MOVE_Y] = my * mag;
   }

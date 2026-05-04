@@ -142,12 +142,14 @@ export function decide(state, which, perception) {
   const pushAvailable = !perception.oppExhausted
     && (perception.pushOpportunity || (perception.oppWindingUp && perception.selfDistToBall < perception.oppDistToBall + 30));
 
-  // Pure-press target: chase the ball directly. The attackKickSpot is
-  // good geometry for a "set up a clean shot" approach but it parks the
-  // player a few units shy of the ball — if canKickReach fails inside
-  // the capture-radius window the player gets stuck. Chasing the ball
-  // itself keeps the player nudging it until heading + reach align.
-  let ballTarget = { x: state.ball.x, y: state.ball.y };
+  // Run-onto-the-shot: target the kick spot (just behind the ball on the
+  // ball→opp-goal line). Heading aligns with the kick direction during
+  // the approach, so by the time canKickReach passes the player is
+  // already squared up — kick fires same tick. Earlier failure mode of
+  // "parks shy of ball, never reaches reach" is gone now that pursuit is
+  // world-proportional (closes y just as fast as x) and the physics
+  // applyAction order puts tryStartKick BEFORE applyMovement (no race).
+  let ballTarget = perception.attackKickSpot;
 
   // Sidestep when in true pair contact AND can't kick — bias the target
   // perpendicular to the self→opp axis, toward the side where the

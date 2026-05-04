@@ -1390,8 +1390,8 @@ export class Renderer {
     anim.lastHeadZ = pose.headZ;
     this._placeArm(pose.lShX, pose.shoulderY, pose.lShZ, pose.lArmUpper, pose.lArmLower, pose.forwardX, pose.forwardZ, color, pose.lArmUpperYaw, pose.lArmLowerYaw);
     this._placeArm(pose.rShX, pose.shoulderY, pose.rShZ, pose.rArmUpper, pose.rArmLower, pose.forwardX, pose.forwardZ, color, pose.rArmUpperYaw, pose.rArmLowerYaw);
-    this._placeLeg(pose.lHipX, pose.hipBaseY, pose.lHipZ, pose.lLegUpper, pose.lLegLower, pose.forwardX, pose.forwardZ, color);
-    this._placeLeg(pose.rHipX, pose.hipBaseY, pose.rHipZ, pose.rLegUpper, pose.rLegLower, pose.forwardX, pose.forwardZ, color);
+    this._placeLeg(pose.lHipX, pose.hipBaseY, pose.lHipZ, pose.lLegUpper, pose.lLegLower, pose.forwardX, pose.forwardZ, color, pose.lLegHipYaw);
+    this._placeLeg(pose.rHipX, pose.hipBaseY, pose.rHipZ, pose.rLegUpper, pose.rLegLower, pose.forwardX, pose.forwardZ, color, pose.rLegHipYaw);
 
     // 5. Footstep dust on walk-cycle zero crossings, gated on speed.
     //    Pure cosmetic — never feeds back into physics or anim state.
@@ -1682,17 +1682,24 @@ export class Renderer {
    *  relative to the upper leg). The two capsules meet at the
    *  knee, with a kneecap sphere drawn over the join. Passing
    *  `lowerAngle === upperAngle` produces a straight leg. */
-  _placeLeg(px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color) {
+  _placeLeg(px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color, hipYaw = 0) {
     const U = STICKMAN_UPPER_LEG;
     const L = STICKMAN_LOWER_LEG;
+    // hipYaw rotates the leg's forward axis around the vertical hip axis
+    // — used by the kick to hook the foot toward an off-axis ball. Same
+    // yaw applies to upper and lower segments so the leg stays straight
+    // through the knee; the foot translates along the rotated axis.
+    const yc = Math.cos(hipYaw), ys = Math.sin(hipYaw);
+    const fwdX = forwardX * yc - forwardZ * ys;
+    const fwdZ = forwardX * ys + forwardZ * yc;
     const upperSin = Math.sin(upperAngle);
-    const kneeX = px + forwardX * U * upperSin;
+    const kneeX = px + fwdX * U * upperSin;
     const kneeY = py - U * Math.cos(upperAngle);
-    const kneeZ = pz + forwardZ * U * upperSin;
+    const kneeZ = pz + fwdZ * U * upperSin;
     const lowerSin = Math.sin(lowerAngle);
-    const footX = kneeX + forwardX * L * lowerSin;
+    const footX = kneeX + fwdX * L * lowerSin;
     const footY = kneeY - L * Math.cos(lowerAngle);
-    const footZ = kneeZ + forwardZ * L * lowerSin;
+    const footZ = kneeZ + fwdZ * L * lowerSin;
 
     // Upper segment: hip → knee.
     while (this._stickmanLeg.length <= this._stickmanLegCursor) this._mkLeg();

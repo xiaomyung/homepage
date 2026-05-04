@@ -74,3 +74,10 @@ export const LOB_OPPONENT_BLOCK_DIST = 30;
 export const LOB_KICK_DZ = 0.7;
 
 export const LOB_BALL_FAST = 6.0;
+
+// Minimum ball altitude (world-z above ground) for the airkick lob to
+// fire. Below this the ball is effectively on the ground and the
+// airkick — which makes the player jump up and strike at the peak of
+// the jump arc — would whiff over the top of a ball that never left
+// the floor.
+export const LOB_MIN_BALL_Z = 5;

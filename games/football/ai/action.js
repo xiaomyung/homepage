@@ -33,6 +33,7 @@ import {
   LOB_OPPONENT_BLOCK_DIST,
   LOB_KICK_DZ,
   LOB_BALL_FAST,
+  LOB_MIN_BALL_Z,
   APPROACH_RAMP_DIST,
   APPROACH_MIN_MAGNITUDE,
 } from './tuning.js';
@@ -108,8 +109,16 @@ function kickApproach(state, self, perception, personality) {
 
   const urgent = perception.ballSpeedXY > LOB_BALL_FAST || perception.oppWindingUp;
 
+  // Lob (airkick) is only viable when the ball is actually airborne at
+  // strike time — the airkick path makes the player jump up and meet
+  // the ball at AIRKICK_MAX_Z = 20 world units. A ball on the ground
+  // sits at BALL_RADIUS ≈ 4 world units; the foot at peak is well
+  // above it and the kick guarantees a no_contact. For grounded balls
+  // we always pick the ground kick and let the ball deflect off the
+  // opp body if it must.
   let dz = 0;
-  if (!urgent && perception.oppBlocksLane) {
+  const ballAirborne = ball.z > LOB_MIN_BALL_Z;
+  if (ballAirborne && !urgent && perception.oppBlocksLane) {
     const ocx = perception.oppCx;
     const ocy = perception.oppCy;
     const distOppToBall = Math.hypot(ocx - ball.x, ocy - ball.y);

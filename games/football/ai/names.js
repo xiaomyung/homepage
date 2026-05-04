@@ -11,8 +11,8 @@ export const SURNAMES = [
 
 /** Pick two distinct names from SURNAMES using rng (a 0..1 number source). */
 export function pickMatchNames(rng) {
-  const i = Math.floor(rng() * SURNAMES.length) % SURNAMES.length;
-  let j = Math.floor(rng() * (SURNAMES.length - 1)) % (SURNAMES.length - 1);
+  const i = Math.floor(rng() * SURNAMES.length);
+  let j = Math.floor(rng() * (SURNAMES.length - 1));
   if (j >= i) j += 1;
   return { p1: SURNAMES[i], p2: SURNAMES[j] };
 }

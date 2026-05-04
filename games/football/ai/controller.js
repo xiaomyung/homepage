@@ -44,8 +44,13 @@ export function derivePersonality(rng) {
 /** Pure: per-side action for `which` side ('p1' | 'p2'). */
 export function decide(state, which) {
   const self = state[which];
+  // Defensive init for callers (mainly tests) that build a state without
+  // going through nextShowcase(). Live matches always have these set.
   if (!state.aiPersonality) {
-    state.aiPersonality = { left: { kickAimYOffset: 0, pushPowerScale: 1 }, right: { kickAimYOffset: 0, pushPowerScale: 1 } };
+    state.aiPersonality = {
+      left:  { kickAimYOffset: 0, pushPowerScale: 1 },
+      right: { kickAimYOffset: 0, pushPowerScale: 1 },
+    };
   }
   if (!state.aiRoleState) {
     state.aiRoleState = { left: { role: null, since: 0 }, right: { role: null, since: 0 } };

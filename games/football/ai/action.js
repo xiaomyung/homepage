@@ -42,13 +42,11 @@ export const ACTION_VEC_SIZE = PHYSICS_ACTION_VEC_SIZE;
 
 /**
  * Unit-vector pursuit toward a physics-space target, normalised in WORLD
- * coords. Physics depth is compressed by Z_STRETCH (4.7) so a naive
- * physics-space normalisation under-weighted dy and the player closed x
- * faster than y, arriving at the ball with a perp offset that broke
- * foot-ball contact. Normalising in world coords closes both axes
- * proportionally to what the eye sees. The returned (mx, my) is the
- * world-direction unit vector — physics' applyMovement then divides
- * targetVy by Z_STRETCH to produce visually-symmetric motion.
+ * coords. Physics depth is compressed by Z_STRETCH (4.7), so normalising
+ * in physics coords would under-weight dy and the player would close x
+ * faster than y. The returned (mx, my) is the world-direction unit
+ * vector; physics' applyMovement divides targetVy by Z_STRETCH to
+ * produce visually-symmetric motion.
  */
 function moveToward(self, tx, ty, captureRadius = 0) {
   const cx = self.x + PLAYER_WIDTH / 2;
@@ -140,7 +138,7 @@ export function encode(state, which, perception, intent, personality) {
   const self = state[which];
   const out = new Float64Array(ACTION_VEC_SIZE);
 
-  // Defaults: gates off, no kick, no push.
+  // -1 = gate closed (Float64Array initialises moves and powers to 0).
   out[ACTION_KICK_GATE] = -1;
   out[ACTION_PUSH_GATE] = -1;
 
@@ -148,23 +146,17 @@ export function encode(state, which, perception, intent, personality) {
     return out;
   }
 
-  // Movement target per intent kind. CONTENDER_KICK and the windup of an
-  // already-active kick both leave MOVE at (0, 0): the player has arrived
-  // at the kick spot and any drift during windup would shift the hip
-  // (and therefore the foot world position relative to the frozen foot
-  // target) and break contact. The approach run already aligned heading.
-  let target = null;
-  switch (intent.kind) {
-    case INTENT_KINDS.GOALIE:
-      target = intent.target;
-      break;
-    case INTENT_KINDS.CONTENDER_RUN:
-    case INTENT_KINDS.SUPPORT:
-      target = intent.target;
-      break;
-    default:
-      target = null;
-  }
+  // Movement target. CONTENDER_KICK and the windup of an already-active
+  // kick both leave MOVE at (0, 0): the player has arrived at the kick
+  // spot and any drift during windup would shift the hip (and therefore
+  // the foot world position relative to the frozen foot target) and
+  // break contact. The approach run already aligned heading.
+  const kind = intent.kind;
+  let target = (kind === INTENT_KINDS.GOALIE
+              || kind === INTENT_KINDS.CONTENDER_RUN
+              || kind === INTENT_KINDS.SUPPORT)
+    ? intent.target
+    : null;
 
   if (self.kick.active) target = null;
 
@@ -172,7 +164,7 @@ export function encode(state, which, perception, intent, personality) {
     // Capture radius only applies to GOALIE (target is a fixed goal-line
     // point); CONTENDER_RUN/SUPPORT pursue continuously toward attackKickSpot
     // and the slowdown ramp brings them to a controlled arrival.
-    const captureRadius = intent.kind === INTENT_KINDS.GOALIE ? FALLBACK_CAPTURE_RADIUS : 0;
+    const captureRadius = kind === INTENT_KINDS.GOALIE ? FALLBACK_CAPTURE_RADIUS : 0;
     const { mx, my } = moveToward(self, target.x, target.y, captureRadius);
     let mag = magnitudeFor(self, perception);
     // Distance-based approach slowdown — see APPROACH_RAMP_DIST in tuning.js.
@@ -183,7 +175,7 @@ export function encode(state, which, perception, intent, personality) {
     out[ACTION_MOVE_Y] = my * mag;
   }
 
-  if (intent.kind === INTENT_KINDS.CONTENDER_KICK && !self.kick.active) {
+  if (kind === INTENT_KINDS.CONTENDER_KICK && !self.kick.active) {
     const dir = kickApproach(state, self, perception, personality);
     out[ACTION_KICK_GATE] = 1;
     out[ACTION_KICK_DX] = dir.dx;

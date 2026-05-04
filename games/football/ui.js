@@ -1,16 +1,10 @@
 /**
  * Football v2 — UI wiring.
  *
- * Binds the DOM elements authored in index.html to the showcase loop.
- * Covers:
- *   - Scoreboard (role dots, names, score, timer)
- *   - Options panel toggle
- *   - Free / follow camera toggles
- *
- * The training-era widgets (start/stop, stats panel, fitness graph,
- * config controls, reset button) are gone with the broker. Their DOM
- * elements still sit in index.html as layout placeholders — they have
- * no JS handlers and their stat <dd> elements show "—" by default.
+ * Binds the DOM elements authored in index.html to the showcase loop:
+ * scoreboard (role dots, names, score, timer), options panel toggle,
+ * free/follow camera toggles. Some elements in index.html are unwired
+ * placeholders for future stat widgets — they show "—" by default.
  */
 
 /* ── Scoreboard ─────────────────────────────────────────── */

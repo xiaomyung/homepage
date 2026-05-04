@@ -32,7 +32,18 @@ let currentMatch = null;
 let lastFrameTime = 0;
 let tickAccumulator = 0;
 const MAX_TICKS_PER_FRAME = 5;
+// Visibility-stall recovery: if the tab is hidden long enough that
+// state.tick stops advancing, force a fresh match on resume.
+const TAB_STALL_THRESHOLD_MS = 2000;
+// Seed-space upper bound (uint31) and per-stream salt constants for
+// derived RNGs. Salts must be distinct so the streams don't correlate.
+const SEED_UPPER = 2 ** 31;
+const RNG_SALT_PERSONALITY = 0x5A5A5A5A;
+const RNG_SALT_NAMES       = 0x12345678;
 
+// Showcase physics RNG — same LCG params as createSeededRng. Inlined so
+// nextShowcase() can re-seed by mutating showcaseRngSeed without
+// allocating a new closure each match.
 let showcaseRngSeed = 1;
 function showcaseRngFn() {
   showcaseRngSeed = (Math.imul(showcaseRngSeed, 1664525) + 1013904223) >>> 0;
@@ -91,7 +102,7 @@ function installRecovery(canvas) {
     lastFrameTime = 0;
     tickAccumulator = 0;
     const stalledMs = performance.now() - lastVisibleAt;
-    if (showcaseState && stalledMs > 2000 && showcaseState.tick === lastVisibleTick) {
+    if (showcaseState && stalledMs > TAB_STALL_THRESHOLD_MS && showcaseState.tick === lastVisibleTick) {
       nextShowcase();
     }
   });
@@ -118,19 +129,15 @@ function installRecovery(canvas) {
 }
 
 function nextShowcase() {
-  const seed = (Math.random() * 2 ** 31) >>> 0 || 1;
+  const seed = (Math.random() * SEED_UPPER) >>> 0 || 1;
   showcaseRngSeed = seed;
   resetStateInPlace(showcaseState, showcaseField, showcaseRngFn);
   const state = showcaseState;
   state.recordEvents = true;
 
-  const personalityRng = createSeededRng(seed ^ 0x5A5A5A5A);
-  state.aiPersonality = derivePersonality(personalityRng);
+  state.aiPersonality = derivePersonality(createSeededRng(seed ^ RNG_SALT_PERSONALITY));
   state.aiRoleState = { left: { role: null, since: 0 }, right: { role: null, since: 0 } };
-  state.aiRng = createSeededRng(seed ^ 0xA5A5A5A5);
-
-  const nameRng = createSeededRng(seed ^ 0x12345678);
-  state.matchNames = pickMatchNames(nameRng);
+  state.matchNames = pickMatchNames(createSeededRng(seed ^ RNG_SALT_NAMES));
 
   scoreboard.setMatchup(
     { name: state.matchNames.p1 },
@@ -147,7 +154,7 @@ function frame(now) {
     frameInner(now);
   } catch (err) {
     console.error('[football] frame error — recovering with new match:', err);
-    try { nextShowcase(); } catch { /* swallow */ }
+    try { nextShowcase(); } catch (e) { console.error('[football] nextShowcase failed during recovery:', e); }
     lastFrameTime = 0;
     tickAccumulator = 0;
   }

@@ -1,9 +1,8 @@
 /**
  * Football v2 — pure physics module.
  *
- * No DOM, no three.js, no wall-clock. The caller owns cadence: the showcase
- * loop calls tick() once per animation frame; training workers call it in a
- * tight loop. Determinism relies on the caller passing a seeded PRNG into
+ * No DOM, no three.js, no wall-clock — the caller owns tick cadence.
+ * Determinism relies on the caller passing a seeded PRNG into
  * createState(); the bundled createSeededRng() is the canonical source.
  */
 
@@ -15,14 +14,8 @@ const CEILING = 100;
 
 export const TICK_MS = 16;
 // Mercy rule — if no kick for STALL_TICKS ticks (~10 s wall-clock), reset so
-// the match doesn't sit motionless. Visual mode just respawns the
-// ball; headless mode does a full kickoff (both players teleported)
-// so every training segment starts from a clean, identical state.
-// Single value for both so showcase replays (which run with
-// state.headless=true for scoreGoal-determinism) reset on the same
-// schedule the worker did — otherwise a worker match with a reset
-// at t=187 ticks wouldn't reproduce if the visual replay waited
-// until t=625 to reset.
+// the match doesn't sit motionless. Visual mode just respawns the ball;
+// headless mode does a full kickoff (both players teleported).
 const STALL_TICKS = Math.ceil(10000 / TICK_MS);
 
 // Ball
@@ -58,10 +51,10 @@ const MIN_SPEED_STAMINA = 0.3;
 
 // Heading — angular orientation in world-space (cos(h), sin(h)*Z_STRETCH)
 // is the unit "front" vector of the stickman. Tracks visual motion
-// direction with bounded angular velocity (angular inertia), so a
-// 180° turn takes PLAYER_TURN_TICKS ticks regardless of how fast the
-// NN slams the stick. Also defines which way the player must face to
-// land a kick or a push — see FACE_TOL constants below.
+// direction with bounded angular velocity (angular inertia), so a 180°
+// turn takes PLAYER_TURN_TICKS ticks regardless of the action input.
+// Also defines which way the player must face to land a kick or a push
+// — see FACE_TOL constants below.
 export const Z_STRETCH = 4.7;  // imported by renderer.js — single source of truth
 const PLAYER_TURN_TICKS = 20;  // ticks to complete a 180° turn
 const PLAYER_TURN_RATE = Math.PI / PLAYER_TURN_TICKS;
@@ -345,12 +338,8 @@ function createPlayer(side, field) {
  * any new objects. The ball, p1, p2 (and their kick sub-objects), and
  * the events array are all mutated in place. Field + rng can be swapped
  * at will. `recordEvents` and `headless` are reset to their defaults;
- * callers (worker, main) re-set them after reset as needed.
- *
- * Lets worker.js keep one state across thousands of matches instead of
- * allocating a fresh state per runMatch. With N workers × thousands of
- * matches/sec, that churn was the dominant source of old-gen drift —
- * see project_football_renderer_oom in session memory.
+ * callers re-set them after reset as needed. Avoids per-match allocation
+ * so a long-running showcase loop stays heap-stable.
  */
 export function resetStateInPlace(state, field, rng) {
   state.field = field;
@@ -383,8 +372,8 @@ export function resetStateInPlace(state, field, rng) {
 /**
  * Create a fresh game state. Default rng is a seeded LCG with seed 0 so that
  * accidentally-unseeded callers get a reproducible stream.
- * `recordEvents` is false by default — tests and runners opt in to collect
- * state.events; production callers (main, worker) skip all event allocation.
+ * `recordEvents` is false by default — tests opt in to collect
+ * state.events; the visual showcase enables it for renderer particle hooks.
  */
 export function createState(field, rng = createSeededRng(0)) {
   const state = {
@@ -407,11 +396,9 @@ export function createState(field, rng = createSeededRng(0)) {
     tick: 0,
     graceFrames: 0,
     lastKickTick: 0,
-    // Incremented every time the stall timeout fires. Workers read
-    // this after a match to tag the result — stalled matches are
-    // filtered out of the showcase replay buffer so visuals never
-    // show a mid-match teleport. Fitness unaffected: goals scored
-    // during or after a stall still count.
+    // Incremented every time the stall timeout fires (ball frozen for
+    // STALL_TICKS without a kick). Tests and harnesses read it to detect
+    // stuck matches.
     stallCount: 0,
     pauseState: null, // null | 'celebrate' | 'matchend' | 'reposition' | 'waiting'
     pauseTimer: 0,
@@ -420,13 +407,10 @@ export function createState(field, rng = createSeededRng(0)) {
     winner: null,
     events: [],
     recordEvents: false,
-    // Training-mode flag. When true, `scoreGoal`/`ballOut` bypass the
-    // celebrate/reposition/waiting pause state machine and reset the
-    // pitch immediately so every tick of the match budget is spent on
-    // active play — no animations, no idle frames. WIN_SCORE still
-    // ends the match (the headless scoreGoal flips state.matchOver
-    // and writes state.winner). Default false so the visual showcase
-    // path stays untouched.
+    // Headless flag — used by tests. When true, `scoreGoal`/`ballOut` skip
+    // the celebrate/reposition/waiting pause state machine and reset the
+    // pitch immediately. WIN_SCORE still ends the match. Default false so
+    // the visual showcase animation runs.
     headless: false,
   };
   resetStateInPlace(state, field, rng);
@@ -528,9 +512,9 @@ function applyRegenAndExhaustion(p) {
 
 /* ── Action dispatch ─────────────────────────────────────────── */
 
-// Action vector layout — 9 floats, same order as nn.js output. Exported
-// so fallback.js, tests, and any future consumer can build/read the
-// vector by name instead of by magic index.
+// Action vector layout — 9 floats consumed by `tick()`. Exported by
+// name so the controller, tests, and any future consumer can build /
+// read the vector without magic indices.
 export const ACTION_MOVE_X     = 0;
 export const ACTION_MOVE_Y     = 1;
 export const ACTION_KICK_GATE  = 2;
@@ -707,12 +691,9 @@ export function facingToward(p, worldX, worldZ, tol) {
 
 /* ── Movement ─────────────────────────────────────────────────── */
 
-// Motion input dead zone. Floating-point-only filtering for the
-// deterministic controller (which never emits noise); previously
-// 0.15 to absorb NN ±0.05 jitter, but the deterministic AI needs
-// fine lateral corrections to align with the ball's physics-y, and
-// 0.15 silently zeroed those. Bump back up if/when learning
-// returns and NN output is noisy.
+// Motion input dead zone — floating-point filtering. Mirrors
+// `FALLBACK_DEAD_ZONE` in `ai/tuning.js`. Increase if a noisy controller
+// is introduced.
 const MOVE_INPUT_DEAD_ZONE = 0.02;
 
 function applyMovement(state, p, moveX, moveY) {
@@ -907,9 +888,8 @@ function clampAndCollide(state, p) {
 }
 
 // Module-level scratch AABBs reused by the collision resolvers.
-// Physics runs synchronously on the main thread (or per-worker) so
-// a single shared scratch is safe — the caller consumes the result
-// before anyone else can see it.
+// Physics runs synchronously per tick — a single shared scratch is safe
+// because the caller consumes the result before the next call.
 const _scratchEnt2D = { minX: 0, maxX: 0, minY: 0, maxY: 0 };
 const _scratchEnt3D = { minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 };
 // Scratch output for `minPenetrationPush`. Filled in place and
@@ -1723,15 +1703,13 @@ function ikFootWorld(p, out) {
 }
 
 /**
- * Would a ground kick by `p` pass the reachability + facing gate
- * right now? Mirrors `tryStartKick`'s ground-kick path exactly, so
- * the fallback teacher never emits a kick action the engine then
- * silently rejects.
+ * Would a ground kick by `p` pass the reachability + facing gate right
+ * now? Mirrors `tryStartKick`'s ground-kick path exactly so the
+ * controller never emits a kick action the engine then silently rejects.
  *
- * `safetyMargin` tightens the reach threshold — fallback calls this
- * with a small margin so the teacher only commits on clearly-in-
- * reach balls, avoiding flapping at the edge. Pure, allocation-
- * free (reuses the module scratch buffers).
+ * `safetyMargin` tightens the reach threshold — useful when the caller
+ * wants headroom for one tick of post-perception movement. Pure,
+ * allocation-free (reuses the module scratch buffers).
  */
 // Lateral foot flex: real footballers hook the ball with a side-of-foot
 // strike when the ball isn't dead ahead. We let the kicking leg yaw at
@@ -2185,7 +2163,7 @@ function executeKick(state, p) {
   let dx = k.dx, dy = k.dy, dz = k.dz;
   const rawLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
   if (rawLen < KICK_DIR_MIN_LEN) {
-    // NN didn't commit — pick a random direction from the seeded stream
+    // Caller didn't supply a usable direction — pick a random one from the seeded stream.
     dx = state.rng() * 2 - 1;
     dy = state.rng() * 2 - 1;
     dz = state.rng() * 0.5;
@@ -2480,13 +2458,12 @@ function recordBounce(state, axis, force) {
 
 /* ── Scoring, ball-out, reset, finalize ──────────────────────── */
 
-/** Snap the whole pitch back to its kickoff state in one tick —
- *  used by the headless training path after every goal or ball-out
- *  so the match budget isn't burned on celebrate/reposition/waiting
- *  pause frames that produce zero training signal. Teleports players
- *  to their starting spots, zeros all velocities + pending animation
- *  timers, drops the ball at midfield on the ground, and clears any
- *  pause/grace state. */
+/** Snap the whole pitch back to its kickoff state in one tick — used by
+ *  the headless path after every goal or ball-out so the match budget
+ *  isn't burned on celebrate/reposition/waiting pause frames. Teleports
+ *  players to their starting spots, zeros all velocities + pending
+ *  animation timers, drops the ball at midfield on the ground, and
+ *  clears any pause/grace state. */
 function resetToKickoff(state) {
   const f = state.field;
   const ball = state.ball;
@@ -2558,14 +2535,9 @@ function scoreGoal(state, side) {
   }
 
   if (state.headless) {
-    // Training matches follow the same "first to WIN_SCORE wins"
-    // rule as the visual match. Capping training (rather than
-    // running the full tick budget and racking up 30-0 blowouts)
-    // makes training and visual statistics identical, bounds
-    // goal-diff naturally to ±WIN_SCORE, and lets dominant brains
-    // finish a match in seconds — more matches per wall-clock hour
-    // means faster selection. Workers terminate their loop on
-    // `state.matchOver`; physics just sets the flag.
+    // Headless matches follow the same first-to-WIN_SCORE rule as the
+    // visual match, capped so the score stays bounded to ±WIN_SCORE.
+    // The caller terminates its loop on `state.matchOver`.
     if (state.scoreL >= WIN_SCORE || state.scoreR >= WIN_SCORE) {
       state.matchOver = true;
       state.winner = state.scoreL >= WIN_SCORE ? 'left' : 'right';
@@ -2631,8 +2603,7 @@ function resetBall(state) {
 
 /**
  * Finalize the match after the matchend pause. Callers poll `state.matchOver`
- * and discard the state (main.js starts a new showcase, workers break the
- * tick loop), so we only flip the terminal flags — no reset work.
+ * and start a new showcase, so we only flip the terminal flags — no reset work.
  */
 function finalizeMatch(state) {
   state.matchOver = true;
@@ -2692,13 +2663,8 @@ function advancePause(state) {
   if (state.pauseState === 'waiting') {
     state.pauseTimer--;
     if (state.pauseTimer <= 0) {
-      // End the post-goal cycle with a FULL kickoff reset (same one
-      // the headless path uses on scoreGoal). Previously we only ran
-      // resetBall here, which left player velocity/kick/push state
-      // from the pre-goal tick intact. Worker and visual replay then
-      // diverged on subsequent possessions — the worker saw a clean
-      // kickoff, the visual saw players still decelerating. Using
-      // the shared reset keeps the two bit-identical.
+      // Full kickoff reset (same as headless on scoreGoal) so player
+      // velocity/kick/push state from the pre-goal tick is cleared.
       resetToKickoff(state);
     }
   }

@@ -37,6 +37,10 @@ export const APPROACH_MIN_MAGNITUDE = 0.15;
 export const SIDESTEP_TRIGGER_DIST = 10;
 export const SIDESTEP_OFFSET = 12;
 
+// Lead distance (physics units) — how much closer self has to be than
+// opp to commit to a disruptive push while opp is mid-windup. Lets self
+// reach opp before opp's kick fires.
+export const PUSH_WINDUP_LEAD_DIST = 30;
 
 export const KICK_AIM_OFFSET_RANGE = 0.03;
 export const PUSH_POWER_RANGE = 0.10;
@@ -46,20 +50,15 @@ export const KICK_POWER_FAR = 1.0;
 export const PUSH_POWER_BASE = 0.8;
 export const PUSH_RANGE_FRAC = 0.9;
 
-// Was 0.15 to filter NN noise; for the deterministic controller it
-// just throws away small lateral corrections needed to align with
-// the ball's physics-y. Dropped to 0.02 (floating-point-only). Paired
-// with the same change in physics' MOVE_INPUT_DEAD_ZONE.
+// Floating-point dead zone on the action MOVE vector — values below this
+// magnitude are treated as zero. Paired with `MOVE_INPUT_DEAD_ZONE` in
+// physics.js (same value, applied symmetrically on both sides of the seam).
 export const FALLBACK_DEAD_ZONE = 0.02;
 export const FALLBACK_CAPTURE_RADIUS = PLAYER_WIDTH / 2;
-// canKickReach safety margin — was 2 to keep the AI from emitting
-// kicks at the very edge of physics' tryStartKick reach. With the
-// distance-based approach slowdown the player no longer arrives at
-// the edge with full velocity, so the buffer isn't needed. Dropping
-// to 0 makes canKickReach match tryStartKick exactly: effective
-// horizontal reach grows from ~8.6 to ~12.25 (3D budget is 20, with
-// 15.8 always burned by hip-to-ground vertical), so kicks fire
-// substantially earlier.
+// canKickReach margin. Zero means the controller's reach gate matches
+// physics' tryStartKick gate exactly. Effective horizontal kick reach is
+// ~12.25 world units (3D leg-budget 20, with ~15.8 always burned by the
+// hip-to-ground vertical drop).
 export const FALLBACK_SAFETY_MARGIN = 0;
 
 export const ATTACK_OFFSET = BALL_RADIUS + 2;
@@ -68,7 +67,6 @@ export const NEAR_BLOCK_DIST = 20;
 export const NEAR_BLOCK_RADIUS = PLAYER_WIDTH / 2 + BALL_RADIUS;
 
 export const GOALIE_THREAT_VEL = 2.0;
-export const GOALIE_THREAT_X_FRAC = 0.5;
 
 export const LOB_OPPONENT_BLOCK_DIST = 30;
 export const LOB_KICK_DZ = 0.7;

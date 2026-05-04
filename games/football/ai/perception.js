@@ -7,11 +7,10 @@ import {
   PLAYER_WIDTH,
   PLAYER_HEIGHT,
   FIELD_HEIGHT,
-  BALL_RADIUS,
   MAX_PLAYER_SPEED,
-  KICK_FACE_TOL,
   PUSH_FACE_TOL,
   canKickReach,
+  wrapAngle,
 } from '../physics.js';
 
 import {
@@ -21,7 +20,6 @@ import {
   NEAR_BLOCK_DIST,
   NEAR_BLOCK_RADIUS,
   GOALIE_THREAT_VEL,
-  GOALIE_THREAT_X_FRAC,
   PUSH_RANGE_FRAC,
 } from './tuning.js';
 
@@ -35,12 +33,6 @@ function playerCenter(p) {
 
 function dist(ax, ay, bx, by) {
   return Math.hypot(ax - bx, ay - by);
-}
-
-function wrapAngle(a) {
-  while (a > Math.PI) a -= 2 * Math.PI;
-  while (a < -Math.PI) a += 2 * Math.PI;
-  return a;
 }
 
 /** Earliest tick within `horizon` at which `p` can reach the ball at
@@ -188,8 +180,6 @@ export function perceive(state, which) {
     pushOpportunity: push,
     oppWindingUp,
     oppExhausted: opp.exhausted,
-    selfStamina: self.stamina,
     selfSide: self.side,
-    kickDirX,
   };
 }

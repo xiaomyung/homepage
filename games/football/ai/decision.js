@@ -19,6 +19,7 @@ import {
   FALLBACK_SAFETY_MARGIN,
   SIDESTEP_TRIGGER_DIST,
   SIDESTEP_OFFSET,
+  PUSH_WINDUP_LEAD_DIST,
 } from './tuning.js';
 
 import { canKickReach } from '../physics.js';
@@ -49,7 +50,7 @@ export const ROLES = Object.freeze({
 /** Decide which side is contender by raw intercept-tick comparison.
  *  Tiebreak: ball-velocity-vector points toward whose half-line; if
  *  velocity is small, default to side='left'. */
-function rawContenderSide(perception, opp) {
+function rawContenderSide(perception) {
   const m = perception.selfInterceptTicks;
   const o = perception.oppInterceptTicks;
   if (Number.isFinite(m) && Number.isFinite(o)) {
@@ -67,24 +68,20 @@ function tiebreakContender(state, selfSide) {
   const ball = state.ball;
   const speed = Math.hypot(ball.vx, ball.vy);
   if (speed > 0.5) {
-    const ballHeadsLeft = ball.vx < 0;
-    const selfIsLeft = selfSide === 'left';
-    if (ballHeadsLeft && selfIsLeft) return ROLE_CONTENDER;
-    if (!ballHeadsLeft && !selfIsLeft) return ROLE_CONTENDER;
-    return ROLE_SUPPORT;
+    return (ball.vx < 0) === (selfSide === 'left') ? ROLE_CONTENDER : ROLE_SUPPORT;
   }
   return selfSide === 'left' ? ROLE_CONTENDER : ROLE_SUPPORT;
 }
 
 /** Resolve role with hysteresis. Conditional fast-flip when opp possesses
  *  the ball (opp.kick.active or opp within kick reach). */
-function resolveRole(state, side, perception, opp) {
+function resolveRole(state, side, perception) {
   const roleState = state.aiRoleState[side];
   const tick = state.tick | 0;
 
   const oppPossesses = perception.oppWindingUp || perception.oppHasKickReach;
 
-  let raw = rawContenderSide(perception, opp);
+  let raw = rawContenderSide(perception);
   if (raw === null) raw = tiebreakContender(state, perception.selfSide);
 
   if (roleState.role === null) {
@@ -108,8 +105,9 @@ function resolveRole(state, side, perception, opp) {
 }
 
 /**
- * Decide intent. Returns a plain object:
- *   { kind, target, kickDirX, kickDirY, kickDirZ, push, role }
+ * Decide intent. Returns `{ kind, role, push, target? }` — `target` is
+ * present for CONTENDER_RUN, SUPPORT, and GOALIE; absent for
+ * CONTENDER_KICK and NEUTRAL.
  */
 export function decide(state, which, perception) {
   const self = state[which];
@@ -133,22 +131,23 @@ export function decide(state, which, perception) {
     };
   }
 
-  const role = resolveRole(state, self.side, perception, opp);
+  const role = resolveRole(state, self.side, perception);
 
   // Mercy gate: don't push an exhausted opponent. They can't react
   // (their NEUTRAL intent zeros all gates) so it would just be
   // pummelling a downed body. Resumes when opp recovers to
   // STAMINA_EXHAUSTION_THRESHOLD = 0.5 and physics clears the flag.
   const pushAvailable = !perception.oppExhausted
-    && (perception.pushOpportunity || (perception.oppWindingUp && perception.selfDistToBall < perception.oppDistToBall + 30));
+    && (perception.pushOpportunity
+        || (perception.oppWindingUp
+            && perception.selfDistToBall < perception.oppDistToBall + PUSH_WINDUP_LEAD_DIST));
 
   // Run-onto-the-shot: target the kick spot (just behind the ball on the
-  // ball→opp-goal line). Heading aligns with the kick direction during
-  // the approach, so by the time canKickReach passes the player is
-  // already squared up — kick fires same tick. Earlier failure mode of
-  // "parks shy of ball, never reaches reach" is gone now that pursuit is
-  // world-proportional (closes y just as fast as x) and the physics
-  // applyAction order puts tryStartKick BEFORE applyMovement (no race).
+  // ball→opp-goal line) so heading aligns with kick direction during the
+  // approach. canKickReach passes with the player already squared up —
+  // kick fires same tick. Relies on world-proportional pursuit (closes y
+  // proportionally to x) and physics' tryStartKick running before
+  // applyMovement, so the controller and gate share the same player state.
   let ballTarget = perception.attackKickSpot;
 
   // Sidestep when in true pair contact AND can't kick — bias the target
@@ -182,12 +181,10 @@ export function decide(state, which, perception) {
   if (role === ROLE_CONTENDER) {
     if (perception.selfHasKickReach && !opp.kick.active) {
       const oppCanReach = canKickReach(state, opp, FALLBACK_SAFETY_MARGIN);
-      const myD = perception.selfDistToBall;
       const oppD = perception.oppDistToBall;
+      const myD = perception.selfDistToBall;
       const yieldToOpp = oppCanReach && (oppD < myD || (oppD === myD && self.side === 'right'));
-      if (!yieldToOpp) {
-        return { kind: INTENT_CONTENDER_KICK, role, push: false };
-      }
+      if (!yieldToOpp) return { kind: INTENT_CONTENDER_KICK, role, push: false };
     }
     return { kind: INTENT_CONTENDER_RUN, role, target: ballTarget, push: pushAvailable };
   }

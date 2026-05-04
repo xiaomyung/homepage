@@ -20,23 +20,22 @@ export const STICKMAN_RUN_THRESHOLD = 1.2;
 export const STICKMAN_TILT_PER_SPEED = 0.09;
 export const STICKMAN_TILT_MAX = 0.45;
 
-// Celebrate rotation rate. 50% slower than the original jumping-jack
-// tempo — the jump-cycle pose (crouch → launch → apex → land) needs
-// more time to read as a real hop, and the fist-pump cadence at the
-// new rate sits around one pump every ~0.8 s, which matches natural
-// celebration tempo better than the old frenetic beat.
+// Celebrate phase rate — drives the jump-cycle pose (crouch → launch →
+// apex → land) and fist-pump cadence. ~0.8 s per pump, slow enough for
+// the hop arc to read as a real jump.
 export const CELEB_PHASE_RATE = 0.125;
 
-// Grieve rotation rate — the loser's slow back-and-forth body rock
-// during a goal celebration (non-scorer reaction). Much slower than
-// celebrate: ~80 ticks per cycle = ~1.3 s of gentle sway.
+// Grieve rotation rate — loser's gentle back-and-forth body rock.
+// ~80 ticks per cycle = ~1.3 s of sway.
 export const GRIEVE_PHASE_RATE = 0.08;
 
-// Rest (exhausted-and-recovering) body-spin rate. Slower than walk
-// swing — a dazed, sluggish circle. ~62 ticks per full body rotation
-// ≈ 1 s. Keeps the animation legible at game speed without inducing
-// motion sickness.
+// Rest (exhausted-and-recovering) body-spin rate. ~62 ticks per full
+// rotation ≈ 1 s — readable at game speed without inducing motion sickness.
 export const REST_PHASE_RATE = 0.10;
+
+// Heading the matchend pose snaps to so winner/loser both face the
+// camera (+z world axis = π/2 in the heading frame).
+const FACE_CAMERA_HEADING = Math.PI / 2;
 
 // TURN / STOP detection thresholds. Scales map raw angular velocity
 // (rad/tick) and deceleration (u/tick²) onto the 0..1 factor the
@@ -169,15 +168,13 @@ export function advanceAnimState(
     //      eases in over ~0.5s.
     // Both are interpolated via anim.animHeading so the turn doesn't snap.
     let heading = physicsHeading;
-    const isMatchendPose = isMatchendWin || isMatchendLose;
     if (isReposition && speed > REPOSITION_SPEED_GATE) {
       const motionHeading = Math.atan2(effVy * Z_STRETCH, effVx);
       if (anim.animHeading == null) anim.animHeading = motionHeading;
       const delta = wrapAngle(motionHeading - anim.animHeading);
       anim.animHeading = wrapAngle(anim.animHeading + delta * STICKMAN_SMOOTH * 2);
       heading = anim.animHeading;
-    } else if (isMatchendPose) {
-      const FACE_CAMERA_HEADING = Math.PI / 2;
+    } else if (isMatchendWin || isMatchendLose) {
       if (anim.animHeading == null) anim.animHeading = physicsHeading;
       const delta = wrapAngle(FACE_CAMERA_HEADING - anim.animHeading);
       anim.animHeading = wrapAngle(anim.animHeading + delta * STICKMAN_SMOOTH * 2);
@@ -192,11 +189,8 @@ export function advanceAnimState(
     // heading. Positive = moving forward; negative = moving backward.
     const effVworldZ = effVy * Z_STRETCH;
     const forwardSpeed = effVx * forwardX + effVworldZ * forwardZ;
-    // Amplitude drives the walk-swing magnitude. Bumped slope from
-    // 0.2 → 0.35 so slow walking has visible leg movement instead
-    // of the near-idle shuffle the old coefficient produced; cap
-    // stays at 1.0 so max thigh swing stays in the natural
-    // ~40° range (legSwing coefficient 0.7 × amp 1.0 = 0.7 rad).
+    // Walk-swing amplitude. Cap at 1.0 keeps max thigh swing in the
+    // natural ~40° range (legSwing 0.7 × amp 1.0 = 0.7 rad).
     const targetAmplitude = Math.min(speed * WALK_AMP_PER_SPEED, WALK_AMP_MAX);
     const targetTilt = speed > STICKMAN_RUN_THRESHOLD
       ? Math.sign(forwardSpeed) * Math.min(

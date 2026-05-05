@@ -17,20 +17,9 @@ import {
   BALL_RADIUS,
   FIELD_HEIGHT,
   FIELD_WIDTH_REF,
-  FOOT_LATERAL_REACH,
-  FOOT_RADIUS,
   GOAL_POST_RADIUS,
-  HEAD_CENTER_Z,
-  HIP_BASE_Z,
-  KICK_FACE_TOL,
-  KICK_REACH_MAX,
   MAX_PLAYER_SPEED,
-  PLAYER_HEIGHT,
   PLAYER_WIDTH,
-  PUSH_FACE_TOL,
-  PUSH_RANGE_X,
-  PUSH_RANGE_Y,
-  SHOULDER_Z,
   STICKMAN_HEAD_RADIUS,
   STICKMAN_LEG_RADIUS,
   STICKMAN_LIMB_FULL_H,
@@ -44,8 +33,8 @@ import {
   STICKMAN_UPPER_LEG,
   Z_STRETCH,
   createField,
-  ikFootWorld,
 } from './physics.js';
+import { DebugOverlay } from './debug-overlay.js';
 import { advanceAnimState, createAnimState } from './animation/state.js';
 import { composeStickmanPose, createPoseScratch } from './animation/poses.js';
 import {
@@ -235,11 +224,6 @@ export class Renderer {
     this.fieldWidth = fieldWidth;
     this._field = createField(fieldWidth);
     this._debugCam = null;
-    // Debug-collider overlay flag. When true, renderState() also paints
-    // every physics collider as a translucent coloured surface. Pool
-    // is built lazily on first activation.
-    this._debugMode = false;
-    this._debugMeshes = null;
 
     this.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio || 1);
@@ -253,6 +237,9 @@ export class Renderer {
     // Mutually exclusive: enabling one disables the other.
     this._initDebugCam();
     this._initFollowCam();
+    // Debug-collider overlay — fully self-contained module. Pool is
+    // built lazily on first enable; renderer just forwards the toggle.
+    this._debugOverlay = new DebugOverlay(this.scene);
 
     // Track static scene objects so dispose() can release them.
     this._staticGeometries = [];
@@ -836,7 +823,7 @@ export class Renderer {
     this._stepParticles();
     this._drawParticles();
 
-    if (this._debugMode) this._drawDebugColliders(state, players);
+    this._debugOverlay.update(state, players);
 
     if (this._followCam && this._followCam.active) this._stepFollowCam(state);
     else if (this._debugCam && this._debugCam.active) this._stepDebugCam();
@@ -1064,411 +1051,9 @@ export class Renderer {
     return !!(this._followCam && this._followCam.active);
   }
 
-  /** Toggle the debug-collider overlay. When on, renderState() paints
-   *  every physics collider (player capsule, push range, kick reach,
-   *  foot, goal box) as translucent coloured geometry layered over the
-   *  visible silhouette. Off by default; pool allocated on first use. */
-  setDebugMode(on) {
-    this._debugMode = !!on;
-    if (this._debugMeshes && !this._debugMode) {
-      this._hideDebugMeshes();
-    }
-  }
-
-  isDebugModeActive() {
-    return this._debugMode;
-  }
-
-  /** Lazy one-shot allocator for the debug-overlay mesh pool. Geometry
-   *  is built from the live physics constants we import — never
-   *  hardcoded magic numbers — so a change to e.g. STICKMAN_TORSO_RADIUS
-   *  is picked up automatically next reload. The goal-box geometry is
-   *  rebuilt per-frame from state.field; the cone wedges are flat
-   *  CircleGeometry slices keyed off KICK_FACE_TOL / PUSH_FACE_TOL. */
-  _initDebugMeshes() {
-    if (this._debugMeshes) return;
-    const dbg = {};
-    const tx = (color, opacity = 0.22) => new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide,
-    });
-
-    // Body capsule — red. Mirrors resolveBallVsBodyCapsule:
-    //   bottom = (centerX, airZ, centerWorldZ),  top = +SHOULDER_Z above.
-    // Capsule length is the segment between those endpoints (= SHOULDER_Z),
-    // radius STICKMAN_TORSO_RADIUS.
-    const bodyGeom = new THREE.CapsuleGeometry(STICKMAN_TORSO_RADIUS, SHOULDER_Z, 4, 16);
-    const bodyMat = tx(0xff5555);
-    dbg.bodyCapsules = [new THREE.Mesh(bodyGeom, bodyMat), new THREE.Mesh(bodyGeom, bodyMat)];
-
-    // Head sphere — orange. Mirrors the second tryBodyContact in
-    // resolveBallVsBodyCapsule: separate sphere at HEAD_CENTER_Z+airZ,
-    // radius STICKMAN_HEAD_RADIUS.
-    const headGeom = new THREE.SphereGeometry(STICKMAN_HEAD_RADIUS, 18, 12);
-    const headMat = tx(0xff9944);
-    dbg.headSpheres = [new THREE.Mesh(headGeom, headMat), new THREE.Mesh(headGeom, headMat)];
-
-    // Pair-collision filled disc — yellow. Resolver computes 2D X-Z
-    // distance only with radius `2 * STICKMAN_HEAD_RADIUS`; render as
-    // a flat circle on the ground.
-    const pairGeom = new THREE.CircleGeometry(STICKMAN_HEAD_RADIUS * 2, 32);
-    const pairMat = tx(0xffd866, 0.18);
-    dbg.pairDiscs = [new THREE.Mesh(pairGeom, pairMat), new THREE.Mesh(pairGeom, pairMat)];
-    for (const m of dbg.pairDiscs) m.rotation.x = -Math.PI / 2;
-
-    // Kick reach — green sphere @ live hipAnchor, radius KICK_REACH_MAX.
-    const kickGeom = new THREE.SphereGeometry(KICK_REACH_MAX, 24, 16);
-    const kickMat = tx(0x66dd88, 0.10);
-    dbg.kickReachSpheres = [new THREE.Mesh(kickGeom, kickMat), new THREE.Mesh(kickGeom, kickMat)];
-
-    // Kick facing cone — flat wedge on the ground from player center,
-    // angular span = 2 * KICK_FACE_TOL, radius = KICK_REACH_MAX. Built
-    // as a CircleGeometry slice with thetaStart = -KICK_FACE_TOL.
-    const kickConeGeom = new THREE.CircleGeometry(KICK_REACH_MAX, 24, -KICK_FACE_TOL, 2 * KICK_FACE_TOL);
-    const kickConeMat = tx(0x66dd88, 0.18);
-    dbg.kickCones = [new THREE.Mesh(kickConeGeom, kickConeMat), new THREE.Mesh(kickConeGeom, kickConeMat)];
-    for (const m of dbg.kickCones) m.rotation.x = -Math.PI / 2;
-
-    // Foot sphere — magenta, only visible during kick.active. Position
-    // is the live ikFootWorld (what testFootContact actually compares
-    // the ball against), NOT the static footTarget.
-    const footGeom = new THREE.SphereGeometry(FOOT_RADIUS, 12, 8);
-    const footMat = tx(0xee66ff, 0.55);
-    dbg.footSpheres = [new THREE.Mesh(footGeom, footMat), new THREE.Mesh(footGeom, footMat)];
-
-    // Push range — blue plate, axis-aligned. Width = 2*PUSH_RANGE_X,
-    // depth = 2*PUSH_RANGE_Y*Z_STRETCH. Centered on `pusher.x + W/2`
-    // (X gate) and raw `pusher.y` (Y gate has no PLAYER_HEIGHT/2 offset).
-    const pushGeom = new THREE.PlaneGeometry(PUSH_RANGE_X * 2, PUSH_RANGE_Y * 2 * Z_STRETCH);
-    const pushMat = tx(0x66bbff, 0.14);
-    dbg.pushPlates = [new THREE.Mesh(pushGeom, pushMat), new THREE.Mesh(pushGeom, pushMat)];
-    for (const m of dbg.pushPlates) m.rotation.x = -Math.PI / 2;
-
-    // Push facing cone — same wedge geometry as the kick cone but with
-    // PUSH_FACE_TOL and PUSH_RANGE_X. Two gates intersect: only points
-    // inside BOTH the plate AND the cone are reachable by tryPush.
-    const pushConeGeom = new THREE.CircleGeometry(PUSH_RANGE_X, 24, -PUSH_FACE_TOL, 2 * PUSH_FACE_TOL);
-    const pushConeMat = tx(0x66bbff, 0.22);
-    dbg.pushCones = [new THREE.Mesh(pushConeGeom, pushConeMat), new THREE.Mesh(pushConeGeom, pushConeMat)];
-    for (const m of dbg.pushCones) m.rotation.x = -Math.PI / 2;
-
-    // Lateral foot-reach slab — two parallel lines on the ground at
-    // perpendicular offset ±FOOT_LATERAL_REACH from the player along
-    // the heading direction. The kick gate rejects when
-    // |local.perp| > FOOT_LATERAL_REACH; this slab visualises that
-    // cap. Lines extend forward by KICK_REACH_MAX so they're visible
-    // alongside the kick cone.
-    dbg.lateralSlabs = [];
-    for (let i = 0; i < 2; i++) {
-      // 4 endpoints per player: -side near, -side far, +side near, +side far.
-      const buf = new THREE.BufferGeometry();
-      buf.setAttribute('position', new THREE.BufferAttribute(new Float32Array(12), 3));
-      const mat = new THREE.LineBasicMaterial({ color: 0x66dd88, transparent: true, opacity: 0.55 });
-      // Use LineSegments so the two parallel lines render as separate
-      // segments (vertices 0-1 = -side, 2-3 = +side).
-      dbg.lateralSlabs.push(new THREE.LineSegments(buf, mat));
-    }
-
-    // Goal box — back, two sides, top per goal. Geometry is rebuilt
-    // per-frame from state.field.goalBox{Left,Right} since the AABB
-    // dimensions are field-driven.
-    const goalMat = tx(0xff77cc, 0.18);
-    dbg.goalPlanes = [];   // 4 planes × 2 goals = 8 meshes
-    for (let i = 0; i < 8; i++) {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), goalMat);
-      dbg.goalPlanes.push(m);
-    }
-
-    // Goal posts (2 per goal) and crossbar (1 per goal) — translucent
-    // cylinders that mirror resolveBallVsGoalBars exactly. Posts are
-    // vertical at the goal-mouth y corners; crossbar is horizontal
-    // along the world-z axis at mouth top. All use GOAL_POST_RADIUS.
-    // Translucent purple (a touch darker than the goal box).
-    const barMat = tx(0xcc44dd, 0.45);
-    dbg.goalPosts = []; // 2 per goal × 2 goals = 4 cylinders
-    for (let i = 0; i < 4; i++) {
-      const geom = new THREE.CylinderGeometry(GOAL_POST_RADIUS, GOAL_POST_RADIUS, 1, 16);
-      dbg.goalPosts.push(new THREE.Mesh(geom, barMat));
-    }
-    dbg.crossbars = []; // 1 per goal × 2 goals = 2 cylinders
-    for (let i = 0; i < 2; i++) {
-      const geom = new THREE.CylinderGeometry(GOAL_POST_RADIUS, GOAL_POST_RADIUS, 1, 16);
-      dbg.crossbars.push(new THREE.Mesh(geom, barMat));
-    }
-
-    // Field touchlines — vertical translucent walls at world-z=0 and
-    // world-z=FIELD_HEIGHT*Z_STRETCH where the ball bounces (gates:
-    // ball.y < BALL_RADIUS, ball.y > FIELD_HEIGHT - BALL_RADIUS).
-    // Span the full field width and ceiling height; rebuilt per-frame
-    // from state.field. Cyan, very faint so the player colliders stay
-    // legible — these are environmental boundaries, not per-frame focus.
-    const wallMat = tx(0x66eedd, 0.04);
-    dbg.touchlines = [
-      new THREE.Mesh(new THREE.PlaneGeometry(1, 1), wallMat),
-      new THREE.Mesh(new THREE.PlaneGeometry(1, 1), wallMat),
-    ];
-
-    // Ground (world-y=0) and ceiling (world-y=CEILING) — horizontal
-    // planes where the ball bounces in z (`ball.z <= 0` and
-    // `ball.z > CEILING`). Span the full playing area. Pale grey,
-    // barely-there opacity so the field stays readable.
-    const skyMat = tx(0xcccccc, 0.025);
-    dbg.ground = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), skyMat);
-    dbg.ceiling = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), skyMat);
-
-    const all = [
-      ...dbg.bodyCapsules, ...dbg.headSpheres, ...dbg.pairDiscs,
-      ...dbg.kickReachSpheres, ...dbg.kickCones, ...dbg.lateralSlabs,
-      ...dbg.footSpheres, ...dbg.pushPlates, ...dbg.pushCones,
-      ...dbg.goalPlanes, ...dbg.goalPosts, ...dbg.crossbars,
-      ...dbg.touchlines, dbg.ground, dbg.ceiling,
-    ];
-    for (const m of all) {
-      m.visible = false;
-      m.renderOrder = 1000;
-      this.scene.add(m);
-    }
-    dbg.allMeshes = all;
-    // Track previous goal-box dims to skip geometry rebuild when the
-    // field hasn't changed (it never does in production, but harnesses
-    // can swap fields between frames).
-    dbg.lastFieldKey = null;
-    // Scratch for ikFootWorld() — avoids per-frame allocation.
-    dbg.footScratch = { x: 0, y: 0, z: 0 };
-    this._debugMeshes = dbg;
-  }
-
-  _hideDebugMeshes() {
-    if (!this._debugMeshes) return;
-    for (const m of this._debugMeshes.allMeshes) m.visible = false;
-  }
-
-  /** Per-frame debug-overlay update. Every collider's position and
-   *  dimension is read off the live physics state (state.field, p.x,
-   *  p.y, p.heading, p.airZ, p.kick) and physics constants — no
-   *  hardcoded values. Edit a constant in physics.js and the overlay
-   *  follows. */
-  _drawDebugColliders(state, players) {
-    this._initDebugMeshes();
-    const dbg = this._debugMeshes;
-    const f = state.field || this._field;
-
-    for (let i = 0; i < players.length && i < 2; i++) {
-      const p = players[i];
-      // Body capsule + head + kick reach all anchor on hipAnchor:
-      //   (p.x + PLAYER_WIDTH/2, HIP_BASE_Z + airZ, p.y * Z_STRETCH).
-      const airZ = p.airZ || 0;
-      const hipX = p.x + PLAYER_WIDTH / 2;
-      const hipY = HIP_BASE_Z + airZ;
-      const hipZ = p.y * Z_STRETCH;
-      const torsoMidY = airZ + SHOULDER_Z / 2;       // body capsule midpoint
-      const headY = HEAD_CENTER_Z + airZ;
-      // Player CENTER y (physics-y center → world-z): used by the
-      // pair-collision resolver.
-      const centerZ = (p.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
-      // Push range center z: pusher.y has NO PLAYER_HEIGHT/2 offset
-      // in tryPush — it uses the raw `pusher.y` for the Y gate.
-      const pushCenterZ = p.y * Z_STRETCH;
-
-      const body = dbg.bodyCapsules[i];
-      body.position.set(hipX, torsoMidY, hipZ);
-      body.visible = true;
-
-      const head = dbg.headSpheres[i];
-      head.position.set(hipX, headY, hipZ);
-      head.visible = true;
-
-      const pair = dbg.pairDiscs[i];
-      pair.position.set(hipX, 0.06, centerZ);
-      pair.visible = true;
-
-      const kick = dbg.kickReachSpheres[i];
-      kick.position.set(hipX, hipY, hipZ);
-      kick.visible = true;
-
-      // Kick + push facing cones rotate to player heading. Wedge geom
-      // points along +x at zero rotation; rotate around world-y by
-      // -p.heading so the wedge centerline lines up with heading.
-      const kickCone = dbg.kickCones[i];
-      kickCone.position.set(hipX, 0.07, hipZ);
-      kickCone.rotation.set(-Math.PI / 2, 0, -p.heading);
-      kickCone.visible = true;
-
-      const pushCone = dbg.pushCones[i];
-      pushCone.position.set(hipX, 0.08, pushCenterZ);
-      pushCone.rotation.set(-Math.PI / 2, 0, -p.heading);
-      pushCone.visible = true;
-
-      const push = dbg.pushPlates[i];
-      push.position.set(hipX, 0.05, pushCenterZ);
-      push.visible = true;
-
-      const foot = dbg.footSpheres[i];
-      if (p.kick && p.kick.active) {
-        const fw = ikFootWorld(p, dbg.footScratch);
-        foot.position.set(fw.x, fw.y, fw.z);
-        foot.visible = true;
-      } else {
-        foot.visible = false;
-      }
-
-      // Lateral foot-reach slab — two segments parallel to heading at
-      // perpendicular offset ±FOOT_LATERAL_REACH. perpX/Z is heading
-      // rotated 90° in the X-Z plane.
-      const ux = Math.cos(p.heading), uz = Math.sin(p.heading);
-      const perpX = -uz, perpZ = ux;
-      const slab = dbg.lateralSlabs[i];
-      const arr = slab.geometry.attributes.position.array;
-      // -side near = (hipX - perp*L, hipZ - perp*L) ... actually FOOT_LATERAL_REACH
-      // is the perpendicular offset itself, not radial. Length along
-      // heading: visualise out to KICK_REACH_MAX so it lines up with
-      // the kick cone.
-      const reach = KICK_REACH_MAX;
-      // -side: line from (hip - perp*L, hip - perp*L) extending +heading
-      arr[0] = hipX - perpX * FOOT_LATERAL_REACH;
-      arr[1] = 0.07;
-      arr[2] = hipZ - perpZ * FOOT_LATERAL_REACH;
-      arr[3] = arr[0] + ux * reach;
-      arr[4] = 0.07;
-      arr[5] = arr[2] + uz * reach;
-      // +side
-      arr[6] = hipX + perpX * FOOT_LATERAL_REACH;
-      arr[7] = 0.07;
-      arr[8] = hipZ + perpZ * FOOT_LATERAL_REACH;
-      arr[9] = arr[6] + ux * reach;
-      arr[10] = 0.07;
-      arr[11] = arr[8] + uz * reach;
-      slab.geometry.attributes.position.needsUpdate = true;
-      slab.visible = true;
-    }
-    for (let i = players.length; i < 2; i++) {
-      dbg.bodyCapsules[i].visible = false;
-      dbg.headSpheres[i].visible = false;
-      dbg.pairDiscs[i].visible = false;
-      dbg.kickReachSpheres[i].visible = false;
-      dbg.kickCones[i].visible = false;
-      dbg.lateralSlabs[i].visible = false;
-      dbg.footSpheres[i].visible = false;
-      dbg.pushPlates[i].visible = false;
-      dbg.pushCones[i].visible = false;
-    }
-
-    // Goal box — read directly from state.field.goalBox{Left,Right}
-    // (the same AABB the physics resolvers use). 4 planes per goal:
-    // back wall, two side walls, roof. Floor is the field surface.
-    const goals = [f.goalBoxLeft, f.goalBoxRight];
-    const fieldKey = `${goals[0].minX}|${goals[0].maxX}|${goals[1].minX}|${goals[1].maxX}|${goals[0].minY}|${goals[0].maxY}|${goals[0].maxZ}|${f.width}|${f.ceiling}`;
-    const rebuild = dbg.lastFieldKey !== fieldKey;
-    if (rebuild) dbg.lastFieldKey = fieldKey;
-    for (let gi = 0; gi < 2; gi++) {
-      const box = goals[gi];
-      const xMin = box.minX, xMax = box.maxX;
-      const zMin = box.minY * Z_STRETCH;
-      const zMax = box.maxY * Z_STRETCH;
-      const yMax = box.maxZ;
-      const xMid = (xMin + xMax) / 2;
-      const zMid = (zMin + zMax) / 2;
-      const xSpan = xMax - xMin;
-      const zSpan = zMax - zMin;
-      const isLeft = gi === 0;
-      const backX = isLeft ? xMin : xMax;
-      // Mouth-edge X (where the ball enters / where the posts sit) —
-      // matches resolveBallVsGoalBars: `mouthX = isLeft ? box.maxX : box.minX`.
-      const mouthX = isLeft ? xMax : xMin;
-      const back = dbg.goalPlanes[gi * 4 + 0];
-      if (rebuild) {
-        back.geometry.dispose();
-        back.geometry = new THREE.PlaneGeometry(zSpan, yMax);
-      }
-      back.position.set(backX, yMax / 2, zMid);
-      back.rotation.set(0, isLeft ? Math.PI / 2 : -Math.PI / 2, 0);
-      back.visible = true;
-      const sideNear = dbg.goalPlanes[gi * 4 + 1];
-      const sideFar  = dbg.goalPlanes[gi * 4 + 2];
-      if (rebuild) {
-        sideNear.geometry.dispose();
-        sideFar.geometry.dispose();
-        sideNear.geometry = new THREE.PlaneGeometry(xSpan, yMax);
-        sideFar.geometry  = new THREE.PlaneGeometry(xSpan, yMax);
-      }
-      sideNear.position.set(xMid, yMax / 2, zMin);
-      sideFar.position.set(xMid, yMax / 2, zMax);
-      sideNear.rotation.set(0, 0, 0);
-      sideFar.rotation.set(0, 0, 0);
-      sideNear.visible = true;
-      sideFar.visible = true;
-      const top = dbg.goalPlanes[gi * 4 + 3];
-      if (rebuild) {
-        top.geometry.dispose();
-        top.geometry = new THREE.PlaneGeometry(xSpan, zSpan);
-      }
-      top.position.set(xMid, yMax, zMid);
-      top.rotation.set(-Math.PI / 2, 0, 0);
-      top.visible = true;
-
-      // Goal posts — vertical cylinders at (mouthX, mouthY±, world-y∈[0, yMax]).
-      // Cylinder length = yMax (mouth height); world-y center = yMax/2.
-      const postNear = dbg.goalPosts[gi * 2 + 0];
-      const postFar  = dbg.goalPosts[gi * 2 + 1];
-      if (rebuild) {
-        postNear.geometry.dispose();
-        postFar.geometry.dispose();
-        postNear.geometry = new THREE.CylinderGeometry(GOAL_POST_RADIUS, GOAL_POST_RADIUS, yMax, 16);
-        postFar.geometry  = new THREE.CylinderGeometry(GOAL_POST_RADIUS, GOAL_POST_RADIUS, yMax, 16);
-      }
-      postNear.position.set(mouthX, yMax / 2, zMin);
-      postFar.position.set(mouthX, yMax / 2, zMax);
-      postNear.rotation.set(0, 0, 0);
-      postFar.rotation.set(0, 0, 0);
-      postNear.visible = true;
-      postFar.visible = true;
-
-      // Crossbar — horizontal cylinder along world-z axis at y=yMax,
-      // spanning the goal-mouth z range.
-      const crossbar = dbg.crossbars[gi];
-      if (rebuild) {
-        crossbar.geometry.dispose();
-        crossbar.geometry = new THREE.CylinderGeometry(GOAL_POST_RADIUS, GOAL_POST_RADIUS, zSpan, 16);
-      }
-      crossbar.position.set(mouthX, yMax, zMid);
-      // Three.js CylinderGeometry default axis is +Y; rotate -90° around
-      // X so the axis aligns with world-z.
-      crossbar.rotation.set(Math.PI / 2, 0, 0);
-      crossbar.visible = true;
-    }
-
-    // Field touchlines — vertical walls at world-z=0 and world-z=
-    // FIELD_HEIGHT*Z_STRETCH. Span the full field width and ceiling height.
-    const fieldZSpan = FIELD_HEIGHT * Z_STRETCH;
-    const fieldXSpan = f.width;
-    const ceilingY   = f.ceiling;
-    if (rebuild) {
-      dbg.touchlines[0].geometry.dispose();
-      dbg.touchlines[1].geometry.dispose();
-      dbg.touchlines[0].geometry = new THREE.PlaneGeometry(fieldXSpan, ceilingY);
-      dbg.touchlines[1].geometry = new THREE.PlaneGeometry(fieldXSpan, ceilingY);
-    }
-    dbg.touchlines[0].position.set(fieldXSpan / 2, ceilingY / 2, 0);
-    dbg.touchlines[0].rotation.set(0, 0, 0);
-    dbg.touchlines[0].visible = true;
-    dbg.touchlines[1].position.set(fieldXSpan / 2, ceilingY / 2, fieldZSpan);
-    dbg.touchlines[1].rotation.set(0, 0, 0);
-    dbg.touchlines[1].visible = true;
-
-    // Ground (world-y=0) and ceiling (world-y=CEILING). Horizontal
-    // planes spanning the full play area.
-    if (rebuild) {
-      dbg.ground.geometry.dispose();
-      dbg.ceiling.geometry.dispose();
-      dbg.ground.geometry  = new THREE.PlaneGeometry(fieldXSpan, fieldZSpan);
-      dbg.ceiling.geometry = new THREE.PlaneGeometry(fieldXSpan, fieldZSpan);
-    }
-    dbg.ground.position.set(fieldXSpan / 2, 0.02, fieldZSpan / 2);
-    dbg.ground.rotation.set(-Math.PI / 2, 0, 0);
-    dbg.ground.visible = true;
-    dbg.ceiling.position.set(fieldXSpan / 2, ceilingY, fieldZSpan / 2);
-    dbg.ceiling.rotation.set(-Math.PI / 2, 0, 0);
-    dbg.ceiling.visible = true;
-  }
+  /** Toggle the debug-collider overlay (delegates to DebugOverlay). */
+  setDebugMode(on)        { this._debugOverlay.setEnabled(on); }
+  isDebugModeActive()     { return this._debugOverlay.isEnabled(); }
 
   _stepFollowCam(state) {
     const fc = this._followCam;

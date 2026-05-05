@@ -1,13 +1,11 @@
-// Animation state advancement — the pure, per-frame bookkeeping that
-// used to sit at the top of `_addStickman()`. Extracted so the pose
-// composer (poses.js), the renderer, and future test harnesses can
-// share one authoritative source for LPF smoothing, phase
-// accumulation, push-progress edge detection, and derived state
-// (is the player kicking? pushing? celebrating?).
-//
-// Pure — no DOM, no three.js — imported from the renderer.
+// Animation state advancement — pure, per-frame bookkeeping shared
+// by the pose composer, renderer, and test harnesses. Owns LPF
+// smoothing, phase accumulation, push-progress edge detection, and
+// the derived state label (is the player kicking? pushing?
+// celebrating?). Pure — no DOM, no three.js.
 
 import { REACT_ANIM_MS, Z_STRETCH, wrapAngle } from '../physics.js';
+import { LPF_DEAD_ZONE } from './poses.js';
 
 // ── Smoothing + phase-rate tuning ────────────────────────────
 // Low-pass smoothing factor for tilt / amplitude / celebrate. Values
@@ -20,23 +18,22 @@ export const STICKMAN_RUN_THRESHOLD = 1.2;
 export const STICKMAN_TILT_PER_SPEED = 0.09;
 export const STICKMAN_TILT_MAX = 0.45;
 
-// Celebrate rotation rate. 50% slower than the original jumping-jack
-// tempo — the jump-cycle pose (crouch → launch → apex → land) needs
-// more time to read as a real hop, and the fist-pump cadence at the
-// new rate sits around one pump every ~0.8 s, which matches natural
-// celebration tempo better than the old frenetic beat.
+// Celebrate phase rate — drives the jump-cycle pose (crouch → launch →
+// apex → land) and fist-pump cadence. ~0.8 s per pump, slow enough for
+// the hop arc to read as a real jump.
 export const CELEB_PHASE_RATE = 0.125;
 
-// Grieve rotation rate — the loser's slow back-and-forth body rock
-// during a goal celebration (non-scorer reaction). Much slower than
-// celebrate: ~80 ticks per cycle = ~1.3 s of gentle sway.
+// Grieve rotation rate — loser's gentle back-and-forth body rock.
+// ~80 ticks per cycle = ~1.3 s of sway.
 export const GRIEVE_PHASE_RATE = 0.08;
 
-// Rest (exhausted-and-recovering) body-spin rate. Slower than walk
-// swing — a dazed, sluggish circle. ~62 ticks per full body rotation
-// ≈ 1 s. Keeps the animation legible at game speed without inducing
-// motion sickness.
+// Rest (exhausted-and-recovering) body-spin rate. ~62 ticks per full
+// rotation ≈ 1 s — readable at game speed without inducing motion sickness.
 export const REST_PHASE_RATE = 0.10;
+
+// Heading the matchend pose snaps to so winner/loser both face the
+// camera (+z world axis = π/2 in the heading frame).
+const FACE_CAMERA_HEADING = Math.PI / 2;
 
 // TURN / STOP detection thresholds. Scales map raw angular velocity
 // (rad/tick) and deceleration (u/tick²) onto the 0..1 factor the
@@ -112,6 +109,15 @@ export function createAnimState(tick, player) {
   };
 }
 
+/** Low-pass an animation heading toward `target`, seeding `animHeading`
+ *  with `seed` on first use. Returns the new `animHeading`. */
+function lpfHeading(anim, seed, target) {
+  if (anim.animHeading == null) anim.animHeading = seed;
+  const delta = wrapAngle(target - anim.animHeading);
+  anim.animHeading = wrapAngle(anim.animHeading + delta * STICKMAN_SMOOTH * 2);
+  return anim.animHeading;
+}
+
 /** Advance one frame of anim state in place. Returns a snapshot
  *  object (populated into `out` to avoid per-frame allocation) that
  *  the pose composer consumes.
@@ -125,17 +131,17 @@ export function advanceAnimState(
   anim, player, tick, isCelebrating, out,
   isGrieving = false, isReposition = false,
   isMatchendWin = false, isMatchendLose = false,
+  faceCameraSmooth = false, faceEachOtherSmooth = false,
 ) {
   const dt = tick > anim.lastTick ? tick - anim.lastTick : 0;
 
-  // Tick-rewind handling: when the simulation restarts (showcase
-  // replay, new match via `resetStateInPlace`, scenario re-init in
-  // the harness), `tick` jumps backwards. Without resyncing here,
-  // `anim.lastTick` would stay frozen at the old high value and
-  // every subsequent frame would compute `dt = 0` until physics
-  // caught up — the stickman would slide without animating for an
-  // entire match. Resync the reference frame so the next physics
-  // tick produces a sane `dt = 1`.
+  // Tick-rewind handling: when the simulation restarts (new match
+  // via `resetStateInPlace`, scenario re-init in the harness), `tick`
+  // jumps backwards. Without resyncing here, `anim.lastTick` would
+  // stay frozen at the old high value and every subsequent frame
+  // would compute `dt = 0` until physics caught up — the stickman
+  // would slide without animating for an entire match. Resync the
+  // reference frame so the next physics tick produces a sane `dt = 1`.
   if (tick < anim.lastTick) {
     anim.lastTick = tick;
     anim.lastX    = player.x;
@@ -159,25 +165,30 @@ export function advanceAnimState(
     const physicsHeading = player.heading ?? 0;
     const speed = Math.sqrt(effVx * effVx + effVy * effVy);
 
-    // Animation heading — normally the physics heading, but during
-    // reposition the physics-side heading lags (stepReposition just
-    // translates position without updating heading). Face the motion
-    // direction instead so the stickman walks FACING kickoff instead
-    // of side-stepping. Smoothly interpolated via anim.animHeading
-    // so the turn doesn't snap.
-    let heading = physicsHeading;
+    // Animation heading — normally physics heading, with three
+    // smoothed overrides:
+    //   1. REPOSITION (walk-back): physics' stepReposition only
+    //      translates, doesn't update heading. Face the motion
+    //      direction so the stickman walks FACING kickoff instead of
+    //      side-stepping.
+    //   2. faceCameraSmooth (matchend pose / legacy MATCHEND_WIN/LOSE):
+    //      rotate to FACE_CAMERA_HEADING so winner/loser read for
+    //      the audience instead of edge-on.
+    //   3. faceEachOtherSmooth (matchend neutral): rotate from
+    //      camera-facing back to physics heading so players settle
+    //      facing each other before the next kickoff.
+    // All three blend through anim.animHeading so the turn eases.
+    let heading;
     if (isReposition && speed > REPOSITION_SPEED_GATE) {
       const motionHeading = Math.atan2(effVy * Z_STRETCH, effVx);
-      // Seed on first frame of reposition so we don't pop from an old
-      // physics heading to the new motion heading.
-      if (anim.animHeading == null) anim.animHeading = motionHeading;
-      const delta = wrapAngle(motionHeading - anim.animHeading);
-      anim.animHeading = wrapAngle(anim.animHeading + delta * STICKMAN_SMOOTH * 2);
-      heading = anim.animHeading;
+      heading = lpfHeading(anim, motionHeading, motionHeading);
+    } else if (isMatchendWin || isMatchendLose || faceCameraSmooth) {
+      heading = lpfHeading(anim, physicsHeading, FACE_CAMERA_HEADING);
+    } else if (faceEachOtherSmooth) {
+      heading = lpfHeading(anim, physicsHeading, physicsHeading);
     } else {
-      // Not repositioning — track physics heading so re-entry into
-      // reposition smoothly interpolates from the current facing.
       anim.animHeading = physicsHeading;
+      heading = physicsHeading;
     }
     const forwardX = Math.cos(heading);
     const forwardZ = Math.sin(heading);
@@ -186,11 +197,8 @@ export function advanceAnimState(
     // heading. Positive = moving forward; negative = moving backward.
     const effVworldZ = effVy * Z_STRETCH;
     const forwardSpeed = effVx * forwardX + effVworldZ * forwardZ;
-    // Amplitude drives the walk-swing magnitude. Bumped slope from
-    // 0.2 → 0.35 so slow walking has visible leg movement instead
-    // of the near-idle shuffle the old coefficient produced; cap
-    // stays at 1.0 so max thigh swing stays in the natural
-    // ~40° range (legSwing coefficient 0.7 × amp 1.0 = 0.7 rad).
+    // Walk-swing amplitude. Cap at 1.0 keeps max thigh swing in the
+    // natural ~40° range (legSwing 0.7 × amp 1.0 = 0.7 rad).
     const targetAmplitude = Math.min(speed * WALK_AMP_PER_SPEED, WALK_AMP_MAX);
     const targetTilt = speed > STICKMAN_RUN_THRESHOLD
       ? Math.sign(forwardSpeed) * Math.min(
@@ -253,7 +261,7 @@ export function advanceAnimState(
     // restPhase advances only while `rest` is active, so the LPF
     // tail on exit doesn't add residual rotation. Reset to 0 when
     // rest is fully off so re-entry starts at a clean angle.
-    if (anim.rest > 0.001) {
+    if (anim.rest > LPF_DEAD_ZONE) {
       anim.restPhase = (anim.restPhase + REST_PHASE_RATE * dt) % TWO_PI;
     } else {
       anim.restPhase = 0;
@@ -330,13 +338,16 @@ export function advanceAnimState(
   out.kick           = kick;
   // Victim hit-reaction passthrough (purely read-only from physics).
   // reactT is 0→1 over REACT_ANIM_MS; reactForce is normalized 0..1.
+  // Physics guarantees the react* fields are written numerically when
+  // reactTimer > 0 and zeroed by clearInProgressActions otherwise, so
+  // no defensive `|| 0` fallbacks are needed.
   if (player.reactTimer > 0) {
     out.reactT       = 1 - (player.reactTimer / REACT_ANIM_MS);
-    out.reactForce   = player.reactForce  || 0;
-    out.reactDirX    = player.reactDirX   || 0;
-    out.reactDirZ    = player.reactDirZ   || 0;
-    out.reactType    = player.reactType   || 'jab';
-    out.reactLatSign = player.reactLatSign || 1;
+    out.reactForce   = player.reactForce;
+    out.reactDirX    = player.reactDirX;
+    out.reactDirZ    = player.reactDirZ;
+    out.reactType    = player.reactType;
+    out.reactLatSign = player.reactLatSign;
   } else {
     out.reactT       = 0;
     out.reactForce   = 0;

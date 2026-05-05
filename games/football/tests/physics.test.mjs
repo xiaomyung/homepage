@@ -12,7 +12,6 @@ import {
   createSeededRng,
   resetStateInPlace,
   tick,
-  buildInputs,
   FIELD_HEIGHT,
   PLAYER_HEIGHT,
   PLAYER_WIDTH,
@@ -43,42 +42,17 @@ import {
   ACTION_KICK_POWER,
   ACTION_PUSH_GATE,
   ACTION_PUSH_POWER,
-  NN_OUTPUT_SIZE,
-  NN_INPUT_SIZE,
+  ACTION_VEC_SIZE,
+  endMatchByTime,
 } from '../physics.js';
-
-/** Build a 9-float action vector by action-slot name rather than
- *  magic index. All fields default to the neutral "do nothing" value
- *  (gates at -1, power/direction at 0). */
-function action({ moveX = 0, moveY = 0, kickGate = -1, kickDx = 0, kickDy = 0, kickDz = 0, kickPower = 0, pushGate = -1, pushPower = 0 } = {}) {
-  const a = new Array(NN_OUTPUT_SIZE);
-  a[ACTION_MOVE_X]     = moveX;
-  a[ACTION_MOVE_Y]     = moveY;
-  a[ACTION_KICK_GATE]  = kickGate;
-  a[ACTION_KICK_DX]    = kickDx;
-  a[ACTION_KICK_DY]    = kickDy;
-  a[ACTION_KICK_DZ]    = kickDz;
-  a[ACTION_KICK_POWER] = kickPower;
-  a[ACTION_PUSH_GATE]  = pushGate;
-  a[ACTION_PUSH_POWER] = pushPower;
-  return a;
-}
-
-const NOOP = action();
-const moveAction = (mx, my = 0) => action({ moveX: mx, moveY: my });
-const pushAction = (power = 1) => action({ pushGate: 1, pushPower: power });
-const kickAction = (dx = 1, dy = 0, dz = 0, power = 1) =>
-  action({ kickGate: 1, kickDx: dx, kickDy: dy, kickDz: dz, kickPower: power });
-
-/** Fresh state with seeded RNG, grace frames zeroed, and events enabled. */
-function freshState(seed = 42) {
-  const field = createField();
-  const rng = createSeededRng(seed);
-  const state = createState(field, rng);
-  state.graceFrames = 0;
-  state.recordEvents = true;
-  return state;
-}
+import {
+  freshState,
+  action,
+  NOOP,
+  moveAction,
+  pushAction,
+  kickAction,
+} from './helpers/state.mjs';
 
 /* ── Test 1: stamina charged from actual displacement ──────── */
 
@@ -346,6 +320,39 @@ test('push impulse is deferred to the strike tick, not applied on windup', () =>
     `strike tick out of expected range: ${strikeTick}`);
 });
 
+test('push misses if victim escapes range during the windup', () => {
+  // Pusher gates on range at windup start (tryPush) AND again at
+  // strike commit (advancePush). Without the strike-commit gate, a
+  // pre-computed impulse from tryPush would still land on a victim
+  // who already ran away — the bug this test pins down.
+  const state = freshState();
+  state.p1.x = state.field.midX - 10;
+  state.p2.x = state.field.midX + 10;
+  state.p1.y = state.p2.y = FIELD_HEIGHT / 2;
+
+  tick(state, pushAction(1), NOOP);
+  assert.ok(state.p1.pushTimer > 0, 'push should have started');
+
+  // Teleport the victim well outside PUSH_RANGE_X before strike fires.
+  state.p2.x = state.field.midX + 200;
+
+  // Run past strike commit (~tick 27 with 16ms/tick stride). state.events
+  // is cleared at the top of every tick, so collect the miss event by
+  // sampling each frame.
+  let missEvent = null;
+  for (let i = 0; i < 40; i++) {
+    tick(state, NOOP, NOOP);
+    const ev = state.events.find(e => e.type === 'push_missed');
+    if (ev) missEvent = ev;
+  }
+
+  assert.equal(state.p2.pushVx, 0, 'no impulse on a victim that escaped');
+  assert.equal(state.p2.reactTimer, 0, 'no hit-reaction on a missed push');
+  assert.equal(state.p1.pendingPushVictim, null, 'pending impulse must be cleared');
+  assert.ok(missEvent, 'push_missed event should be emitted at strike tick');
+  assert.equal(missEvent.reason, 'out_of_range');
+});
+
 test('push does not land when players are out of range', () => {
   const state = freshState();
   // Separate them far beyond push range
@@ -561,48 +568,6 @@ test('different seeds produce different trajectories', () => {
   }
   // Different seeds should lead to different player positions after 500 ticks
   assert.notEqual(fingerprint(1), fingerprint(2));
-});
-
-/* ── Bonus: buildInputs shape ───────────────────────────────── */
-
-test('buildInputs produces NN_INPUT_SIZE floats in [-1, 1]', () => {
-  const state = freshState();
-  state.p1.x = 100;
-  state.ball.vx = 5;
-  const inputs = buildInputs(state, 'p1');
-  assert.equal(inputs.length, NN_INPUT_SIZE);
-  for (const v of inputs) {
-    assert.ok(v >= -1 && v <= 1, `input out of range: ${v}`);
-    assert.ok(Number.isFinite(v), `non-finite input: ${v}`);
-  }
-});
-
-test('buildInputs derived signals expose possession and goal distances', () => {
-  const state = freshState();
-  // Put ball right next to p1, far from p2 → possession > 0.
-  state.p1.x = 100; state.ball.x = 110; state.ball.y = state.p1.y;
-  state.p2.x = 800;
-  const inP1 = buildInputs(state, 'p1');
-  const inP2 = buildInputs(state, 'p2');
-  assert.ok(inP1[20] > 0, `p1 should own possession, got ${inP1[20]}`);
-  assert.ok(inP2[20] < 0, `p2 should sense p1 has possession, got ${inP2[20]}`);
-  // Self distances: p1 near left end → close to own goal, far from opp.
-  assert.ok(inP1[23] < inP1[24], 'p1 should be closer to own goal than opp');
-  assert.ok(inP2[23] < inP2[24], 'p2 should be closer to own goal than opp');
-});
-
-test('buildInputs heading outputs track cos/sin(heading)', () => {
-  const state = freshState();
-  state.p1.heading = Math.PI / 4;
-  const inputs = buildInputs(state, 'p1');
-  assert.ok(
-    Math.abs(inputs[18] - Math.cos(Math.PI / 4)) < 1e-10,
-    `input[18] should be cos(π/4), got ${inputs[18]}`,
-  );
-  assert.ok(
-    Math.abs(inputs[19] - Math.sin(Math.PI / 4)) < 1e-10,
-    `input[19] should be sin(π/4), got ${inputs[19]}`,
-  );
 });
 
 /* ── Task #59: OOB only via left/right, touchlines bounce ──
@@ -1290,6 +1255,90 @@ test('both players regain full stamina when a goal is scored', () => {
   assert.equal(state.p2.stamina, 1, 'p2 stamina must reset to full on goal');
   assert.equal(state.p1.exhausted, false);
   assert.equal(state.p2.exhausted, false);
+});
+
+/* ── In-progress action animation cleared on play-stop ────────────
+ *
+ * applyAction / advancePush / advanceReactTimer are gated off while
+ * `pauseState !== null`. Without an explicit clear at the play-stop
+ * boundary, kick.active / pushTimer / reactTimer freeze through the
+ * entire celebrate → matchend pause and the pose composer renders a
+ * stretched-forward leg or thrown-forward arm indefinitely. The
+ * matchend pose only overrides arms, so a frozen kick leg leaks
+ * through. Same for ball-out → reposition.
+ */
+
+test('goal clears in-progress kick/push/react animation state', () => {
+  const state = freshState();
+  const f = state.field;
+
+  // Simulate p1 mid-kick when the goal scores.
+  state.p1.kick.active = true;
+  state.p1.kick.timer = 80;
+  state.p1.kick.fired = true;
+  state.p1.airZ = 12;
+  // p2 mid-push, with a pending strike about to commit.
+  state.p2.pushTimer = 500;
+  state.p2.pendingPushVictim = state.p1;
+  state.p2.pendingPushVx = 5;
+  state.p2.pendingPushVy = 0;
+  // p1 already taking a hit reaction.
+  state.p1.reactTimer = 200;
+  state.p1.reactForce = 0.7;
+  state.p1.reactDirX = 1;
+
+  state.ball.x = 120;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = -5;
+  state.ball.vy = 0;
+  state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  for (let i = 0; i < 40 && state.pauseState !== 'celebrate'; i++) {
+    tick(state, NOOP, NOOP);
+  }
+  assert.equal(state.pauseState, 'celebrate', 'goal should have triggered celebrate pause');
+
+  assert.equal(state.p1.kick.active, false, 'p1 kick must clear on goal');
+  assert.equal(state.p1.kick.timer, 0);
+  assert.equal(state.p1.kick.fired, false);
+  assert.equal(state.p1.airZ, 0);
+  assert.equal(state.p2.pushTimer, 0, 'p2 push must clear on goal');
+  assert.equal(state.p2.pendingPushVictim, null);
+  assert.equal(state.p2.pendingPushVx, 0);
+  assert.equal(state.p1.reactTimer, 0, 'p1 hit-reaction must clear on goal');
+  assert.equal(state.p1.reactForce, 0);
+});
+
+test('ball out clears in-progress kick/push/react animation state', () => {
+  const state = freshState();
+  const f = state.field;
+
+  state.p1.kick.active = true;
+  state.p1.kick.timer = 60;
+  state.p1.kick.fired = true;
+  state.p2.pushTimer = 400;
+  state.p2.pendingPushVictim = state.p1;
+  state.p2.pendingPushVx = 3;
+
+  // Drive the ball off the right field edge OUTSIDE the goal mouth
+  // so OOB fires (not a goal).
+  state.ball.x = f.width - 5;
+  state.ball.y = 5;
+  state.ball.z = 0;
+  state.ball.vx = 6;
+  state.ball.vy = 0;
+  state.ball.vz = 0;
+  state.ball.frozen = false;
+
+  for (let i = 0; i < 10 && state.pauseState === null; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.pauseState, 'reposition', 'ball out should pause reposition');
+
+  assert.equal(state.p1.kick.active, false, 'p1 kick must clear on ball-out');
+  assert.equal(state.p1.kick.timer, 0);
+  assert.equal(state.p2.pushTimer, 0, 'p2 push must clear on ball-out');
+  assert.equal(state.p2.pendingPushVictim, null);
 });
 
 /* ── Headless / training-mode fast path ────────────────────────
@@ -2652,7 +2701,7 @@ test('resetStateInPlace: swapping the rng produces a different stream than befor
 
 /* ── Winner celebration flow (visual path, recent feature) ────── */
 
-test('winning goal sets celebrate pause AND flags winner (not matchend directly)', () => {
+test('winning goal goes straight to matchend reposition (no at-spot celebrate)', () => {
   const state = freshState();
   state.headless = false;
   state.recordEvents = false;
@@ -2671,12 +2720,43 @@ test('winning goal sets celebrate pause AND flags winner (not matchend directly)
   tick(state, null, null);
 
   assert.equal(state.scoreL, 3, 'left-side scored the winning goal');
-  assert.equal(state.pauseState, 'celebrate', 'must stay in celebrate for the animation, not jump to matchend');
+  assert.equal(state.pauseState, 'matchend', 'winning goal skips celebrate and enters matchend immediately');
+  assert.equal(state.matchEndPhase, 'reposition', 'matchend opens on the reposition (walk-back) phase');
   assert.equal(state.winner, 'left', 'winner must be flagged at the scoring tick');
-  assert.equal(state.matchOver, false, 'match is not over yet — celebrate then matchend');
+  assert.equal(state.goalScorer, null, 'no celebrate-at-spot on a winning goal');
+  assert.equal(state.matchOver, false, 'match is not over until the cinematic completes');
 });
 
-test('visual celebrate → matchend transition when winner is set', () => {
+test('time-up matchend (no winner) walks back then finalizes — no pose/neutral', () => {
+  const state = freshState();
+  state.headless = false;
+  state.recordEvents = false;
+
+  // Move both players away from kickoff so reposition has work to do.
+  state.p1.x = 300; state.p1.y = 30;
+  state.p2.x = 350; state.p2.y = 20;
+
+  endMatchByTime(state);
+  assert.equal(state.pauseState, 'matchend');
+  assert.equal(state.matchEndPhase, 'reposition');
+  assert.equal(state.winner, null, 'time-up matchend has no winner');
+
+  // Idempotent — second call while already in matchend is a no-op.
+  endMatchByTime(state);
+  assert.equal(state.matchEndPhase, 'reposition');
+
+  // Run reposition to completion. With no winner, finalize fires
+  // directly on arrival — no pose / neutral phase.
+  for (let i = 0; i < 600 && !state.matchOver; i++) {
+    tick(state, null, null);
+  }
+  assert.equal(state.matchOver, true, 'time-up matchend finalizes after walk-back');
+  assert.equal(state.pauseState, null);
+  assert.equal(state.matchEndPhase, null);
+  assert.equal(state.winner, null);
+});
+
+test('matchend phase machine: reposition → pose → neutral → finalize', () => {
   const state = freshState();
   state.headless = false;
   state.recordEvents = false;
@@ -2688,18 +2768,23 @@ test('visual celebrate → matchend transition when winner is set', () => {
   state.graceFrames = 0;
   tick(state, null, null);
 
-  assert.equal(state.pauseState, 'celebrate');
-  const celebrateTicks = state.pauseTimer;
-  assert.ok(celebrateTicks > 0);
+  assert.equal(state.pauseState, 'matchend');
+  assert.equal(state.matchEndPhase, 'reposition');
 
-  // Run the celebrate countdown. During celebrate, advancePause still
-  // lets the ball roll under gravity, so the transition test gates on
-  // the pauseState flip, not a fixed tick count.
-  for (let i = 0; i < celebrateTicks + 5; i++) {
+  // Reposition completes once both players reach their kickoff spots.
+  // Cap at the safety horizon so a stuck reposition still fails loudly.
+  for (let i = 0; i < 600 && state.matchEndPhase === 'reposition'; i++) {
     tick(state, null, null);
-    if (state.pauseState === 'matchend') break;
   }
-  assert.equal(state.pauseState, 'matchend', 'after celebrate expires on a winning goal we jump to matchend, skipping reposition');
+  assert.equal(state.matchEndPhase, 'pose', 'reposition advances to pose when both at kickoff');
+
+  for (let i = 0; i < 1000 && state.matchEndPhase === 'pose'; i++) tick(state, null, null);
+  assert.equal(state.matchEndPhase, 'neutral', 'pose advances to neutral after timer expires');
+
+  for (let i = 0; i < 1000 && state.matchEndPhase === 'neutral'; i++) tick(state, null, null);
+  assert.equal(state.matchOver, true, 'neutral phase finalizes the match');
+  assert.equal(state.pauseState, null);
+  assert.equal(state.matchEndPhase, null);
 });
 
 test('non-winning goal celebrates then reposition (no matchend)', () => {
@@ -2743,5 +2828,5 @@ test('ACTION_* slot indices are stable and contiguous', () => {
   assert.equal(ACTION_KICK_POWER, 6);
   assert.equal(ACTION_PUSH_GATE,  7);
   assert.equal(ACTION_PUSH_POWER, 8);
-  assert.equal(NN_OUTPUT_SIZE,    9);
+  assert.equal(ACTION_VEC_SIZE,    9);
 });

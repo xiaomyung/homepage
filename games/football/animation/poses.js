@@ -4,9 +4,8 @@
 // physics player and produces a flat pose object the renderer
 // consumes to place meshes. Pure — no DOM, no three.js.
 //
-// This function is the single source of truth for how walk / run /
-// kick / airkick / push / celebrate poses combine. The layered
-// model reproduces the renderer's previous inline behaviour exactly:
+// Single source of truth for how walk / run / kick / airkick /
+// push / celebrate / grieve / matchend poses combine. Layered model:
 //
 //   1. Walk cycle always runs in the background; amplitude scales
 //      with smoothed speed.
@@ -15,14 +14,15 @@
 //   3. Kick body-english (dip / tilt / hip twist / support crouch /
 //      counter-arm swing) is added on top; the kicking leg is
 //      IK-solved (kickLegPose).
-//   4. Celebrate linearly interpolates arms + legs toward the
-//      jumping-jack extremes, weighted by the smoothed celebrate
-//      factor.
+//   4. Celebrate runs a jump cycle (crouch → push-off → apex →
+//      land) plus symmetric fist-pumps; arms and legs blend toward
+//      the celebrate pose by the smoothed `celeb` factor.
+//   5. Grieve / matchend overrides take precedence over celebrate
+//      where they apply (loser kneels, winner stands triumphant).
 //
 // Physics guarantees kick and push never overlap, so their
 // body-english contributions simply sum via upperTilt + pushBodyDip +
-// kickBodyDip. Celebrate overrides everything through the celeb
-// smoother.
+// kickBodyDip.
 
 import {
   AIRKICK_MS,
@@ -128,7 +128,7 @@ const WALK_BOB_FRAC       = 0.08;
 // celeb, grieve, matchWin/Lose, etc.) is treated as inactive and
 // its pose-layer override is skipped. Avoids floating-point dust at
 // state-transition tails.
-const LPF_DEAD_ZONE = 0.001;
+export const LPF_DEAD_ZONE = 0.001;
 
 // Push split-stance + squat tuning. Module-level so they live alongside
 // the other PUSH_* constants; consumers are inside composeStickmanPose.
@@ -256,7 +256,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // composers to decide whether to apply their pure-locomotion
   // overrides on top of the swing base.
   const purePoseActive = !isKicking
-    && !(pushing > 0)
+    && !pushing
     && celeb < LPF_DEAD_ZONE
     && grieve < LPF_DEAD_ZONE
     && matchWin < LPF_DEAD_ZONE
@@ -431,12 +431,9 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   let leftLegAngle  =  legSwing;
   let rightLegAngle = -legSwing;
 
-  // Celebrate arms — both raised in a V, pumped TOGETHER. Old code
-  // sent the right arm through the BACKWARD half of the rotation
-  // (angle = −π) so alternating pump made the arms sweep through
-  // paths a human shoulder can't actually follow. Now both arms use
-  // a positive (forward-up) swing with a yawed lateral spread, and
-  // the pump dips/raises both fists at once like a real fist-pump.
+  // Celebrate arms — both raised in a V, pumped together. Both arms use
+  // a positive (forward-up) swing with a yawed lateral spread, and the
+  // pump dips/raises both fists at once like a real fist-pump.
   if (celeb > LPF_DEAD_ZONE) {
     const restT = inJump ? 0 : (celebratePhase - Math.PI) / Math.PI;  // 0..1 during rest half
     const jumpRaise = CELEB_ARM_RAISE_REST
@@ -656,7 +653,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // angle is forward-from-hip in the pose rig. Only applies when
   // the victim isn't mid-push of their own (which would overwrite
   // the striking arm anyway via the push IK below).
-  if (reactInt > LPF_DEAD_ZONE && celeb < LPF_DEAD_ZONE && !(pushing > 0)) {
+  if (reactInt > LPF_DEAD_ZONE && celeb < LPF_DEAD_ZONE && !pushing) {
     const throwAmp = REACT_ARM_THROW * reactInt;
     leftUpperArmAngle  += throwAmp;
     rightUpperArmAngle += throwAmp;
@@ -793,11 +790,12 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     pose.lLegLower = leftLowerAngle  * grieveInv + GRIEVE_LEG_LOWER * grieve;
     pose.rLegUpper = rightUpperAngle * grieveInv + GRIEVE_LEG_UPPER * grieve;
     pose.rLegLower = rightLowerAngle * grieveInv + GRIEVE_LEG_LOWER * grieve;
+    pose.lLegHipYaw = 0;
+    pose.rLegHipYaw = 0;
     pose.forwardX = forwardX; pose.forwardZ = forwardZ;
     return pose;
   }
 
-  // Fill pose scratch.
   pose.baseX = baseX; pose.baseZ = baseZ;
   pose.hipBaseY = hipBaseY; pose.upperHipY = upperHipY;
   pose.neckX = neckX; pose.neckY = neckY; pose.neckZ = neckZ;
@@ -813,6 +811,8 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   pose.rArmUpperYaw = rightUpperYaw;   pose.rArmLowerYaw = rightLowerYaw;
   pose.lLegUpper = leftUpperAngle; pose.lLegLower = leftLowerAngle;
   pose.rLegUpper = rightUpperAngle; pose.rLegLower = rightLowerAngle;
+  pose.lLegHipYaw = 0;
+  pose.rLegHipYaw = isKicking ? (scratchKickPose.legYaw || 0) : 0;
   pose.forwardX = forwardX; pose.forwardZ = forwardZ;
   return pose;
 }

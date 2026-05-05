@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>renderer diagnostic — 8 harnesses</title>
-<link rel="stylesheet" href="../../../style.css?v=136">
+<link rel="stylesheet" href="../../../style.css">
 <style>
   body {
     padding: 1rem 2rem 4rem;
@@ -159,14 +159,7 @@ import {
   Z_STRETCH,
   freshState, lineupX, makeHarness, startLazyMount,
 } from './harness.js';
-import {
-  AIRKICK_MS, AIRKICK_PEAK_FRAC,
-  BALL_RADIUS,
-  KICK_DURATION_MS, KICK_WINDUP_MS,
-  STICKMAN_TORSO_RADIUS,
-  TICK_MS,
-  tick,
-} from '../physics.js';
+import { BALL_RADIUS, tick } from '../physics.js';
 
 const log = document.getElementById('boot-log');
 

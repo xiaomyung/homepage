@@ -2,12 +2,10 @@
  * Local dev server — static files + reverse proxy.
  *
  * Usage:
- *   1. Start the broker:  node games/football/api/broker.mjs
- *   2. Start this:        node dev-server.mjs
- *   3. Open:              http://localhost:8000
+ *   node dev-server.mjs
+ *   open http://localhost:8000
  *
- * Proxies /api/football/* → 127.0.0.1:5050 (broker)
- *         /api/stats*     → 127.0.0.1:5055 (stats, homelab only)
+ * Proxies /api/stats* → 127.0.0.1:5055 (stats shim, homelab only)
  *
  * No dependencies — uses only Node built-ins.
  */
@@ -17,12 +15,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PORT = 8000;
+const PORT = Number(process.env.PORT) || 8000;
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const STATS_TARGET = process.env.STATS_TARGET || 'http://127.0.0.1:5055';
 
 const PROXIES = [
-  { prefix: '/api/football', target: 'http://127.0.0.1:5050' },
-  { prefix: '/api/stats',    target: 'http://127.0.0.1:5055' },
+  { prefix: '/api/stats', target: STATS_TARGET },
 ];
 
 const MIME = {

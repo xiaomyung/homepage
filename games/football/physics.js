@@ -1,9 +1,8 @@
 /**
  * Football v2 — pure physics module.
  *
- * No DOM, no three.js, no wall-clock. The caller owns cadence: the showcase
- * loop calls tick() once per animation frame; training workers call it in a
- * tight loop. Determinism relies on the caller passing a seeded PRNG into
+ * No DOM, no three.js, no wall-clock — the caller owns tick cadence.
+ * Determinism relies on the caller passing a seeded PRNG into
  * createState(); the bundled createSeededRng() is the canonical source.
  */
 
@@ -15,14 +14,8 @@ const CEILING = 100;
 
 export const TICK_MS = 16;
 // Mercy rule — if no kick for STALL_TICKS ticks (~10 s wall-clock), reset so
-// the match doesn't sit motionless. Visual mode just respawns the
-// ball; headless mode does a full kickoff (both players teleported)
-// so every training segment starts from a clean, identical state.
-// Single value for both so showcase replays (which run with
-// state.headless=true for scoreGoal-determinism) reset on the same
-// schedule the worker did — otherwise a worker match with a reset
-// at t=187 ticks wouldn't reproduce if the visual replay waited
-// until t=625 to reset.
+// the match doesn't sit motionless. Visual mode just respawns the ball;
+// headless mode does a full kickoff (both players teleported).
 const STALL_TICKS = Math.ceil(10000 / TICK_MS);
 
 // Ball
@@ -58,10 +51,10 @@ const MIN_SPEED_STAMINA = 0.3;
 
 // Heading — angular orientation in world-space (cos(h), sin(h)*Z_STRETCH)
 // is the unit "front" vector of the stickman. Tracks visual motion
-// direction with bounded angular velocity (angular inertia), so a
-// 180° turn takes PLAYER_TURN_TICKS ticks regardless of how fast the
-// NN slams the stick. Also defines which way the player must face to
-// land a kick or a push — see FACE_TOL constants below.
+// direction with bounded angular velocity (angular inertia), so a 180°
+// turn takes PLAYER_TURN_TICKS ticks regardless of the action input.
+// Also defines which way the player must face to land a kick or a push
+// — see FACE_TOL constants below.
 export const Z_STRETCH = 4.7;  // imported by renderer.js — single source of truth
 const PLAYER_TURN_TICKS = 20;  // ticks to complete a 180° turn
 const PLAYER_TURN_RATE = Math.PI / PLAYER_TURN_TICKS;
@@ -119,7 +112,7 @@ export const PUSH_RANGE_X = 30;
 // range from top-to-top, plus a small slack for animation timing.
 const PUSH_RANGE_SLACK_Y = 1;
 export const PUSH_RANGE_Y = PLAYER_HEIGHT + PUSH_RANGE_SLACK_Y;
-const MAX_PUSH_FORCE = 200;
+const MAX_PUSH_FORCE = 100;
 const PUSH_DAMP = 0.88;
 const PUSH_APPLY = 0.12;
 const PUSH_VEL_THRESHOLD = 0.5;
@@ -165,7 +158,19 @@ const GOAL_LINE_INSET = 6; // scoring line sits this far inside the mouth
 // mouth. Without this inset a ball clipping the visible post
 // surface would score through it.
 export const GOAL_POST_RADIUS = 1.2;
-const GOAL_MOUTH_Z = 26;  // crossbar height (unchanged)
+// Crossbar height — single source of truth for both physics
+// (goalBox.maxZ, the crossbar collider, the scoring ceiling) and the
+// rendered goal frame. Sized so the goal mouth comfortably clears
+// player head height (~51 world units) plus a small margin.
+const GOAL_MOUTH_Z = 58.5;
+
+// Goal-net side profile: the roof of the net runs flat from the
+// front mouth back by `ROOF_FRACTION` of the goal depth, then the
+// back wall slants down from that point to the outer ground.
+// `roofBackX` (computed per goal) = mouthX + (backBotX - mouthX) * ROOF_FRACTION.
+// Both the rendered model and the physics colliders read this so
+// they stay in lockstep.
+export const ROOF_FRACTION = 0.35;
 const GOAL_MOUTH_WIDTH = 28.6;  // z-span of the mouth (30% + another 10% wider than the original 20)
 const GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - GOAL_MOUTH_WIDTH) / 2;
 const GOAL_MOUTH_Y_MAX = (FIELD_HEIGHT + GOAL_MOUTH_WIDTH) / 2;
@@ -173,10 +178,25 @@ const GOAL_MOUTH_Y_MAX = (FIELD_HEIGHT + GOAL_MOUTH_WIDTH) / 2;
 // Match
 const WIN_SCORE = 3;
 const CELEBRATE_TICKS = Math.ceil(1500 / TICK_MS);
-const MATCHEND_PAUSE_TICKS = Math.ceil(3000 / TICK_MS);
+// Matchend cinematic — three sub-phases under pauseState='matchend',
+// dispatched via state.matchEndPhase:
+//   'reposition' — both players walk to kickoff (cap on stuck reposition)
+//   'pose'       — face camera, dolly-in, winner celebrates / loser grieves
+//   'neutral'    — face each other, dolly-out, brief settle, then finalize
+// Camera dolly is driven by the renderer's follow-cam zoom spring
+// (target switches per phase); animation heading override is driven
+// by faceCameraSmooth / faceEachOtherSmooth flags from the renderer.
+const MATCHEND_REPOSITION_MAX_TICKS = Math.ceil(4000 / TICK_MS);
+const MATCHEND_POSE_TICKS    = Math.ceil(4000 / TICK_MS);
+const MATCHEND_NEUTRAL_TICKS = Math.ceil(2500 / TICK_MS);
 const RESPAWN_GRACE = 30;
 const REPOSITION_SPEED = 6;
 const REPOSITION_TOL = 5;
+// Per-tick fraction of remaining distance — clamp to REPOSITION_SPEED
+// so the start of the walk-back doesn't pop. y-axis moves at half x's
+// max speed so depth-axis residue settles slower than the wider field.
+const REPOSITION_LERP_FRAC    = 0.1;
+const REPOSITION_Y_SPEED_FRAC = 0.5;
 const RESPAWN_DELAY_TICKS = Math.ceil(300 / TICK_MS);
 
 /* ── Stickman rig constants (shared with renderer) ─────────────
@@ -219,17 +239,28 @@ const BODY_TANG_RETAIN = 0.25;
 const TUNNEL_CORRECTION_MIN_SPEED = 1.0;
 const TUNNEL_CORRECTION_BEHIND_DOT = -0.3;
 
+// Stuck-on-top escape thresholds (see resolveBallVsBodyCapsule).
+// `nyU` is the contact-normal y-component (1 = perfectly vertical);
+// the tangential cap is in world units / tick.
+const STUCK_ON_TOP_NORMAL_THRESHOLD = 0.95;
+const STUCK_ON_TOP_TANG_THRESHOLD   = 0.05;
+const STUCK_ON_TOP_SLIDE_SPEED      = 0.5;
+
+// Minimum bounce velocity to record a particle event — gates out
+// settle-noise so microscopic ground bounces don't spawn dust.
+const BOUNCE_EVENT_MIN = 0.3;
+
 // Body column vertical anchors above the ground (z=0). Hip base is
 // where the leg capsules meet the torso; shoulder sits one torso
 // length above; head sits a neck-gap + head-radius above the shoulder.
-const HIP_BASE_Z      = STICKMAN_LIMB_FULL_H;                          // 20
-const SHOULDER_Z      = HIP_BASE_Z + STICKMAN_SHOULDER_OFY;            // 40.24
-const HEAD_CENTER_Z   = SHOULDER_Z + STICKMAN_HEAD_GAP_Y + STICKMAN_HEAD_RADIUS; // 47.11
+export const HIP_BASE_Z      = STICKMAN_LIMB_FULL_H;                   // 20
+export const SHOULDER_Z      = HIP_BASE_Z + STICKMAN_SHOULDER_OFY;     // 40.24
+export const HEAD_CENTER_Z   = SHOULDER_Z + STICKMAN_HEAD_GAP_Y + STICKMAN_HEAD_RADIUS; // 47.11
 
 // Maximum kick reach — full stretched leg length. See the Kick
 // constants block above for context; defined here because it needs
 // the rig constants.
-const KICK_REACH_MAX = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG;        // 20
+export const KICK_REACH_MAX = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG; // 20
 
 /* ── Field & state factories ──────────────────────────────────── */
 
@@ -262,15 +293,22 @@ export function createField(width = FIELD_WIDTH_REF) {
   // Precomputed goal-box AABBs — called on every physics tick for
   // player + ball collisions. Freezing them here kills ~6 object
   // allocations per tick that used to happen inside `goalBox(f, side)`.
+  // `roofBackX` is the x of the upper-rear edge — where the flat
+  // roof meets the slanted back net. The slanted back wall runs from
+  // (roofBackX, GOAL_MOUTH_Z) at the top down to (floorBackX, 0) at
+  // the floor. For the LEFT goal floorBackX = minX (= goalLLeft); for
+  // the RIGHT goal floorBackX = maxX (= goalRRight).
   field.goalBoxLeft = {
     minX: goalLLeft, maxX: goalLineL,
     minY: GOAL_MOUTH_Y_MIN, maxY: GOAL_MOUTH_Y_MAX,
     minZ: 0, maxZ: GOAL_MOUTH_Z,
+    roofBackX: goalLineL + (goalLLeft - goalLineL) * ROOF_FRACTION,
   };
   field.goalBoxRight = {
     minX: goalLineR, maxX: goalRRight,
     minY: GOAL_MOUTH_Y_MIN, maxY: GOAL_MOUTH_Y_MAX,
     minZ: 0, maxZ: GOAL_MOUTH_Z,
+    roofBackX: goalLineR + (goalRRight - goalLineR) * ROOF_FRACTION,
   };
   return field;
 }
@@ -345,12 +383,8 @@ function createPlayer(side, field) {
  * any new objects. The ball, p1, p2 (and their kick sub-objects), and
  * the events array are all mutated in place. Field + rng can be swapped
  * at will. `recordEvents` and `headless` are reset to their defaults;
- * callers (worker, main) re-set them after reset as needed.
- *
- * Lets worker.js keep one state across thousands of matches instead of
- * allocating a fresh state per runMatch. With N workers × thousands of
- * matches/sec, that churn was the dominant source of old-gen drift —
- * see project_football_renderer_oom in session memory.
+ * callers re-set them after reset as needed. Avoids per-match allocation
+ * so a long-running showcase loop stays heap-stable.
  */
 export function resetStateInPlace(state, field, rng) {
   state.field = field;
@@ -371,6 +405,7 @@ export function resetStateInPlace(state, field, rng) {
   state.stallCount = 0;
   state.pauseState = null;
   state.pauseTimer = 0;
+  state.matchEndPhase = null;
   state.goalScorer = null;
   state.matchOver = false;
   state.winner = null;
@@ -383,8 +418,8 @@ export function resetStateInPlace(state, field, rng) {
 /**
  * Create a fresh game state. Default rng is a seeded LCG with seed 0 so that
  * accidentally-unseeded callers get a reproducible stream.
- * `recordEvents` is false by default — tests and runners opt in to collect
- * state.events; production callers (main, worker) skip all event allocation.
+ * `recordEvents` is false by default — tests opt in to collect
+ * state.events; the visual showcase enables it for renderer particle hooks.
  */
 export function createState(field, rng = createSeededRng(0)) {
   const state = {
@@ -407,26 +442,23 @@ export function createState(field, rng = createSeededRng(0)) {
     tick: 0,
     graceFrames: 0,
     lastKickTick: 0,
-    // Incremented every time the stall timeout fires. Workers read
-    // this after a match to tag the result — stalled matches are
-    // filtered out of the showcase replay buffer so visuals never
-    // show a mid-match teleport. Fitness unaffected: goals scored
-    // during or after a stall still count.
+    // Incremented every time the stall timeout fires (ball frozen for
+    // STALL_TICKS without a kick). Tests and harnesses read it to detect
+    // stuck matches.
     stallCount: 0,
     pauseState: null, // null | 'celebrate' | 'matchend' | 'reposition' | 'waiting'
     pauseTimer: 0,
+    // Sub-phase under pauseState='matchend': 'reposition' | 'pose' | 'neutral'
+    matchEndPhase: null,
     goalScorer: null,
     matchOver: false,
     winner: null,
     events: [],
     recordEvents: false,
-    // Training-mode flag. When true, `scoreGoal`/`ballOut` bypass the
-    // celebrate/reposition/waiting pause state machine and reset the
-    // pitch immediately so every tick of the match budget is spent on
-    // active play — no animations, no idle frames. WIN_SCORE still
-    // ends the match (the headless scoreGoal flips state.matchOver
-    // and writes state.winner). Default false so the visual showcase
-    // path stays untouched.
+    // Headless flag — used by tests. When true, `scoreGoal`/`ballOut` skip
+    // the celebrate/reposition/waiting pause state machine and reset the
+    // pitch immediately. WIN_SCORE still ends the match. Default false so
+    // the visual showcase animation runs.
     headless: false,
   };
   resetStateInPlace(state, field, rng);
@@ -463,8 +495,14 @@ export function tick(state, p1Act, p2Act) {
     // ball down so a scored shot settles visibly into the net
     // instead of freezing mid-flight. Score check is suppressed by
     // the grace-frame gate set in scoreGoal, and the inner-net
-    // absorber handles wall contact without a bounce.
-    if (state.pauseState !== 'matchend') updateBall(state);
+    // absorber handles wall contact without a bounce. Skipped only
+    // for the static matchend pose / neutral phases — the match is
+    // decided and the ball is irrelevant; reposition still runs ball
+    // physics so the scored shot finishes settling during the walk
+    // back.
+    const skipBall = state.pauseState === 'matchend'
+      && (state.matchEndPhase === 'pose' || state.matchEndPhase === 'neutral');
+    if (!skipBall) updateBall(state);
     return state;
   }
 
@@ -528,9 +566,9 @@ function applyRegenAndExhaustion(p) {
 
 /* ── Action dispatch ─────────────────────────────────────────── */
 
-// Action vector layout — 9 floats, same order as nn.js output. Exported
-// so fallback.js, tests, and any future consumer can build/read the
-// vector by name instead of by magic index.
+// Action vector layout — 9 floats consumed by `tick()`. Exported by
+// name so the controller, tests, and any future consumer can build /
+// read the vector without magic indices.
 export const ACTION_MOVE_X     = 0;
 export const ACTION_MOVE_Y     = 1;
 export const ACTION_KICK_GATE  = 2;
@@ -540,7 +578,7 @@ export const ACTION_KICK_DZ    = 5;
 export const ACTION_KICK_POWER = 6;
 export const ACTION_PUSH_GATE  = 7;
 export const ACTION_PUSH_POWER = 8;
-export const NN_OUTPUT_SIZE    = 9;
+export const ACTION_VEC_SIZE    = 9;
 
 /** Strike threshold in ms of `pushTimer` remaining, keyed by the
  *  pusher's pushType. Jab fist has to extend furthest and connects
@@ -572,6 +610,24 @@ function advancePush(state, p) {
   const threshold = PUSH_STRIKE_TIMER[p.pushType] || PUSH_STRIKE_TIMER.jab;
   if (p.pendingPushVictim && prevTimer > threshold && p.pushTimer <= threshold) {
     const victim = p.pendingPushVictim;
+    // Re-check range + facing at strike time. The windup is ~400ms,
+    // long enough for the victim to back out of reach — without this
+    // gate the pre-computed impulse from tryPush would still land on
+    // a victim who already ran away. Pusher's animation continues
+    // through recovery as a whiff so they still pay the cooldown.
+    if (!pushStillInRange(state, p, victim)) {
+      p.pendingPushVictim = null;
+      p.pendingPushVx = 0;
+      p.pendingPushVy = 0;
+      if (state.recordEvents) {
+        state.events.push({
+          type: 'push_missed',
+          pusher: p === state.p1 ? 'p1' : 'p2',
+          reason: 'out_of_range',
+        });
+      }
+      return true;
+    }
     victim.pushVx = p.pendingPushVx;
     victim.pushVy = p.pendingPushVy;
     // Hit-reaction state. Stored on the victim so the pose composer
@@ -648,8 +704,15 @@ function applyAction(state, p, out) {
 
   if (p.exhausted) { p.vx = 0; p.vy = 0; return; }
 
-  applyMovement(state, p, out[ACTION_MOVE_X], out[ACTION_MOVE_Y]);
-
+  // Order: kick + push gates BEFORE movement. The controller's perception
+  // sees the player's pre-tick state when computing canKickReach / push
+  // gates; running movement first would shift heading + position before
+  // the gate test, so a borderline reach the controller correctly saw
+  // could fail at tryStartKick. With this order, controller perception
+  // and physics gate test sample the same state — they agree by
+  // construction. Movement still applies in the same tick (during
+  // CONTENDER_KICK the action vector zeros MOVE anyway, so this matters
+  // only for the failing-gate case).
   if (out[ACTION_PUSH_GATE] > 0) {
     const opp = p === state.p1 ? state.p2 : state.p1;
     tryPush(state, p, opp, out[ACTION_PUSH_POWER]);
@@ -664,6 +727,8 @@ function applyAction(state, p, out) {
       out[ACTION_KICK_POWER],
     );
   }
+
+  applyMovement(state, p, out[ACTION_MOVE_X], out[ACTION_MOVE_Y]);
 }
 
 /* ── Angle helpers ────────────────────────────────────────────── */
@@ -698,14 +763,10 @@ export function facingToward(p, worldX, worldZ, tol) {
 
 /* ── Movement ─────────────────────────────────────────────────── */
 
-// Motion input dead zone. Snaps small commanded moves to 0 so
-// imitation-trained NNs emitting ±0.05 noise don't produce 10 sign
-// flips per second of actual motion — each of which burns
-// DIRECTION_CHANGE_DRAIN stamina. Matches `FALLBACK_DEAD_ZONE` in
-// fallback.js so teacher and student share the same effective
-// quantization; the teacher already emits exact 0 below this
-// threshold, so this change is a no-op for fallback behaviour.
-const MOVE_INPUT_DEAD_ZONE = 0.15;
+// Motion input dead zone — floating-point filtering. Mirrors
+// `FALLBACK_DEAD_ZONE` in `ai/tuning.js`. Increase if a noisy controller
+// is introduced.
+const MOVE_INPUT_DEAD_ZONE = 0.02;
 
 function applyMovement(state, p, moveX, moveY) {
   if (Math.abs(moveX) < MOVE_INPUT_DEAD_ZONE) moveX = 0;
@@ -899,9 +960,8 @@ function clampAndCollide(state, p) {
 }
 
 // Module-level scratch AABBs reused by the collision resolvers.
-// Physics runs synchronously on the main thread (or per-worker) so
-// a single shared scratch is safe — the caller consumes the result
-// before anyone else can see it.
+// Physics runs synchronously per tick — a single shared scratch is safe
+// because the caller consumes the result before the next call.
 const _scratchEnt2D = { minX: 0, maxX: 0, minY: 0, maxY: 0 };
 const _scratchEnt3D = { minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 };
 // Scratch output for `minPenetrationPush`. Filled in place and
@@ -926,21 +986,27 @@ function resolveBallInsideGoal(state, box) {
   const isLeftGoal = box === state.field.goalBoxLeft;
   let hitBackOrSide = false;
 
-  // Inner back net. For a left goal the back wall is `box.minX`
-  // (ball came in from +x); for a right goal it's `box.maxX`.
-  const backX = isLeftGoal ? box.minX : box.maxX;
+  // Inner back net — slanted from (floorBackX, 0) at the floor to
+  // (roofBackX, maxZ) at the crossbar height. Modeled per-tick as a
+  // vertical wall at the slope's x-coordinate for the BALL's current
+  // height, so the substep loop's purely-horizontal bounce stays
+  // correct (the substep loop only integrates vx and vy, not vz).
+  const floorBackX = isLeftGoal ? box.minX : box.maxX;
+  const roofBackX  = box.roofBackX;
+  const ballCY     = Math.max(0, Math.min(box.maxZ, ball.z + BALL_RADIUS));
+  const slopeXatY  = floorBackX + (ballCY / box.maxZ) * (roofBackX - floorBackX);
   const penetration = isLeftGoal
-    ? backX - (ball.x - BALL_RADIUS)
-    : (ball.x + BALL_RADIUS) - backX;
+    ? slopeXatY - (ball.x - BALL_RADIUS)
+    : (ball.x + BALL_RADIUS) - slopeXatY;
   if (penetration > 0) {
-    ball.x = isLeftGoal ? backX + BALL_RADIUS : backX - BALL_RADIUS;
+    ball.x = isLeftGoal ? slopeXatY + BALL_RADIUS : slopeXatY - BALL_RADIUS;
     hitBackOrSide = true;
     if (state.recordEvents && Math.abs(ball.vx) > BOUNCE_EVENT_MIN) {
       state.events.push({ type: 'ball_bounce', axis: 'x', force: Math.abs(ball.vx), x: ball.x, y: ball.y, z: ball.z });
     }
   }
 
-  // Inner side nets.
+  // Inner side nets — vertical planes at z=minY and z=maxY (physics y).
   if (ball.y - BALL_RADIUS < box.minY) {
     ball.y = box.minY + BALL_RADIUS;
     hitBackOrSide = true;
@@ -955,9 +1021,16 @@ function resolveBallInsideGoal(state, box) {
     ball.vy = 0;
   }
 
-  // Inner roof (crossbar underside). If ball rose into it, kill upward
-  // vz only — gravity will pull it back down naturally.
-  if (ball.z + BALL_RADIUS > box.maxZ) {
+  // Inner roof (crossbar underside) — flat plane at z=maxZ, but only
+  // over the front-rectangular portion of the trapezoidal net (from
+  // mouth back to roofBackX). Beyond roofBackX the slanted back wall
+  // takes over and is handled above.
+  const xMouth = isLeftGoal ? box.maxX : box.minX;
+  const xLo = Math.min(xMouth, roofBackX);
+  const xHi = Math.max(xMouth, roofBackX);
+  if (ball.z + BALL_RADIUS > box.maxZ
+      && ball.x + BALL_RADIUS > xLo
+      && ball.x - BALL_RADIUS < xHi) {
     ball.z = box.maxZ - BALL_RADIUS;
     if (ball.vz > 0) ball.vz = 0;
   }
@@ -1218,14 +1291,14 @@ function tryBodyContact(state, p, collider, wx, wy, wz, wvx, wvy, wvz, colliderR
   // directly onto head / shoulder) produces zero tangential velocity
   // after cushion and re-clamps each tick. Give a small deterministic
   // forward slide so gravity carries the ball off the body instead
-  // of pinning it on top. Cap is small (~0.5) so non-pathological
-  // cases aren't affected.
-  if (vDotN < 0 && nyU > 0.95
-      && Math.abs(newWVX) < 0.05 && Math.abs(newWVZ) < 0.05) {
+  // of pinning it on top.
+  if (vDotN < 0 && nyU > STUCK_ON_TOP_NORMAL_THRESHOLD
+      && Math.abs(newWVX) < STUCK_ON_TOP_TANG_THRESHOLD
+      && Math.abs(newWVZ) < STUCK_ON_TOP_TANG_THRESHOLD) {
     const fwdX = Math.cos(p.heading);
     const fwdZ = Math.sin(p.heading);
-    newWVX = fwdX * 0.5;
-    newWVZ = fwdZ * 0.5;
+    newWVX = fwdX * STUCK_ON_TOP_SLIDE_SPEED;
+    newWVZ = fwdZ * STUCK_ON_TOP_SLIDE_SPEED;
   }
 
   ball.x  = newWX;
@@ -1253,17 +1326,26 @@ function tryBodyContact(state, p, collider, wx, wy, wz, wvx, wvy, wvz, colliderR
  * velocity components.
  */
 function resolvePlayerPairCollision(p1, p2, pre1x, pre1y, pre2x, pre2y) {
-  const r = 2 * STICKMAN_TORSO_RADIUS;
-  // Pre-tick centers in world coords.
+  // Personal-space radius. Larger than the torso capsule (2 * 3.3 = 6.6)
+  // because the visible silhouette includes the head sphere and arm
+  // capsules, and at minimum-torso-touch the heads visibly overlap.
+  // 2 * STICKMAN_HEAD_RADIUS = 8 keeps the heads exactly tangent and
+  // makes pair contact read as 'next to' instead of 'merged'.
+  const r = 2 * STICKMAN_HEAD_RADIUS;
+  // Pre-tick centers in world coords. Body anchor is `p.y * Z_STRETCH`
+  // (no PLAYER_HEIGHT/2 offset) — matches resolveBallVsBodyCapsule,
+  // hipAnchor, the kick / push gates, and the rendered figure. Only
+  // deltas matter for the swept-sphere math, so the absolute-position
+  // change is behaviour-preserving relative to the prior convention.
   const preC1x = pre1x + PLAYER_WIDTH / 2;
-  const preC1z = (pre1y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const preC1z = pre1y * Z_STRETCH;
   const preC2x = pre2x + PLAYER_WIDTH / 2;
-  const preC2z = (pre2y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const preC2z = pre2y * Z_STRETCH;
   // Post-tick centers.
   const postC1x = p1.x + PLAYER_WIDTH / 2;
-  const postC1z = (p1.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const postC1z = p1.y * Z_STRETCH;
   const postC2x = p2.x + PLAYER_WIDTH / 2;
-  const postC2z = (p2.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const postC2z = p2.y * Z_STRETCH;
 
   const preDx = preC1x - preC2x, preDz = preC1z - preC2z;
   const postDx = postC1x - postC2x, postDz = postC1z - postC2z;
@@ -1340,9 +1422,9 @@ function resolvePlayerPairCollision(p1, p2, pre1x, pre1y, pre2x, pre2y) {
   // positions are still overlapping — push them apart to contact
   // distance. Otherwise we've landed exactly at contact distance.
   const c1x = p1.x + PLAYER_WIDTH / 2;
-  const c1z = (p1.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const c1z = p1.y * Z_STRETCH;
   const c2x = p2.x + PLAYER_WIDTH / 2;
-  const c2z = (p2.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const c2z = p2.y * Z_STRETCH;
   const dx = c1x - c2x;
   const dz = c1z - c2z;
   const dist2 = dx * dx + dz * dz;
@@ -1546,17 +1628,25 @@ function resolveBallVsGoalExterior(state, box) {
   if (ball.frozen) return;
   const isLeft = box === state.field.goalBoxLeft;
 
-  // ── Back wall — plane at x=backX, outside half-space faces the touchline.
-  const backX = isLeft ? box.minX : box.maxX;
-  const inwardVxBack = isLeft ? ball.vx : -ball.vx;  // +ve = toward mouth
+  // ── Back wall — slanted from (floorBackX, 0) to (roofBackX, maxZ).
+  // Same per-height vertical-wall approximation as resolveBallInsideGoal:
+  // at the ball's current height, treat the back wall as a vertical
+  // plane at slopeXatY. The substep loop integrates vx purely on the
+  // x-axis, so a vertical-wall bounce stays correct without needing
+  // to update ball.z mid-substep.
+  const floorBackX = isLeft ? box.minX : box.maxX;
+  const roofBackX  = box.roofBackX;
+  const ballCYBack = Math.max(0, Math.min(box.maxZ, ball.z + BALL_RADIUS));
+  const slopeXatY  = floorBackX + (ballCYBack / box.maxZ) * (roofBackX - floorBackX);
+  const inwardVxBack = isLeft ? ball.vx : -ball.vx;
   const fullyPastBack = isLeft
-    ? ball.x - BALL_RADIUS >= backX
-    : ball.x + BALL_RADIUS <= backX;
+    ? ball.x - BALL_RADIUS >= slopeXatY
+    : ball.x + BALL_RADIUS <= slopeXatY;
   if (inwardVxBack > 0 && !fullyPastBack
       && ball.y + BALL_RADIUS > box.minY
       && ball.y - BALL_RADIUS < box.maxY
       && ball.z - BALL_RADIUS < box.maxZ) {
-    ball.x = isLeft ? backX - BALL_RADIUS : backX + BALL_RADIUS;
+    ball.x = isLeft ? slopeXatY - BALL_RADIUS : slopeXatY + BALL_RADIUS;
     const pre = Math.abs(ball.vx);
     ball.vx = -ball.vx * BOUNCE_RETAIN;
     recordBounce(state, 'x', pre);
@@ -1592,16 +1682,17 @@ function resolveBallVsGoalExterior(state, box) {
   }
   if (ball.frozen) return;
 
-  // ── Roof — plane at z=mouthZMax, outside half-space z>mouthZMax.
-  // Covers x in [minX, maxX] and y in [minY, maxY]. The rendered roof
-  // is a trapezoidal net (flat front 35% + slanted rear), but the
-  // physics approximation is a flat plane across the full depth —
-  // matching the interior roof model used by resolveBallInsideGoal.
+  // ── Roof — flat plane at z=mouthZMax, truncated to the front-
+  // rectangular portion of the trapezoidal net (from mouth back to
+  // roofBackX). The slanted back wall above handles the rear.
+  const xMouth = isLeft ? box.maxX : box.minX;
+  const roofXLo = Math.min(xMouth, roofBackX);
+  const roofXHi = Math.max(xMouth, roofBackX);
   const fullyPastRoof = ball.z + BALL_RADIUS <= box.maxZ;
   if (ball.vz < 0 && !fullyPastRoof
       && ball.z - BALL_RADIUS < box.maxZ
-      && ball.x + BALL_RADIUS > box.minX
-      && ball.x - BALL_RADIUS < box.maxX
+      && ball.x + BALL_RADIUS > roofXLo
+      && ball.x - BALL_RADIUS < roofXHi
       && ball.y + BALL_RADIUS > box.minY
       && ball.y - BALL_RADIUS < box.maxY) {
     ball.z = box.maxZ + BALL_RADIUS;
@@ -1682,47 +1773,64 @@ function predictBallAtStrike(ball, ticks, out) {
 }
 
 /** Compute foot world position by IK'ing toward `kick.footTarget`.
- *  Writes (x, y=vertical, z=depth) into `out`. */
+ *  Writes (x, y=vertical, z=depth) into `out`. The leg yaws at the hip
+ *  by `local.perp` (capped at LATERAL_FOOT_FLEX) so the foot lands on
+ *  a ball that's off the sagittal plane — a natural-looking side-of-
+ *  foot hook, not a stiff straight-ahead strike. */
 const _scratchIKRes = { upperAngle: 0, lowerAngle: 0, footFwd: 0, footUp: 0 };
-function ikFootWorld(p, out) {
+export function ikFootWorld(p, out) {
   const k = p.kick;
-  // Center hip matches the reach-gate anchor in `tryStartKick` so
-  // a ball that passes the gate has the same kill zone at strike
-  // time — otherwise balls inside the left-hip arc cleared the
-  // gate but never met the right-hip foot sphere, burning 288 ms
-  // per miss. The renderer still draws the right leg from its
-  // offset hip for visual flavor; the ~2.64 world-unit gap between
-  // the visible foot and the physics foot is well inside
-  // (FOOT_RADIUS + BALL_RADIUS ≈ 5.7), so the eye still reads a
-  // clean foot-ball contact.
   const hip = hipAnchor(p, _scratchHip);
   const local = projectHipLocal(hip, p.heading, k.footTargetX, k.footTargetY, k.footTargetZ, _scratchLocal);
+  // Lateral flex: the foot reaches up to LATERAL_FOOT_FLEX world units
+  // off the sagittal plane. The IK solver still works in 2D (fwd, up),
+  // but we apply the perp offset as a hip yaw afterwards. The 2D leg
+  // length budget is reduced by `perpEff` (Pythagorean) so a ball
+  // off-axis still lives inside a reachable cylinder.
+  const perpEff = clamp(local.perp, -LATERAL_FOOT_FLEX, LATERAL_FOOT_FLEX);
   solve2BoneIK(local.fwd, local.up, STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG, _scratchIKRes);
   const fwdX = Math.cos(p.heading);
   const fwdZ = Math.sin(p.heading);
-  out.x = hip.x + _scratchIKRes.footFwd * fwdX;
+  // perp axis = heading rotated 90° in the floor plane: (-sin h, _, cos h).
+  const perpX = -fwdZ;
+  const perpZ = fwdX;
+  out.x = hip.x + _scratchIKRes.footFwd * fwdX + perpEff * perpX;
   out.y = hip.y + _scratchIKRes.footUp;
-  out.z = hip.z + _scratchIKRes.footFwd * fwdZ;
+  out.z = hip.z + _scratchIKRes.footFwd * fwdZ + perpEff * perpZ;
   return out;
 }
 
 /**
- * Would a ground kick by `p` pass the reachability + facing gate
- * right now? Mirrors `tryStartKick`'s ground-kick path exactly, so
- * the fallback teacher never emits a kick action the engine then
- * silently rejects.
+ * Would a ground kick by `p` pass the reachability + facing gate right
+ * now? Mirrors `tryStartKick`'s ground-kick path exactly so the
+ * controller never emits a kick action the engine then silently rejects.
  *
- * `safetyMargin` tightens the reach threshold — fallback calls this
- * with a small margin so the teacher only commits on clearly-in-
- * reach balls, avoiding flapping at the edge. Pure, allocation-
- * free (reuses the module scratch buffers).
+ * `safetyMargin` tightens the reach threshold — useful when the caller
+ * wants headroom for one tick of post-perception movement. Pure,
+ * allocation-free (reuses the module scratch buffers).
  */
+// Lateral foot flex: real footballers hook the ball with a side-of-foot
+// strike when the ball isn't dead ahead. We let the kicking leg yaw at
+// the hip so the foot can reach a ball that's offset perpendicular to
+// the sagittal plane, capped at LATERAL_FOOT_FLEX world units. Contact
+// succeeds when the lateral offset is within (foot+ball) of the flex
+// limit. The cap keeps the leg motion looking like a natural twist
+// rather than a sideways spread.
+export const LATERAL_FOOT_FLEX = 6;
+const FOOT_BALL_CONTACT_R = FOOT_RADIUS + BALL_RADIUS;
+export const FOOT_LATERAL_REACH = LATERAL_FOOT_FLEX + FOOT_BALL_CONTACT_R;
+
 export function canKickReach(state, p, safetyMargin = 0) {
   const predicted = predictBallAtStrike(state.ball, strikeLeadTicks('ground'), _scratchPredicted);
   const hip = hipAnchor(p, _scratchHip);
   const local = projectHipLocal(hip, p.heading, predicted.x, predicted.y, predicted.z, _scratchLocal);
-  const dist = Math.hypot(local.fwd, local.up, local.perp);
+  // 3D reach budget uses the sagittal projection (fwd, up) plus the
+  // lateral component capped at the flex limit — beyond LATERAL_FOOT_FLEX
+  // the foot can't reach the ball laterally even with the leg twist.
+  const perpEff = clamp(local.perp, -LATERAL_FOOT_FLEX, LATERAL_FOOT_FLEX);
+  const dist = Math.hypot(local.fwd, local.up, perpEff);
   if (dist > KICK_REACH_MAX - safetyMargin) return false;
+  if (Math.abs(local.perp) > FOOT_LATERAL_REACH - safetyMargin) return false;
   const facePivotX = p.x + PLAYER_WIDTH / 2;
   const facePivotZ = p.y * Z_STRETCH;
   const wantAngle = Math.atan2(predicted.z - facePivotZ, predicted.x - facePivotX);
@@ -1730,11 +1838,10 @@ export function canKickReach(state, p, safetyMargin = 0) {
 }
 
 /**
- * Reachability + facing gate. Called from applyAction when the NN
- * or fallback asks to kick. Returns true if the commit succeeded
- * and the kick is now active. Failure reasons are surfaced as
- * `kick_missed` events so the teacher and trained brains both see
- * the same rejection signal.
+ * Reachability + facing gate. Called from applyAction when the
+ * controller asks to kick. Returns true if the commit succeeded and
+ * the kick is now active. Failure reasons surface as `kick_missed`
+ * events so callers and tests can observe the rejection.
  */
 const _scratchFoot = { x: 0, y: 0, z: 0 };
 function tryStartKick(state, p, dx, dy, dz, power) {
@@ -1752,8 +1859,23 @@ function tryStartKick(state, p, dx, dy, dz, power) {
   // the gate but never meet the foot sphere.
   const hip = hipAnchor(p, _scratchHip);
   const local = projectHipLocal(hip, p.heading, predicted.x, predicted.y, predicted.z, _scratchLocal);
-  const dist = Math.hypot(local.fwd, local.up, local.perp);
   const which = p === state.p1 ? 'p1' : 'p2';
+  // Lateral flex caps how far the foot can hook off the sagittal plane.
+  // Ball outside that envelope is a guaranteed no_contact even after
+  // the leg yaws fully, so reject before burning a 288 ms animation.
+  if (Math.abs(local.perp) > FOOT_LATERAL_REACH) {
+    if (state.recordEvents) {
+      state.events.push({ type: 'kick_missed', player: which, reason: 'out_of_reach' });
+    }
+    return false;
+  }
+  // Reach budget: leg solves in (fwd, up); the perp axis is consumed
+  // by the leg yaw so distances inside LATERAL_FOOT_FLEX don't eat
+  // into the 2D leg-length budget. Same gate as canKickReach (which
+  // the controller polls before sending the kick action). Defense in
+  // depth: keep both in sync.
+  const perpEff = clamp(local.perp, -LATERAL_FOOT_FLEX, LATERAL_FOOT_FLEX);
+  const dist = Math.hypot(local.fwd, local.up, perpEff);
   if (dist > KICK_REACH_MAX) {
     if (state.recordEvents) {
       state.events.push({ type: 'kick_missed', player: which, reason: 'out_of_reach' });
@@ -1961,13 +2083,6 @@ const UPPERCUT_WINDUP = [-0.3,       1.7,         0, 0];
 // — a chin-height punch driving up through the target from below.
 const UPPERCUT_STRIKE = [2.0,        3.0,         -0.50, -0.80];
 
-function writePose(out, kf, armSign) {
-  out.upperAngle = kf[0];
-  out.lowerAngle = kf[1];
-  out.upperYaw   = kf[2] * armSign;
-  out.lowerYaw   = kf[3] * armSign;
-}
-
 function blendPose(out, a, b, t, armSign) {
   out.upperAngle = _lerp(a[0], b[0], t);
   out.lowerAngle = _lerp(a[1], b[1], t);
@@ -2041,29 +2156,41 @@ export function kickLegPose(kick, hipWX, hipWY, hipWZ, forwardX, forwardZ, out) 
   const dz = kick.footTargetZ - hipWZ;
   const fwd = dx * forwardX + dz * forwardZ;
   const up  = dy;
+  // Lateral component (perpendicular to heading in the floor plane).
+  // Capped at LATERAL_FOOT_FLEX so the leg yaw stays in a natural
+  // hooking range. Renderer reads `legYaw` and rotates the upper leg
+  // around the vertical hip axis.
+  const perp = -dx * forwardZ + dz * forwardX;
+  const legYaw = clamp(perp, -LATERAL_FOOT_FLEX, LATERAL_FOOT_FLEX);
   const legLen = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG;
   const cockFwd = -KICK_COCK_FWD_FRAC * legLen;
   const cockUp  = -KICK_COCK_UP_FRAC  * legLen;
 
-  let targetFwd, targetUp;
+  let targetFwd, targetUp, yawScale;
   if (kick.stage === 'recovery') {
     // Recovery: target → rest, no detour through cock.
     targetFwd = fwd * tEff;
     targetUp  = up * tEff + (-legLen) * (1 - tEff);
+    yawScale = tEff;
   } else if (tEff < WINDUP_PEAK_TEFF) {
-    // Load: rest → cock.
+    // Load: rest → cock. Yaw blends from 0 (rest) to full (cocked).
     const p = tEff / WINDUP_PEAK_TEFF;
     targetFwd =       0 * (1 - p) + cockFwd * p;
     targetUp  = -legLen * (1 - p) + cockUp  * p;
+    yawScale = p;
   } else {
     // Rise + strike-hold: cock → target.
     const p = (tEff - WINDUP_PEAK_TEFF) / (1 - WINDUP_PEAK_TEFF);
     targetFwd = cockFwd * (1 - p) + fwd * p;
     targetUp  = cockUp  * (1 - p) + up  * p;
+    yawScale = 1;
   }
   solve2BoneIK(targetFwd, targetUp, STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG, _scratchIKRes);
   out.upperAngle = _scratchIKRes.upperAngle;
   out.lowerAngle = _scratchIKRes.lowerAngle;
+  // Renderer-visible hip yaw (radians) for the kicking leg. Computed
+  // here rather than at the renderer so a leg-length change auto-rescales.
+  out.legYaw = Math.atan2(legYaw * yawScale, Math.max(1e-3, Math.abs(targetFwd)));
   return out;
 }
 
@@ -2128,7 +2255,7 @@ function executeKick(state, p) {
   let dx = k.dx, dy = k.dy, dz = k.dz;
   const rawLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
   if (rawLen < KICK_DIR_MIN_LEN) {
-    // NN didn't commit — pick a random direction from the seeded stream
+    // Caller didn't supply a usable direction — pick a random one from the seeded stream.
     dx = state.rng() * 2 - 1;
     dy = state.rng() * 2 - 1;
     dz = state.rng() * 0.5;
@@ -2177,19 +2304,26 @@ function executeKick(state, p) {
 const PUSH_UPPERCUT_RANGE = 14;
 const PUSH_HOOK_RANGE     = 22;
 
-function tryPush(state, pusher, victim, powerNorm) {
+/** Same gates as tryPush, used at the strike-commit tick to verify
+ *  the victim hasn't escaped the range/facing cone during the windup. */
+function pushStillInRange(state, pusher, victim) {
   const f = state.field;
   const pusherCenterX = pusher.x + f.playerWidth / 2;
   const victimCenterX = victim.x + f.playerWidth / 2;
+  if (Math.abs(pusherCenterX - victimCenterX) > PUSH_RANGE_X) return false;
+  if (Math.abs(pusher.y - victim.y) > PUSH_RANGE_Y) return false;
+  const victimZ = (victim.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  return facingToward(pusher, victimCenterX, victimZ, PUSH_FACE_TOL);
+}
 
+function tryPush(state, pusher, victim, powerNorm) {
   if (pusher.kick.active) return;
   if (pusher.pushTimer > 0) return;
-  if (Math.abs(pusherCenterX - victimCenterX) > PUSH_RANGE_X) return;
-  if (Math.abs(pusher.y - victim.y) > PUSH_RANGE_Y) return;
+  if (!pushStillInRange(state, pusher, victim)) return;
 
-  const victimZ = (victim.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
-  if (!facingToward(pusher, victimCenterX, victimZ, PUSH_FACE_TOL)) return;
-
+  const f = state.field;
+  const pusherCenterX = pusher.x + f.playerWidth / 2;
+  const victimCenterX = victim.x + f.playerWidth / 2;
   const power01 = (clamp(powerNorm, -1, 1) + 1) / 2;
   const force = power01 * MAX_PUSH_FORCE * Math.max(MIN_PUSH_STAMINA, pusher.stamina);
 
@@ -2406,7 +2540,6 @@ function checkBallScoreOrOut(state) {
  * component that was reversed ('x' posts, 'y' field walls, 'z' ground/
  * ceiling); `force` is the magnitude of that component before the flip.
  */
-const BOUNCE_EVENT_MIN = 0.3;
 function recordBounce(state, axis, force) {
   if (!state.recordEvents) return;
   if (force < BOUNCE_EVENT_MIN) return;
@@ -2423,13 +2556,12 @@ function recordBounce(state, axis, force) {
 
 /* ── Scoring, ball-out, reset, finalize ──────────────────────── */
 
-/** Snap the whole pitch back to its kickoff state in one tick —
- *  used by the headless training path after every goal or ball-out
- *  so the match budget isn't burned on celebrate/reposition/waiting
- *  pause frames that produce zero training signal. Teleports players
- *  to their starting spots, zeros all velocities + pending animation
- *  timers, drops the ball at midfield on the ground, and clears any
- *  pause/grace state. */
+/** Snap the whole pitch back to its kickoff state in one tick — used by
+ *  the headless path after every goal or ball-out so the match budget
+ *  isn't burned on celebrate/reposition/waiting pause frames. Teleports
+ *  players to their starting spots, zeros all velocities + pending
+ *  animation timers, drops the ball at midfield on the ground, and
+ *  clears any pause/grace state. */
 function resetToKickoff(state) {
   const f = state.field;
   const ball = state.ball;
@@ -2452,26 +2584,44 @@ function resetToKickoff(state) {
     p.y = cy;
     p.vx = 0; p.vy = 0;
     p.pushVx = 0; p.pushVy = 0;
-    p.airZ = 0;
-    p.pushTimer = 0;
-    p.pendingPushVictim = null;
-    p.pendingPushVx = 0;
-    p.pendingPushVy = 0;
-    p.reactTimer = 0;
-    p.reactForce = 0;
-    p.reactDirX = 0;
-    p.reactDirZ = 0;
-    p.reactLatSign = 1;
-    p.kick.active = false;
-    p.kick.timer = 0;
-    p.kick.fired = false;
+    clearInProgressActions(p);
   }
 
   state.pauseState = null;
   state.pauseTimer = 0;
+  state.matchEndPhase = null;
   state.goalScorer = null;
   state.graceFrames = 0;
   state.lastKickTick = state.tick;
+}
+
+/** Zero in-progress kick / push / hit-reaction state on a player.
+ *
+ *  Why: applyAction, advancePush, and advanceReactTimer are all gated
+ *  off while `state.pauseState !== null`, so a player who was mid-kick
+ *  (or mid-push, or recoiling) when play stopped would otherwise keep
+ *  `kick.active = true` / `pushTimer > 0` / `reactTimer > 0` frozen
+ *  through the entire celebrate → matchend pause. The pose composer
+ *  reads those flags directly and renders the leg stretched forward
+ *  or the arm thrown forward indefinitely — the matchend arm override
+ *  doesn't touch legs, and the LPF dead-zone tail uncovers the kick
+ *  layer once celebrate fades. Clearing here at the play-stop boundary
+ *  lets the celebrate/grieve/matchend overrides take over a clean base
+ *  pose. */
+function clearInProgressActions(p) {
+  p.airZ = 0;
+  p.pushTimer = 0;
+  p.pendingPushVictim = null;
+  p.pendingPushVx = 0;
+  p.pendingPushVy = 0;
+  p.reactTimer = 0;
+  p.reactForce = 0;
+  p.reactDirX = 0;
+  p.reactDirZ = 0;
+  p.reactLatSign = 1;
+  p.kick.active = false;
+  p.kick.timer = 0;
+  p.kick.fired = false;
 }
 
 function scoreGoal(state, side) {
@@ -2489,6 +2639,11 @@ function scoreGoal(state, side) {
   state.p1.exhausted = false;
   state.p2.exhausted = false;
 
+  // Stop any frozen mid-action animation from bleeding into the
+  // celebrate / matchend pose. See clearInProgressActions for why.
+  clearInProgressActions(state.p1);
+  clearInProgressActions(state.p2);
+
   if (side === 'left') {
     // Ball into LEFT goal = RIGHT scored
     state.scoreR++;
@@ -2501,14 +2656,9 @@ function scoreGoal(state, side) {
   }
 
   if (state.headless) {
-    // Training matches follow the same "first to WIN_SCORE wins"
-    // rule as the visual match. Capping training (rather than
-    // running the full tick budget and racking up 30-0 blowouts)
-    // makes training and visual statistics identical, bounds
-    // goal-diff naturally to ±WIN_SCORE, and lets dominant brains
-    // finish a match in seconds — more matches per wall-clock hour
-    // means faster selection. Workers terminate their loop on
-    // `state.matchOver`; physics just sets the flag.
+    // Headless matches follow the same first-to-WIN_SCORE rule as the
+    // visual match, capped so the score stays bounded to ±WIN_SCORE.
+    // The caller terminates its loop on `state.matchOver`.
     if (state.scoreL >= WIN_SCORE || state.scoreR >= WIN_SCORE) {
       state.matchOver = true;
       state.winner = state.scoreL >= WIN_SCORE ? 'left' : 'right';
@@ -2518,25 +2668,29 @@ function scoreGoal(state, side) {
     return;
   }
 
-  // Ball keeps moving under gravity through the celebrate pause so a
-  // scored shot visibly settles into the net instead of freezing in
-  // mid-air. `inGoal` routes goal-box collisions through the inner
-  // absorbing resolver (dampens completely, falls); graceFrames
-  // suppresses any re-trigger of the scoring gate until the reset.
+  // Ball keeps moving under gravity through the pause so a scored
+  // shot visibly settles into the net instead of freezing in mid-air.
+  // `inGoal` routes goal-box collisions through the inner absorbing
+  // resolver; graceFrames suppresses any re-trigger of the scoring
+  // gate until the reset.
   state.ball.inGoal = true;
   state.graceFrames = RESPAWN_GRACE;
-  state.pauseState = 'celebrate';
-  state.pauseTimer = CELEBRATE_TICKS;
 
-  // Winning goal: flag the winner now, but still run the full
-  // celebrate animation. The advancePause celebrate handler detects
-  // `state.winner` on pause-end and jumps straight to matchend
-  // (bypassing reposition/waiting). Previously we overwrote
-  // pauseState to 'matchend' here, which skipped the scorer's
-  // celebrate pose entirely on the winning strike.
+  // Winning goal: skip the at-spot celebrate, walk straight back to
+  // kickoff and run the matchend cinematic. The big "winner / loser"
+  // moment happens at the centre after both players are repositioned,
+  // not at the goal mouth.
   if (state.scoreL >= WIN_SCORE || state.scoreR >= WIN_SCORE) {
     state.winner = state.scoreL >= WIN_SCORE ? 'left' : 'right';
+    state.goalScorer = null;
+    state.pauseState = 'matchend';
+    state.matchEndPhase = 'reposition';
+    state.pauseTimer = MATCHEND_REPOSITION_MAX_TICKS;
+    return;
   }
+
+  state.pauseState = 'celebrate';
+  state.pauseTimer = CELEBRATE_TICKS;
 }
 
 function ballOut(state) {
@@ -2551,6 +2705,11 @@ function ballOut(state) {
     resetToKickoff(state);
     return;
   }
+  // Same play-stop clear as scoreGoal — without it a kick / push that
+  // happened to be in-flight when the ball went out would freeze for
+  // the whole reposition walk.
+  clearInProgressActions(state.p1);
+  clearInProgressActions(state.p2);
   // Ball keeps moving — gravity settles it naturally wherever it is.
   // Reposition pause drives the players back to kickoff; at the end
   // of the waiting pause, resetBall snaps the ball to midfield.
@@ -2574,58 +2733,38 @@ function resetBall(state) {
 
 /**
  * Finalize the match after the matchend pause. Callers poll `state.matchOver`
- * and discard the state (main.js starts a new showcase, workers break the
- * tick loop), so we only flip the terminal flags — no reset work.
+ * and start a new showcase, so we only flip the terminal flags — no reset work.
  */
 function finalizeMatch(state) {
   state.matchOver = true;
   state.pauseState = null;
   state.pauseTimer = 0;
+  state.matchEndPhase = null;
 }
 
 /* ── Pause state machine ──────────────────────────────────────── */
 
 function advancePause(state) {
   if (state.pauseState === 'matchend') {
-    state.pauseTimer--;
-    if (state.pauseTimer <= 0) finalizeMatch(state);
+    advanceMatchend(state);
     return;
   }
 
   if (state.pauseState === 'celebrate') {
     state.pauseTimer--;
     if (state.pauseTimer <= 0) {
-      if (state.winner) {
-        // Winning goal just celebrated — go straight to matchend
-        // (no reposition; the match is over).
-        state.pauseState = 'matchend';
-        state.pauseTimer = MATCHEND_PAUSE_TICKS;
-      } else {
-        state.pauseState = 'reposition';
-        state.pauseTimer = 0;
-        state.goalScorer = null;
-      }
+      // Winning goals never enter celebrate — scoreGoal routes them
+      // straight to 'matchend'. So this is always a non-decisive goal.
+      state.pauseState = 'reposition';
+      state.pauseTimer = 0;
+      state.goalScorer = null;
     }
     return;
   }
 
   if (state.pauseState === 'reposition') {
-    const f = state.field;
-    const tx1 = kickoffSpawnX(f, 'left');
-    const tx2 = kickoffSpawnX(f, 'right');
-    const cy = FIELD_HEIGHT / 2;
-
-    state.p1.stamina = Math.min(1, state.p1.stamina + STAMINA_REGEN);
-    state.p2.stamina = Math.min(1, state.p2.stamina + STAMINA_REGEN);
-    stepReposition(state.p1, tx1, cy);
-    stepReposition(state.p2, tx2, cy);
-
-    if (
-      Math.abs(state.p1.x - tx1) < REPOSITION_TOL &&
-      Math.abs(state.p2.x - tx2) < REPOSITION_TOL &&
-      Math.abs(state.p1.y - cy) < REPOSITION_TOL &&
-      Math.abs(state.p2.y - cy) < REPOSITION_TOL
-    ) {
+    const { tx1, tx2, cy } = stepBothPlayersToKickoff(state);
+    if (bothPlayersAtKickoff(state, tx1, tx2, cy)) {
       state.pauseState = 'waiting';
       state.pauseTimer = RESPAWN_DELAY_TICKS;
     }
@@ -2635,16 +2774,71 @@ function advancePause(state) {
   if (state.pauseState === 'waiting') {
     state.pauseTimer--;
     if (state.pauseTimer <= 0) {
-      // End the post-goal cycle with a FULL kickoff reset (same one
-      // the headless path uses on scoreGoal). Previously we only ran
-      // resetBall here, which left player velocity/kick/push state
-      // from the pre-goal tick intact. Worker and visual replay then
-      // diverged on subsequent possessions — the worker saw a clean
-      // kickoff, the visual saw players still decelerating. Using
-      // the shared reset keeps the two bit-identical.
+      // Full kickoff reset (same as headless on scoreGoal) so player
+      // velocity/kick/push state from the pre-goal tick is cleared.
       resetToKickoff(state);
     }
   }
+}
+
+/** Trigger the time-up matchend flow: walk both players back to
+ *  kickoff and then finalize. No celebrate/grieve cinematic since
+ *  there's no winner to highlight. Returns nothing; idempotent —
+ *  silently no-ops if a pause is already running or the match is
+ *  already over. */
+export function endMatchByTime(state) {
+  if (state.pauseState !== null || state.matchOver) return;
+  clearInProgressActions(state.p1);
+  clearInProgressActions(state.p2);
+  state.pauseState = 'matchend';
+  state.matchEndPhase = 'reposition';
+  state.pauseTimer = MATCHEND_REPOSITION_MAX_TICKS;
+  state.winner = null;
+  state.goalScorer = null;
+}
+
+/** Matchend cinematic phase machine. Sub-phases under
+ *  pauseState='matchend' transition reposition → pose → neutral →
+ *  finalize. Camera dolly + face-camera / face-each-other heading
+ *  overrides are read off `state.matchEndPhase` by the renderer.
+ *
+ *  Time-up matchends (no winner) skip pose + neutral and finalize
+ *  the moment both players reach kickoff. */
+function advanceMatchend(state) {
+  if (state.matchEndPhase === 'reposition') {
+    const { tx1, tx2, cy } = stepBothPlayersToKickoff(state);
+    state.pauseTimer--;
+    if (bothPlayersAtKickoff(state, tx1, tx2, cy) || state.pauseTimer <= 0) {
+      // Snap physics heading to face-each-other so the upcoming
+      // pose / neutral phases LPF onto a clean reference (stepReposition
+      // only translates — heading was whatever it was at goal time).
+      state.p1.heading = 0;
+      state.p2.heading = Math.PI;
+      if (state.winner) {
+        state.matchEndPhase = 'pose';
+        state.pauseTimer = MATCHEND_POSE_TICKS;
+      } else {
+        // No winner = time-up matchend: walk-back is the entire flow.
+        finalizeMatch(state);
+      }
+    }
+    return;
+  }
+  if (state.matchEndPhase === 'pose') {
+    state.pauseTimer--;
+    if (state.pauseTimer <= 0) {
+      state.matchEndPhase = 'neutral';
+      state.pauseTimer = MATCHEND_NEUTRAL_TICKS;
+    }
+    return;
+  }
+  if (state.matchEndPhase === 'neutral') {
+    state.pauseTimer--;
+    if (state.pauseTimer <= 0) finalizeMatch(state);
+    return;
+  }
+  // Defensive: unknown phase (shouldn't happen) — finalize cleanly.
+  finalizeMatch(state);
 }
 
 function stepReposition(p, tx, ty) {
@@ -2653,124 +2847,34 @@ function stepReposition(p, tx, ty) {
   const absDx = Math.abs(dx);
   const absDy = Math.abs(dy);
   if (absDx > REPOSITION_TOL || absDy > REPOSITION_TOL) {
-    p.x += Math.sign(dx) * Math.min(absDx * 0.1, REPOSITION_SPEED);
-    p.y += Math.sign(dy) * Math.min(absDy * 0.1, REPOSITION_SPEED * 0.5);
+    p.x += Math.sign(dx) * Math.min(absDx * REPOSITION_LERP_FRAC, REPOSITION_SPEED);
+    p.y += Math.sign(dy) * Math.min(absDy * REPOSITION_LERP_FRAC, REPOSITION_SPEED * REPOSITION_Y_SPEED_FRAC);
   } else {
     p.x = tx;
     p.y = ty;
   }
 }
 
-/* ── NN input builder ────────────────────────────────────────── */
-
-export const NN_INPUT_SIZE = 25;
-
-/**
- * Action-repeat stride (a.k.a. frame-skip). The NN evaluates a fresh
- * action every `NN_ACTION_STRIDE` physics ticks; on the in-between
- * ticks the *previous* action vector is reused verbatim. Physics
- * still runs every tick, so ball trajectories and collisions stay
- * at the native 16 ms/tick resolution — only the decision cadence
- * widens.
- *
- * This is the classic RL "frame skip" optimisation: 2× here cuts NN
- * forward compute in half for essentially free, because our policy
- * is a slow control loop (walk + occasional kick) and action-repeat
- * over one extra 16 ms tick is imperceptible.
- *
- * CRITICAL: this constant must be the same number used by **both**
- * the headless worker and the visual showcase loop. Per memory
- * `feedback_training_visual_parity.md`, any mismatch causes the
- * brains you train to behave differently from the brains you watch,
- * and fitness selection silently picks up a bias. Keep both call
- * sites pointed at this single source of truth.
- */
-export const NN_ACTION_STRIDE = 3;
-
-/**
- * Build the NN input vector for one player, normalized to [-1, 1].
- * Length is NN_INPUT_SIZE.
- *
- * Raw state (0–19): self/opp pos+vel, ball pos+vel+z, target-goal
- * line, own-goal line, field width, heading cos/sin.
- *
- * Derived signals (20–24): pre-computed answers to questions the
- * teacher asks every tick. The NN can derive these from the raw
- * state given enough capacity, but exposing them directly cuts the
- * imitation sample complexity substantially.
- *   20 — possession:            sign+magnitude of whoever reaches the ball first
- *   21 — ball_speed_to_my_goal: signed component of ball velocity toward own goal
- *   22 — ball_range_to_my_goal: normalized distance from ball to own goal
- *   23 — self_dist_to_own_goal: normalized distance from me to own goal
- *   24 — self_dist_to_opp_goal: normalized distance from me to opponent goal
- */
-export function buildInputs(state, which, out) {
-  if (!out) out = new Array(NN_INPUT_SIZE);
+/** Slow stamina regen + walk both players one step toward their
+ *  kickoff spots. Returns the spot coordinates so the caller can
+ *  pass them to bothPlayersAtKickoff without recomputing. */
+function stepBothPlayersToKickoff(state) {
   const f = state.field;
-  const p = state[which];
-  const opp = which === 'p1' ? state.p2 : state.p1;
-  const b = state.ball;
-  const fw = f.width;
-  const tgx = p.side === 'left' ? f.goalLineR : f.goalLineL;
-  const ogx = p.side === 'left' ? f.goalLineL : f.goalLineR;
+  const tx1 = kickoffSpawnX(f, 'left');
+  const tx2 = kickoffSpawnX(f, 'right');
+  const cy = FIELD_HEIGHT / 2;
+  state.p1.stamina = Math.min(1, state.p1.stamina + STAMINA_REGEN);
+  state.p2.stamina = Math.min(1, state.p2.stamina + STAMINA_REGEN);
+  stepReposition(state.p1, tx1, cy);
+  stepReposition(state.p2, tx2, cy);
+  return { tx1, tx2, cy };
+}
 
-  out[0]  = (p.x / fw) * 2 - 1;
-  out[1]  = (p.y / FIELD_HEIGHT) * 2 - 1;
-  out[2]  = p.vx / MAX_PLAYER_SPEED;
-  out[3]  = p.vy / MAX_PLAYER_SPEED;
-  out[4]  = p.stamina * 2 - 1;
-  out[5]  = (opp.x / fw) * 2 - 1;
-  out[6]  = (opp.y / FIELD_HEIGHT) * 2 - 1;
-  out[7]  = opp.vx / MAX_PLAYER_SPEED;
-  out[8]  = opp.vy / MAX_PLAYER_SPEED;
-  out[9]  = (b.x / fw) * 2 - 1;
-  out[10] = (b.y / FIELD_HEIGHT) * 2 - 1;
-  out[11] = b.z / CEILING;
-  out[12] = b.vx / MAX_KICK_POWER;
-  out[13] = b.vy / MAX_KICK_POWER;
-  out[14] = b.vz / MAX_KICK_POWER;
-  out[15] = (tgx / fw) * 2 - 1;
-  out[16] = (ogx / fw) * 2 - 1;
-  out[17] = (fw / FIELD_WIDTH_REF) * 2 - 1;
-  out[18] = Math.cos(p.heading);
-  out[19] = Math.sin(p.heading);
-
-  // Derived signals — computed inline to avoid the extra fallback
-  // import; `buildInputs` is on the hot path (~50k calls/sec during
-  // training) so we want zero allocation and zero cross-module jumps.
-  const cx = p.x + PLAYER_WIDTH / 2;
-  const cy = p.y + PLAYER_HEIGHT / 2;
-  const ocx = opp.x + PLAYER_WIDTH / 2;
-  const ocy = opp.y + PLAYER_HEIGHT / 2;
-  const myDx = b.x - cx, myDy = b.y - cy;
-  const oppDx = b.x - ocx, oppDy = b.y - ocy;
-  const myDist = Math.hypot(myDx, myDy);
-  const oppDist = Math.hypot(oppDx, oppDy);
-  // Possession: positive = I'm closer. Normalise by half field width
-  // so the magnitude has a sensible [-1, 1] range.
-  const possHalfWidth = fw * 0.5;
-  out[20] = (oppDist - myDist) / possHalfWidth;
-
-  // Ball velocity component toward OWN goal (negative = receding).
-  // Magnitude normalised by MAX_KICK_POWER so shots read as ~1.
-  const ownGoalY = FIELD_HEIGHT / 2;
-  const ownDX = ogx - b.x, ownDY = ownGoalY - b.y;
-  const ownDLen = Math.hypot(ownDX, ownDY) || 1;
-  out[21] = (b.vx * ownDX + b.vy * ownDY) / (ownDLen * MAX_KICK_POWER);
-
-  // Ball range to own goal, normalised (1 = full field length away).
-  out[22] = Math.min(1, ownDLen / fw);
-
-  // Self distances to own/opp goal, normalised.
-  const selfOwnDist = Math.hypot(ogx - cx, ownGoalY - cy);
-  const selfOppDist = Math.hypot(tgx - cx, ownGoalY - cy);
-  out[23] = Math.min(1, selfOwnDist / fw);
-  out[24] = Math.min(1, selfOppDist / fw);
-
-  for (let i = 0; i < NN_INPUT_SIZE; i++) {
-    out[i] = clamp(out[i], -1, 1);
-  }
-  return out;
+function bothPlayersAtKickoff(state, tx1, tx2, cy) {
+  return Math.abs(state.p1.x - tx1) < REPOSITION_TOL
+      && Math.abs(state.p2.x - tx2) < REPOSITION_TOL
+      && Math.abs(state.p1.y - cy) < REPOSITION_TOL
+      && Math.abs(state.p2.y - cy) < REPOSITION_TOL;
 }
 
 /* ── Helpers ──────────────────────────────────────────────────── */

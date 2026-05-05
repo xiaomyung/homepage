@@ -4,8 +4,7 @@
  * Everything is solid 3D geometry: goals are cylinders, stickmen are
  * capsules + sphere heads, ball is a sphere, particles are instanced
  * spheres, field lines are THREE.Line segments, ground shadows are
- * shader-filled planes. No glyph / SDF atlas / font — the old
- * billboarded-ASCII pipeline is gone.
+ * shader-filled planes.
  *
  * Coordinate mapping:
  *   physics.x → three.js.x  (field horizontal)
@@ -35,6 +34,7 @@ import {
   Z_STRETCH,
   createField,
 } from './physics.js';
+import { DebugOverlay } from './debug-overlay.js';
 import { advanceAnimState, createAnimState } from './animation/state.js';
 import { composeStickmanPose, createPoseScratch } from './animation/poses.js';
 import {
@@ -132,6 +132,47 @@ const CAMERA_TILT_DEG = 55;
 // pause, and back to LIVE when play resumes.
 const FOLLOW_ZOOM_LIVE = 0.60;
 const FOLLOW_ZOOM_DEAD = 1.00;
+// Lead distance fraction — actionX is offset by leadX = ballSide *
+// distance * LEAD_FRACTION so the camera looks slightly past the ball
+// in the direction of play.
+const FOLLOW_LEAD_FRACTION = 0.22;
+
+// Player name-label tunables (billboarded sprites above the head).
+const NAME_LABEL_HEAD_GAP    = 5;
+const NAME_LABEL_CANVAS_W    = 256;
+const NAME_LABEL_CANVAS_H    = 64;
+const NAME_LABEL_FONT        = '500 38px "Iosevka Term", monospace';
+const NAME_LABEL_TEXT_COLOR  = '#cdd6f4';
+const NAME_LABEL_SHADOW_COLOR = 'rgba(0,0,0,0.9)';
+const NAME_LABEL_SHADOW_BLUR = 6;
+const NAME_LABEL_SCALE_X     = 36;
+const NAME_LABEL_SCALE_Y     = 9;
+// Overlap-fade thresholds (screen-space pixels between the two
+// labels). Above FADE_BELOW = full opacity; below FADE_FULL = hidden;
+// linear ramp between.
+const NAME_LABEL_FADE_BELOW  = 80;
+const NAME_LABEL_FADE_FULL   = 30;
+
+// Ball shadow scaling per world-z of altitude — shadow grows + fades
+// as the ball climbs.
+const BALL_SHADOW_GROWTH_PER_Z = 0.04;
+const BALL_SHADOW_FADE_PER_Z   = 0.06;
+
+// Debug freecam input sensitivities.
+const DEBUG_CAM_DRAG_SENS    = 0.005;   // rad / pixel
+const DEBUG_CAM_PAN_FRAC     = 0.01;    // fraction of distance per frame
+const DEBUG_CAM_WHEEL_SENS   = 0.001;   // dist multiplier per wheel-delta
+const DEBUG_CAM_DIST_MIN     = 40;
+const DEBUG_CAM_DIST_MAX     = 4000;
+
+// Rest-star geometry (orbiting spinning star meshes around an
+// exhausted-and-recovering player's head).
+const REST_STAR_RADIUS_FRAC      = 1.55;  // × head radius — orbit radius
+const REST_STAR_HEIGHT_FRAC      = 0.85;  // × head radius — vertical lift
+const REST_STAR_SCALE_BASE       = 0.6;   // baseline visual scale
+const REST_STAR_SCALE_OPACITY    = 0.4;   // opacity-modulated scale
+const REST_STAR_TUMBLE_FRAC      = 0.6;   // tumble-vs-orbit ratio
+const REST_STAR_COUNTER_SPIN     = -1.6;  // counter-spin rad/sec
 
 /* ── Shaders ───────────────────────────────────────────────── */
 
@@ -196,6 +237,9 @@ export class Renderer {
     // Mutually exclusive: enabling one disables the other.
     this._initDebugCam();
     this._initFollowCam();
+    // Debug-collider overlay — fully self-contained module. Pool is
+    // built lazily on first enable; renderer just forwards the toggle.
+    this._debugOverlay = new DebugOverlay(this.scene);
 
     // Track static scene objects so dispose() can release them.
     this._staticGeometries = [];
@@ -285,6 +329,14 @@ export class Renderer {
     // cost vs the original _p1Shadow / _p2Shadow).
     this._playerShadows = [this._makeShadow(), this._makeShadow()];
     this._playerShadowCursor = 0;
+
+    // Player name labels — one billboarded sprite per side. Texture
+    // regenerated on name change; position pushed each frame from the
+    // head bone. Overlap-fade computed from screen-space distance.
+    this._nameLabels = [this._makeNameLabel(), this._makeNameLabel()];
+    this._nameLabels.forEach((l) => l.mesh.visible = false);
+    this._nameLabelTmpA = new THREE.Vector3();
+    this._nameLabelTmpB = new THREE.Vector3();
     // Pool of ball shadows — one per ball mesh (matched by index).
     this._ballShadows = [this._makeShadow()];
     this._ballShadowCursor = 0;
@@ -663,19 +715,50 @@ export class Renderer {
                          : p === state.p1 ? 'left' : p === state.p2 ? 'right' : null;
 
       const pCelebrating = pPause === 'celebrate';
-      const pReposition  = pPause === 'reposition';
       const pMatchend    = pPause === 'matchend';
+      const pMatchEndPhase = state.matchEndPhase;
 
-      const isScorer  = pCelebrating && pGoalScorer === p;
-      const isGrieving = pCelebrating && pGoalScorer && pGoalScorer !== p;
+      // Per-player flags drive both pose layers and the heading
+      // override in animation/state.js. The matchend cinematic layers
+      // its phases onto these existing flags:
+      //   reposition phase → walk-back, motion-direction heading
+      //   pose phase       → face camera + winner celebrates / loser grieves
+      //   neutral phase    → smooth turn back to face-each-other
+      let isScorer    = pCelebrating && pGoalScorer === p;
+      let isGrieving  = pCelebrating && pGoalScorer && pGoalScorer !== p;
+      let isReposition = pPause === 'reposition';
+      let faceCameraSmooth = false;
+      let faceEachOtherSmooth = false;
       let isMatchendWin = false, isMatchendLose = false;
+
       if (pMatchend && pWinner && pSide) {
-        isMatchendWin  = pSide === pWinner;
-        isMatchendLose = pSide !== pWinner;
+        const isWinner = pSide === pWinner;
+        if (pMatchEndPhase === 'reposition') {
+          isReposition = true;
+        } else if (pMatchEndPhase === 'pose') {
+          faceCameraSmooth = true;
+          isScorer = isWinner;
+          isGrieving = !isWinner;
+        } else if (pMatchEndPhase === 'neutral') {
+          faceEachOtherSmooth = true;
+        } else {
+          // Defensive fallback for harness scenarios that set
+          // pauseState='matchend' without matchEndPhase — keep the
+          // legacy static MATCHEND_WIN/LOSE pose.
+          isMatchendWin  = isWinner;
+          isMatchendLose = !isWinner;
+        }
       }
-      this._addStickman(p, COLOR_TEXT, tick, isScorer, isGrieving, pReposition, isMatchendWin, isMatchendLose);
+      this._addStickman(
+        p, COLOR_TEXT, tick, isScorer, isGrieving, isReposition,
+        isMatchendWin, isMatchendLose, faceCameraSmooth, faceEachOtherSmooth,
+      );
       this._placePlayerShadow(p);
     }
+    // Player name labels — drives the two billboarded sprites above
+    // the heads. Names come from state.matchNames; positions come from
+    // each player's last-rendered head pose stashed on player.anim.
+    this._updateNameLabels(state, players);
     for (let i = this._stickmanTorsoCursor; i < prevTorsoCursor; i++) {
       this._stickmanTorsoOutline[i].visible = false;
       this._stickmanTorsoFill[i].visible = false;
@@ -716,8 +799,8 @@ export class Renderer {
       // grows slightly and fades as the ball rises.
       const shadow = this._ballShadows[bi];
       const airH = Math.max(0, b.z || 0);
-      const ballShadowR = BALL_VISUAL_RADIUS * (1 + airH * 0.04);
-      const ballShadowA = SHADOW_ALPHA_BASE / (1 + airH * 0.06);
+      const ballShadowR = BALL_VISUAL_RADIUS * (1 + airH * BALL_SHADOW_GROWTH_PER_Z);
+      const ballShadowA = SHADOW_ALPHA_BASE / (1 + airH * BALL_SHADOW_FADE_PER_Z);
       shadow.visible = true;
       shadow.position.set(b.x, SHADOW_Y, b.y * Z_STRETCH);
       shadow.scale.set(ballShadowR * 2, ballShadowR * 2, 1);
@@ -739,6 +822,8 @@ export class Renderer {
     }
     this._stepParticles();
     this._drawParticles();
+
+    this._debugOverlay.update(state, players);
 
     if (this._followCam && this._followCam.active) this._stepFollowCam(state);
     else if (this._debugCam && this._debugCam.active) this._stepDebugCam();
@@ -848,9 +933,9 @@ export class Renderer {
       const dy = e.clientY - dc.lastPointerY;
       dc.lastPointerX = e.clientX;
       dc.lastPointerY = e.clientY;
-      dc.yaw -= dx * 0.005;
+      dc.yaw -= dx * DEBUG_CAM_DRAG_SENS;
       const half = Math.PI / 2 - 0.02;
-      dc.pitch = Math.max(-half, Math.min(half, dc.pitch - dy * 0.005));
+      dc.pitch = Math.max(-half, Math.min(half, dc.pitch - dy * DEBUG_CAM_DRAG_SENS));
     });
     const stopDrag = (e) => {
       this._debugCam.dragging = false;
@@ -862,7 +947,8 @@ export class Renderer {
       const dc = this._debugCam;
       if (!dc.active) return;
       e.preventDefault();
-      dc.distance = Math.max(40, Math.min(4000, dc.distance * (1 + e.deltaY * 0.001)));
+      dc.distance = Math.max(DEBUG_CAM_DIST_MIN,
+        Math.min(DEBUG_CAM_DIST_MAX, dc.distance * (1 + e.deltaY * DEBUG_CAM_WHEEL_SENS)));
     }, { passive: false });
     this._debugKeydown = (e) => {
       const dc = this._debugCam;
@@ -904,7 +990,7 @@ export class Renderer {
       dc.pitch = dc.defaultPitch;
       dc.keys.delete('r');
     }
-    const speed = dc.distance * 0.01;
+    const speed = dc.distance * DEBUG_CAM_PAN_FRAC;
     const forwardX = -Math.sin(dc.yaw);
     const forwardZ = -Math.cos(dc.yaw);
     const rightX = Math.cos(dc.yaw);
@@ -965,6 +1051,10 @@ export class Renderer {
     return !!(this._followCam && this._followCam.active);
   }
 
+  /** Toggle the debug-collider overlay (delegates to DebugOverlay). */
+  setDebugMode(on) { this._debugOverlay.setEnabled(on); }
+  isDebugModeActive() { return this._debugOverlay.isEnabled(); }
+
   _stepFollowCam(state) {
     const fc = this._followCam;
     const ballX = state.ball.x;
@@ -988,7 +1078,14 @@ export class Renderer {
     const deadBall = state.matchOver
       || state.pauseState !== null
       || state.graceFrames > 0;
-    const zoomTarget   = deadBall ? FOLLOW_ZOOM_DEAD : FOLLOW_ZOOM_LIVE;
+    // Matchend 'pose' phase tightens the camera back to LIVE zoom for
+    // a cinematic dolly-in on the winner/loser; the spring handles the
+    // ease in/out as matchEndPhase transitions.
+    const matchendDollyIn = state.pauseState === 'matchend'
+      && state.matchEndPhase === 'pose';
+    const zoomTarget   = matchendDollyIn ? FOLLOW_ZOOM_LIVE
+                       : deadBall        ? FOLLOW_ZOOM_DEAD
+                       :                   FOLLOW_ZOOM_LIVE;
     const posTarget    = deadBall ? midX : actionX;
     const lookTarget   = deadBall ? midX : actionX;
     const sideForLead  = deadBall ? 0 : ballSide;
@@ -1018,7 +1115,7 @@ export class Renderer {
       fc.zoom = zoomTarget;
       fc.zoomV = 0;
       const { distance: d0 } = this._computeDistance(fc.zoom);
-      fc.leadX = sideForLead * d0 * 0.22;
+      fc.leadX = sideForLead * d0 * FOLLOW_LEAD_FRACTION;
       fc.leadVX = 0;
       fc.initialized = true;
     }
@@ -1035,8 +1132,7 @@ export class Renderer {
     // Compute distance from the *smoothed* zoom so the whole view
     // (position, lead magnitude) pans out together.
     const { distance, height, backOff } = this._computeDistance(fc.zoom);
-    const LEAD_FRACTION = 0.22;
-    const leadTarget = sideForLead * distance * LEAD_FRACTION;
+    const leadTarget = sideForLead * distance * FOLLOW_LEAD_FRACTION;
 
     [fc.posX,  fc.velX]  = stepSpring(fc.posX,  fc.velX,  posTarget,  K_POS,  C_POS);
     [fc.lookX, fc.lookVX] = stepSpring(fc.lookX, fc.lookVX, lookTarget, K_LOOK, C_LOOK);
@@ -1092,9 +1188,8 @@ export class Renderer {
     // Penalty area (18-yard box) — closed rectangle on the ground in
     // front of each goal, with the back edge along the goal line.
     // 6-yard goal area nested inside. Both are drawn as LineLoop so
-    // all four sides render (the old open Line left the back edge
-    // floating). Sizes are tuned so the penalty box fits inside the
-    // touchlines of this (much wider-than-real) mouth/field
+    // all four sides render. Sizes are tuned so the penalty box fits
+    // inside the touchlines of this (much wider-than-real) mouth/field
     // proportion.
     const penaltyHalfY  = mouthHalfZ * 1.35;
     const penaltyDepth  = mouthHalfZ * 1.55;
@@ -1168,7 +1263,10 @@ export class Renderer {
     this._addArc(0, zNear, cornerR, cornerR, 3 * Math.PI / 2,  TWO_PI,          12, mutedMat);
 
     const goalWidth = (f.goalMouthYMax - f.goalMouthYMin) * Z_STRETCH;
-    const goalHeight = f.goalMouthZMax * 2.25;
+    // Visible crossbar height = physics crossbar height. Single source
+    // of truth in physics (GOAL_MOUTH_Z → field.goalMouthZMax); both
+    // the rendered goal frame and the debug overlay read from here.
+    const goalHeight = f.goalMouthZMax;
     const goalCenterZ = ((f.goalMouthYMin + f.goalMouthYMax) / 2) * Z_STRETCH;
 
     // Visible mouth = physics scoring line (f.goalLineL/R). Back of
@@ -1350,7 +1448,7 @@ export class Renderer {
    * straight down, +π/2 points forward, +π points straight up
    * (celebration).
    */
-  _addStickman(player, color, tick, isCelebrating, isGrieving = false, isReposition = false, isMatchendWin = false, isMatchendLose = false) {
+  _addStickman(player, color, tick, isCelebrating, isGrieving = false, isReposition = false, isMatchendWin = false, isMatchendLose = false, faceCameraSmooth = false, faceEachOtherSmooth = false) {
     // 1. Fetch / init the smoothed animation state for this player.
     let anim = this._animByPlayer.get(player);
     if (!anim) {
@@ -1361,6 +1459,7 @@ export class Renderer {
     const animSnap = advanceAnimState(
       anim, player, tick, isCelebrating, this._scratchAnimSnap,
       isGrieving, isReposition, isMatchendWin, isMatchendLose,
+      faceCameraSmooth, faceEachOtherSmooth,
     );
     // 3. Compose the full pose — walk + kick + push + celebrate all
     //    layered into one flat numeric pose via animation/poses.js.
@@ -1372,10 +1471,14 @@ export class Renderer {
     //    legs are 2-bone with per-segment angles from the pose.
     this._placeTorso(pose.baseX, pose.upperHipY, pose.baseZ, pose.neckX, pose.neckY, pose.neckZ, color, player.stamina);
     this._placeSph(pose.headX, pose.headY, pose.headZ, STICKMAN_HEAD_RADIUS, color);
+    // Stash for the name-label pass.
+    anim.lastHeadX = pose.headX;
+    anim.lastHeadY = pose.headY;
+    anim.lastHeadZ = pose.headZ;
     this._placeArm(pose.lShX, pose.shoulderY, pose.lShZ, pose.lArmUpper, pose.lArmLower, pose.forwardX, pose.forwardZ, color, pose.lArmUpperYaw, pose.lArmLowerYaw);
     this._placeArm(pose.rShX, pose.shoulderY, pose.rShZ, pose.rArmUpper, pose.rArmLower, pose.forwardX, pose.forwardZ, color, pose.rArmUpperYaw, pose.rArmLowerYaw);
-    this._placeLeg(pose.lHipX, pose.hipBaseY, pose.lHipZ, pose.lLegUpper, pose.lLegLower, pose.forwardX, pose.forwardZ, color);
-    this._placeLeg(pose.rHipX, pose.hipBaseY, pose.rHipZ, pose.rLegUpper, pose.rLegLower, pose.forwardX, pose.forwardZ, color);
+    this._placeLeg(pose.lHipX, pose.hipBaseY, pose.lHipZ, pose.lLegUpper, pose.lLegLower, pose.forwardX, pose.forwardZ, color, pose.lLegHipYaw);
+    this._placeLeg(pose.rHipX, pose.hipBaseY, pose.rHipZ, pose.rLegUpper, pose.rLegLower, pose.forwardX, pose.forwardZ, color, pose.rLegHipYaw);
 
     // 5. Footstep dust on walk-cycle zero crossings, gated on speed.
     //    Pure cosmetic — never feeds back into physics or anim state.
@@ -1417,6 +1520,89 @@ export class Renderer {
     mesh.material.color.setRGB(color[0], color[1], color[2]);
   }
 
+  /** Position both name-label sprites at each player's head with a
+   *  small Y offset, set the texture from state.matchNames, and apply
+   *  overlap fade based on screen-space label distance. */
+  _updateNameLabels(state, players) {
+    const names = state.matchNames;
+    if (!names || players.length < 2) {
+      this._nameLabels.forEach((l) => l.mesh.visible = false);
+      return;
+    }
+    const labels = this._nameLabels;
+    const offsetY = STICKMAN_HEAD_RADIUS + NAME_LABEL_HEAD_GAP;
+    for (let i = 0; i < 2; i++) {
+      const p = players[i];
+      const anim = this._animByPlayer.get(p);
+      // Fall back to player center if anim hasn't rendered yet.
+      const headX = anim?.lastHeadX ?? (p.x + PLAYER_WIDTH / 2);
+      const headY = anim?.lastHeadY ?? STICKMAN_LIMB_FULL_H * 2;
+      const headZ = anim?.lastHeadZ ?? (p.y * Z_STRETCH);
+      labels[i].mesh.position.set(headX, headY + offsetY, headZ);
+      labels[i].mesh.visible = true;
+      this._setLabelText(labels[i], i === 0 ? names.p1 : names.p2);
+    }
+    // Overlap fade: project both label positions to screen-space,
+    // compute pixel distance, fade alpha to 0 below threshold.
+    const camera = this.camera;
+    const a = this._nameLabelTmpA.copy(labels[0].mesh.position).project(camera);
+    const b = this._nameLabelTmpB.copy(labels[1].mesh.position).project(camera);
+    const w = this.renderer.domElement.width / 2;
+    const h = this.renderer.domElement.height / 2;
+    const dx = (a.x - b.x) * w;
+    const dy = (a.y - b.y) * h;
+    const pixelDist = Math.hypot(dx, dy);
+    let alpha = 1;
+    if (pixelDist < NAME_LABEL_FADE_BELOW) {
+      alpha = Math.max(0, (pixelDist - NAME_LABEL_FADE_FULL)
+                       / (NAME_LABEL_FADE_BELOW - NAME_LABEL_FADE_FULL));
+    }
+    labels[0].mat.opacity = alpha;
+    labels[1].mat.opacity = alpha;
+  }
+
+  /** Allocate one billboarded name-label sprite. Returns
+   *  { mesh, canvas, ctx, texture, name }. Texture is updated lazily
+   *  via _setLabelText. */
+  _makeNameLabel() {
+    const canvas = document.createElement('canvas');
+    canvas.width = NAME_LABEL_CANVAS_W;
+    canvas.height = NAME_LABEL_CANVAS_H;
+    const ctx = canvas.getContext('2d');
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    const mat = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Sprite(mat);
+    // World-space scale tuned so labels read as small floating tags
+    // at the camera's working distance without overpowering the figure.
+    mesh.scale.set(NAME_LABEL_SCALE_X, NAME_LABEL_SCALE_Y, 1);
+    mesh.renderOrder = 999;
+    this.scene.add(mesh);
+    return { mesh, canvas, ctx, texture, mat, name: '' };
+  }
+
+  _setLabelText(label, rawName) {
+    const name = (rawName || '').toLowerCase();
+    if (label.name === name) return;
+    label.name = name;
+    const { ctx, canvas, texture } = label;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.font = NAME_LABEL_FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = NAME_LABEL_TEXT_COLOR;
+    ctx.shadowColor = NAME_LABEL_SHADOW_COLOR;
+    ctx.shadowBlur = NAME_LABEL_SHADOW_BLUR;
+    ctx.fillText(name, canvas.width / 2, canvas.height / 2);
+    texture.needsUpdate = true;
+  }
+
   /** Place the next shadow from the player-shadow pool under
    *  `player`, growing the pool on demand. Pooled so harnesses can
    *  render N players without a fixed ceiling. */
@@ -1431,18 +1617,16 @@ export class Renderer {
 
   /** Place 3 dazed stars in a horizontal ring above the head, rotating
    *  around the player's vertical axis. Phase comes from `animSnap.restPhase`
-   *  but is multiplied by -1.6 so the ring counter-rotates 60% faster
-   *  than the body's own wobble, exaggerating the dizzy read.
+   *  multiplied by REST_STAR_COUNTER_SPIN so the ring counter-rotates
+   *  faster than the body's own wobble, exaggerating the dizzy read.
    *  Opacity = animSnap.rest, so stars fade in/out with the LPF factor. */
   _placeRestStars(pose, animSnap) {
-    const ringRadius = STICKMAN_HEAD_RADIUS * 1.55;
-    const ringHeight = STICKMAN_HEAD_RADIUS * 0.85;  // above the head
+    const ringRadius = STICKMAN_HEAD_RADIUS * REST_STAR_RADIUS_FRAC;
+    const ringHeight = STICKMAN_HEAD_RADIUS * REST_STAR_HEIGHT_FRAC;
     const cy = pose.headY + ringHeight;
     const opacity = Math.min(1, animSnap.rest);
-    const scale = 0.6 + 0.4 * opacity;
-    // Counter-spin: stars orbit faster than the body and the opposite
-    // way, exaggerating the dizzy read.
-    const spin = -animSnap.restPhase * 1.6;
+    const scale = REST_STAR_SCALE_BASE + REST_STAR_SCALE_OPACITY * opacity;
+    const spin = animSnap.restPhase * REST_STAR_COUNTER_SPIN;
     for (let i = 0; i < 3; i++) {
       const idx = this._restStarCursor++;
       while (this._restStars.length <= idx) this._mkRestStar();
@@ -1455,7 +1639,7 @@ export class Renderer {
       );
       // Each star also tumbles around its own axis so it's not a flat
       // billboard — gives a metallic twinkle.
-      mesh.rotation.set(theta * 0.6, theta, 0);
+      mesh.rotation.set(theta * REST_STAR_TUMBLE_FRAC, theta, 0);
       mesh.scale.set(scale, scale, scale);
       mesh.material.opacity = opacity;
       mesh.visible = true;
@@ -1582,17 +1766,24 @@ export class Renderer {
    *  relative to the upper leg). The two capsules meet at the
    *  knee, with a kneecap sphere drawn over the join. Passing
    *  `lowerAngle === upperAngle` produces a straight leg. */
-  _placeLeg(px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color) {
+  _placeLeg(px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color, hipYaw = 0) {
     const U = STICKMAN_UPPER_LEG;
     const L = STICKMAN_LOWER_LEG;
+    // hipYaw rotates the leg's forward axis around the vertical hip axis
+    // — used by the kick to hook the foot toward an off-axis ball. Same
+    // yaw applies to upper and lower segments so the leg stays straight
+    // through the knee; the foot translates along the rotated axis.
+    const yc = Math.cos(hipYaw), ys = Math.sin(hipYaw);
+    const fwdX = forwardX * yc - forwardZ * ys;
+    const fwdZ = forwardX * ys + forwardZ * yc;
     const upperSin = Math.sin(upperAngle);
-    const kneeX = px + forwardX * U * upperSin;
+    const kneeX = px + fwdX * U * upperSin;
     const kneeY = py - U * Math.cos(upperAngle);
-    const kneeZ = pz + forwardZ * U * upperSin;
+    const kneeZ = pz + fwdZ * U * upperSin;
     const lowerSin = Math.sin(lowerAngle);
-    const footX = kneeX + forwardX * L * lowerSin;
+    const footX = kneeX + fwdX * L * lowerSin;
     const footY = kneeY - L * Math.cos(lowerAngle);
-    const footZ = kneeZ + forwardZ * L * lowerSin;
+    const footZ = kneeZ + fwdZ * L * lowerSin;
 
     // Upper segment: hip → knee.
     while (this._stickmanLeg.length <= this._stickmanLegCursor) this._mkLeg();

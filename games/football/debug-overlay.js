@@ -89,6 +89,12 @@ function makeLineMat(color, opacity) {
   return new THREE.LineBasicMaterial({ color, transparent: true, opacity });
 }
 
+/** Rotate a flat geometry (default Y-up plane) to lie on the
+ *  ground plane (X-Z). Mutates each mesh's rotation in place. */
+function layFlat(meshes) {
+  for (const mesh of meshes) mesh.rotation.x = -Math.PI / 2;
+}
+
 export class DebugOverlay {
   constructor(scene) {
     this.scene = scene;
@@ -160,7 +166,7 @@ export class DebugOverlay {
     const pairGeom = new THREE.CircleGeometry(STICKMAN_HEAD_RADIUS * 2, 32);
     const pairMat = makeFillMat(COLOR_PAIR, OPACITY_PAIR);
     m.pairDiscs = [new THREE.Mesh(pairGeom, pairMat), new THREE.Mesh(pairGeom, pairMat)];
-    for (const mesh of m.pairDiscs) mesh.rotation.x = -Math.PI / 2;
+    layFlat(m.pairDiscs);
 
     // Kick reach — bounding sphere @ live hipAnchor, radius KICK_REACH_MAX.
     const kickGeom = new THREE.SphereGeometry(KICK_REACH_MAX, 24, 16);
@@ -171,7 +177,7 @@ export class DebugOverlay {
     const kickConeGeom = new THREE.CircleGeometry(KICK_REACH_MAX, 24, -KICK_FACE_TOL, 2 * KICK_FACE_TOL);
     const kickConeMat = makeFillMat(COLOR_KICK, OPACITY_KICK_CONE);
     m.kickCones = [new THREE.Mesh(kickConeGeom, kickConeMat), new THREE.Mesh(kickConeGeom, kickConeMat)];
-    for (const mesh of m.kickCones) mesh.rotation.x = -Math.PI / 2;
+    layFlat(m.kickCones);
 
     // Lateral foot-reach slab — two parallel green lines on the
     // ground at perpendicular ±FOOT_LATERAL_REACH from the player
@@ -196,13 +202,13 @@ export class DebugOverlay {
     const pushGeom = new THREE.PlaneGeometry(PUSH_RANGE_X * 2, PUSH_RANGE_Y * 2 * Z_STRETCH);
     const pushMat = makeFillMat(COLOR_PUSH, OPACITY_PUSH_PLATE);
     m.pushPlates = [new THREE.Mesh(pushGeom, pushMat), new THREE.Mesh(pushGeom, pushMat)];
-    for (const mesh of m.pushPlates) mesh.rotation.x = -Math.PI / 2;
+    layFlat(m.pushPlates);
 
     // Push facing cone.
     const pushConeGeom = new THREE.CircleGeometry(PUSH_RANGE_X, 24, -PUSH_FACE_TOL, 2 * PUSH_FACE_TOL);
     const pushConeMat = makeFillMat(COLOR_PUSH, OPACITY_PUSH_CONE);
     m.pushCones = [new THREE.Mesh(pushConeGeom, pushConeMat), new THREE.Mesh(pushConeGeom, pushConeMat)];
-    for (const mesh of m.pushCones) mesh.rotation.x = -Math.PI / 2;
+    layFlat(m.pushCones);
 
     // Field-driven geometry — rebuilt by _drawField when state.field changes.
     const goalMat = makeFillMat(COLOR_GOAL_BOX, OPACITY_GOAL_BOX);
@@ -317,16 +323,13 @@ export class DebugOverlay {
       m.lateralSlabs[i].visible = true;
     }
     // Hide any unused player slots (harness scenarios may pass <2 players).
+    const perPlayerArrays = [
+      m.bodyCapsules, m.headSpheres, m.pairDiscs,
+      m.kickReachSpheres, m.kickCones, m.lateralSlabs,
+      m.footSpheres, m.pushPlates, m.pushCones,
+    ];
     for (let i = players.length; i < 2; i++) {
-      m.bodyCapsules[i].visible = false;
-      m.headSpheres[i].visible = false;
-      m.pairDiscs[i].visible = false;
-      m.kickReachSpheres[i].visible = false;
-      m.kickCones[i].visible = false;
-      m.lateralSlabs[i].visible = false;
-      m.footSpheres[i].visible = false;
-      m.pushPlates[i].visible = false;
-      m.pushCones[i].visible = false;
+      for (const arr of perPlayerArrays) arr[i].visible = false;
     }
   }
 
@@ -355,9 +358,7 @@ export class DebugOverlay {
       const mouthX     = isLeft ? box.maxX : box.minX;
       const roofBackX  = box.roofBackX;
       const roofXSpan  = Math.abs(mouthX - roofBackX);
-      const floorXSpan = Math.abs(mouthX - floorBackX);
       const roofXMid   = (mouthX + roofBackX) / 2;
-      const floorXMid  = (mouthX + floorBackX) / 2;
 
       // Slanted back plane — quadrilateral with corners at:
       //   (floorBackX, 0,    zMin), (floorBackX, 0,    zMax)   floor edge
@@ -422,8 +423,6 @@ export class DebugOverlay {
       top.position.set(roofXMid, yMax, zMid);
       top.rotation.set(-Math.PI / 2, 0, 0);
       top.visible = true;
-      // Suppress unused-locals warning during transitions.
-      void floorXSpan; void floorXMid;
 
       // Posts — vertical cylinders at the mouth corners.
       const postNear = m.goalPosts[gi * 2 + 0];

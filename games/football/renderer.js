@@ -1052,8 +1052,8 @@ export class Renderer {
   }
 
   /** Toggle the debug-collider overlay (delegates to DebugOverlay). */
-  setDebugMode(on)        { this._debugOverlay.setEnabled(on); }
-  isDebugModeActive()     { return this._debugOverlay.isEnabled(); }
+  setDebugMode(on) { this._debugOverlay.setEnabled(on); }
+  isDebugModeActive() { return this._debugOverlay.isEnabled(); }
 
   _stepFollowCam(state) {
     const fc = this._followCam;

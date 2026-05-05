@@ -242,8 +242,8 @@ const BOUNCE_EVENT_MIN = 0.3;
 // where the leg capsules meet the torso; shoulder sits one torso
 // length above; head sits a neck-gap + head-radius above the shoulder.
 export const HIP_BASE_Z      = STICKMAN_LIMB_FULL_H;                   // 20
-const SHOULDER_Z      = HIP_BASE_Z + STICKMAN_SHOULDER_OFY;            // 40.24
-const HEAD_CENTER_Z   = SHOULDER_Z + STICKMAN_HEAD_GAP_Y + STICKMAN_HEAD_RADIUS; // 47.11
+export const SHOULDER_Z      = HIP_BASE_Z + STICKMAN_SHOULDER_OFY;     // 40.24
+export const HEAD_CENTER_Z   = SHOULDER_Z + STICKMAN_HEAD_GAP_Y + STICKMAN_HEAD_RADIUS; // 47.11
 
 // Maximum kick reach — full stretched leg length. See the Kick
 // constants block above for context; defined here because it needs
@@ -1733,7 +1733,7 @@ function predictBallAtStrike(ball, ticks, out) {
  *  a ball that's off the sagittal plane — a natural-looking side-of-
  *  foot hook, not a stiff straight-ahead strike. */
 const _scratchIKRes = { upperAngle: 0, lowerAngle: 0, footFwd: 0, footUp: 0 };
-function ikFootWorld(p, out) {
+export function ikFootWorld(p, out) {
   const k = p.kick;
   const hip = hipAnchor(p, _scratchHip);
   const local = projectHipLocal(hip, p.heading, k.footTargetX, k.footTargetY, k.footTargetZ, _scratchLocal);

@@ -163,6 +163,14 @@ export const GOAL_POST_RADIUS = 1.2;
 // rendered goal frame. Sized so the goal mouth comfortably clears
 // player head height (~51 world units) plus a small margin.
 const GOAL_MOUTH_Z = 58.5;
+
+// Goal-net side profile: the roof of the net runs flat from the
+// front mouth back by `ROOF_FRACTION` of the goal depth, then the
+// back wall slants down from that point to the outer ground.
+// `roofBackX` (computed per goal) = mouthX + (backBotX - mouthX) * ROOF_FRACTION.
+// Both the rendered model and the physics colliders read this so
+// they stay in lockstep.
+export const ROOF_FRACTION = 0.35;
 const GOAL_MOUTH_WIDTH = 28.6;  // z-span of the mouth (30% + another 10% wider than the original 20)
 const GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - GOAL_MOUTH_WIDTH) / 2;
 const GOAL_MOUTH_Y_MAX = (FIELD_HEIGHT + GOAL_MOUTH_WIDTH) / 2;
@@ -285,15 +293,22 @@ export function createField(width = FIELD_WIDTH_REF) {
   // Precomputed goal-box AABBs — called on every physics tick for
   // player + ball collisions. Freezing them here kills ~6 object
   // allocations per tick that used to happen inside `goalBox(f, side)`.
+  // `roofBackX` is the x of the upper-rear edge — where the flat
+  // roof meets the slanted back net. The slanted back wall runs from
+  // (roofBackX, GOAL_MOUTH_Z) at the top down to (floorBackX, 0) at
+  // the floor. For the LEFT goal floorBackX = minX (= goalLLeft); for
+  // the RIGHT goal floorBackX = maxX (= goalRRight).
   field.goalBoxLeft = {
     minX: goalLLeft, maxX: goalLineL,
     minY: GOAL_MOUTH_Y_MIN, maxY: GOAL_MOUTH_Y_MAX,
     minZ: 0, maxZ: GOAL_MOUTH_Z,
+    roofBackX: goalLineL + (goalLLeft - goalLineL) * ROOF_FRACTION,
   };
   field.goalBoxRight = {
     minX: goalLineR, maxX: goalRRight,
     minY: GOAL_MOUTH_Y_MIN, maxY: GOAL_MOUTH_Y_MAX,
     minZ: 0, maxZ: GOAL_MOUTH_Z,
+    roofBackX: goalLineR + (goalRRight - goalLineR) * ROOF_FRACTION,
   };
   return field;
 }
@@ -971,21 +986,27 @@ function resolveBallInsideGoal(state, box) {
   const isLeftGoal = box === state.field.goalBoxLeft;
   let hitBackOrSide = false;
 
-  // Inner back net. For a left goal the back wall is `box.minX`
-  // (ball came in from +x); for a right goal it's `box.maxX`.
-  const backX = isLeftGoal ? box.minX : box.maxX;
+  // Inner back net — slanted from (floorBackX, 0) at the floor to
+  // (roofBackX, maxZ) at the crossbar height. Modeled per-tick as a
+  // vertical wall at the slope's x-coordinate for the BALL's current
+  // height, so the substep loop's purely-horizontal bounce stays
+  // correct (the substep loop only integrates vx and vy, not vz).
+  const floorBackX = isLeftGoal ? box.minX : box.maxX;
+  const roofBackX  = box.roofBackX;
+  const ballCY     = Math.max(0, Math.min(box.maxZ, ball.z + BALL_RADIUS));
+  const slopeXatY  = floorBackX + (ballCY / box.maxZ) * (roofBackX - floorBackX);
   const penetration = isLeftGoal
-    ? backX - (ball.x - BALL_RADIUS)
-    : (ball.x + BALL_RADIUS) - backX;
+    ? slopeXatY - (ball.x - BALL_RADIUS)
+    : (ball.x + BALL_RADIUS) - slopeXatY;
   if (penetration > 0) {
-    ball.x = isLeftGoal ? backX + BALL_RADIUS : backX - BALL_RADIUS;
+    ball.x = isLeftGoal ? slopeXatY + BALL_RADIUS : slopeXatY - BALL_RADIUS;
     hitBackOrSide = true;
     if (state.recordEvents && Math.abs(ball.vx) > BOUNCE_EVENT_MIN) {
       state.events.push({ type: 'ball_bounce', axis: 'x', force: Math.abs(ball.vx), x: ball.x, y: ball.y, z: ball.z });
     }
   }
 
-  // Inner side nets.
+  // Inner side nets — vertical planes at z=minY and z=maxY (physics y).
   if (ball.y - BALL_RADIUS < box.minY) {
     ball.y = box.minY + BALL_RADIUS;
     hitBackOrSide = true;
@@ -1000,9 +1021,16 @@ function resolveBallInsideGoal(state, box) {
     ball.vy = 0;
   }
 
-  // Inner roof (crossbar underside). If ball rose into it, kill upward
-  // vz only — gravity will pull it back down naturally.
-  if (ball.z + BALL_RADIUS > box.maxZ) {
+  // Inner roof (crossbar underside) — flat plane at z=maxZ, but only
+  // over the front-rectangular portion of the trapezoidal net (from
+  // mouth back to roofBackX). Beyond roofBackX the slanted back wall
+  // takes over and is handled above.
+  const xMouth = isLeftGoal ? box.maxX : box.minX;
+  const xLo = Math.min(xMouth, roofBackX);
+  const xHi = Math.max(xMouth, roofBackX);
+  if (ball.z + BALL_RADIUS > box.maxZ
+      && ball.x + BALL_RADIUS > xLo
+      && ball.x - BALL_RADIUS < xHi) {
     ball.z = box.maxZ - BALL_RADIUS;
     if (ball.vz > 0) ball.vz = 0;
   }
@@ -1600,17 +1628,25 @@ function resolveBallVsGoalExterior(state, box) {
   if (ball.frozen) return;
   const isLeft = box === state.field.goalBoxLeft;
 
-  // ── Back wall — plane at x=backX, outside half-space faces the touchline.
-  const backX = isLeft ? box.minX : box.maxX;
-  const inwardVxBack = isLeft ? ball.vx : -ball.vx;  // +ve = toward mouth
+  // ── Back wall — slanted from (floorBackX, 0) to (roofBackX, maxZ).
+  // Same per-height vertical-wall approximation as resolveBallInsideGoal:
+  // at the ball's current height, treat the back wall as a vertical
+  // plane at slopeXatY. The substep loop integrates vx purely on the
+  // x-axis, so a vertical-wall bounce stays correct without needing
+  // to update ball.z mid-substep.
+  const floorBackX = isLeft ? box.minX : box.maxX;
+  const roofBackX  = box.roofBackX;
+  const ballCYBack = Math.max(0, Math.min(box.maxZ, ball.z + BALL_RADIUS));
+  const slopeXatY  = floorBackX + (ballCYBack / box.maxZ) * (roofBackX - floorBackX);
+  const inwardVxBack = isLeft ? ball.vx : -ball.vx;
   const fullyPastBack = isLeft
-    ? ball.x - BALL_RADIUS >= backX
-    : ball.x + BALL_RADIUS <= backX;
+    ? ball.x - BALL_RADIUS >= slopeXatY
+    : ball.x + BALL_RADIUS <= slopeXatY;
   if (inwardVxBack > 0 && !fullyPastBack
       && ball.y + BALL_RADIUS > box.minY
       && ball.y - BALL_RADIUS < box.maxY
       && ball.z - BALL_RADIUS < box.maxZ) {
-    ball.x = isLeft ? backX - BALL_RADIUS : backX + BALL_RADIUS;
+    ball.x = isLeft ? slopeXatY - BALL_RADIUS : slopeXatY + BALL_RADIUS;
     const pre = Math.abs(ball.vx);
     ball.vx = -ball.vx * BOUNCE_RETAIN;
     recordBounce(state, 'x', pre);
@@ -1646,16 +1682,17 @@ function resolveBallVsGoalExterior(state, box) {
   }
   if (ball.frozen) return;
 
-  // ── Roof — plane at z=mouthZMax, outside half-space z>mouthZMax.
-  // Covers x in [minX, maxX] and y in [minY, maxY]. The rendered roof
-  // is a trapezoidal net (flat front 35% + slanted rear), but the
-  // physics approximation is a flat plane across the full depth —
-  // matching the interior roof model used by resolveBallInsideGoal.
+  // ── Roof — flat plane at z=mouthZMax, truncated to the front-
+  // rectangular portion of the trapezoidal net (from mouth back to
+  // roofBackX). The slanted back wall above handles the rear.
+  const xMouth = isLeft ? box.maxX : box.minX;
+  const roofXLo = Math.min(xMouth, roofBackX);
+  const roofXHi = Math.max(xMouth, roofBackX);
   const fullyPastRoof = ball.z + BALL_RADIUS <= box.maxZ;
   if (ball.vz < 0 && !fullyPastRoof
       && ball.z - BALL_RADIUS < box.maxZ
-      && ball.x + BALL_RADIUS > box.minX
-      && ball.x - BALL_RADIUS < box.maxX
+      && ball.x + BALL_RADIUS > roofXLo
+      && ball.x - BALL_RADIUS < roofXHi
       && ball.y + BALL_RADIUS > box.minY
       && ball.y - BALL_RADIUS < box.maxY) {
     ball.z = box.maxZ + BALL_RADIUS;

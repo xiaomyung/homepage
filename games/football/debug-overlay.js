@@ -330,65 +330,100 @@ export class DebugOverlay {
     }
   }
 
-  /** Update field-driven geometry — goal boxes, posts/crossbars,
-   *  touchlines, ground/ceiling. Geometry is rebuilt only when the
-   *  cached field key changes. Positions update every frame. */
+  /** Update field-driven geometry — goal boxes (now trapezoidal:
+   *  vertical front, truncated roof, slanted back wall), posts /
+   *  crossbars, touchlines, ground / ceiling. Geometry is rebuilt
+   *  only when the cached field key changes. Positions update every
+   *  frame. */
   _drawField(state) {
     const m = this._meshes;
     const f = state.field;
     const goals = [f.goalBoxLeft, f.goalBoxRight];
-    const fieldKey = `${goals[0].minX}|${goals[0].maxX}|${goals[1].minX}|${goals[1].maxX}|${goals[0].minY}|${goals[0].maxY}|${goals[0].maxZ}|${f.width}|${f.ceiling}`;
+    const fieldKey = `${goals[0].minX}|${goals[0].maxX}|${goals[1].minX}|${goals[1].maxX}|${goals[0].minY}|${goals[0].maxY}|${goals[0].maxZ}|${goals[0].roofBackX}|${goals[1].roofBackX}|${f.width}|${f.ceiling}`;
     const rebuild = this._lastFieldKey !== fieldKey;
     if (rebuild) this._lastFieldKey = fieldKey;
 
     for (let gi = 0; gi < 2; gi++) {
       const box = goals[gi];
-      const xMin = box.minX, xMax = box.maxX;
       const zMin = box.minY * Z_STRETCH;
       const zMax = box.maxY * Z_STRETCH;
       const yMax = box.maxZ;
-      const xMid = (xMin + xMax) / 2;
       const zMid = (zMin + zMax) / 2;
-      const xSpan = xMax - xMin;
       const zSpan = zMax - zMin;
       const isLeft = gi === 0;
-      const backX  = isLeft ? xMin : xMax;
-      // Mouth-edge X — matches resolveBallVsGoalBars: `mouthX = isLeft ? maxX : minX`.
-      const mouthX = isLeft ? xMax : xMin;
+      const floorBackX = isLeft ? box.minX : box.maxX;
+      const mouthX     = isLeft ? box.maxX : box.minX;
+      const roofBackX  = box.roofBackX;
+      const roofXSpan  = Math.abs(mouthX - roofBackX);
+      const floorXSpan = Math.abs(mouthX - floorBackX);
+      const roofXMid   = (mouthX + roofBackX) / 2;
+      const floorXMid  = (mouthX + floorBackX) / 2;
 
-      // Back, side-near, side-far, top (4 planes per goal).
+      // Slanted back plane — quadrilateral with corners at:
+      //   (floorBackX, 0,    zMin), (floorBackX, 0,    zMax)   floor edge
+      //   (roofBackX,  yMax, zMin), (roofBackX,  yMax, zMax)   top edge
+      // Build directly with BufferGeometry so the four corners always
+      // sit exactly on those points — no rotation math, no plane
+      // approximation. World coords baked in; mesh position is origin.
       const back = m.goalPlanes[gi * 4 + 0];
       if (rebuild) {
         back.geometry.dispose();
-        back.geometry = new THREE.PlaneGeometry(zSpan, yMax);
+        const verts = new Float32Array([
+          floorBackX, 0,    zMin,    // 0: floor near
+          floorBackX, 0,    zMax,    // 1: floor far
+          roofBackX,  yMax, zMax,    // 2: top   far
+          roofBackX,  yMax, zMin,    // 3: top   near
+        ]);
+        const indices = [0, 1, 2, 0, 2, 3];
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+        geom.setIndex(indices);
+        geom.computeVertexNormals();
+        back.geometry = geom;
       }
-      back.position.set(backX, yMax / 2, zMid);
-      back.rotation.set(0, isLeft ? Math.PI / 2 : -Math.PI / 2, 0);
+      back.position.set(0, 0, 0);
+      back.rotation.set(0, 0, 0);
       back.visible = true;
 
+      // Side walls — trapezoidal silhouette per side, drawn as a
+      // ShapeGeometry polygon so the missing upper-rear corner
+      // matches the truncated net. Vertices (in local plane coords):
+      //   (mouthX, 0), (floorBackX, 0), (roofBackX, yMax), (mouthX, yMax)
       const sideNear = m.goalPlanes[gi * 4 + 1];
       const sideFar  = m.goalPlanes[gi * 4 + 2];
       if (rebuild) {
         sideNear.geometry.dispose();
         sideFar.geometry.dispose();
-        sideNear.geometry = new THREE.PlaneGeometry(xSpan, yMax);
-        sideFar.geometry  = new THREE.PlaneGeometry(xSpan, yMax);
+        const shape = new THREE.Shape();
+        shape.moveTo(mouthX,     0);
+        shape.lineTo(floorBackX, 0);
+        shape.lineTo(roofBackX,  yMax);
+        shape.lineTo(mouthX,     yMax);
+        shape.lineTo(mouthX,     0);
+        sideNear.geometry = new THREE.ShapeGeometry(shape);
+        sideFar.geometry  = new THREE.ShapeGeometry(shape);
       }
-      sideNear.position.set(xMid, yMax / 2, zMin);
-      sideFar.position.set(xMid, yMax / 2, zMax);
+      // ShapeGeometry lives in the local x-y plane. Position so the
+      // shape sits at the right z (depth axis for the side wall).
+      sideNear.position.set(0, 0, zMin);
+      sideFar.position.set(0, 0, zMax);
       sideNear.rotation.set(0, 0, 0);
       sideFar.rotation.set(0, 0, 0);
       sideNear.visible = true;
       sideFar.visible = true;
 
+      // Top (roof) — flat plane at y=yMax, truncated to the front-
+      // rectangular portion (from mouth to roofBackX).
       const top = m.goalPlanes[gi * 4 + 3];
       if (rebuild) {
         top.geometry.dispose();
-        top.geometry = new THREE.PlaneGeometry(xSpan, zSpan);
+        top.geometry = new THREE.PlaneGeometry(roofXSpan, zSpan);
       }
-      top.position.set(xMid, yMax, zMid);
+      top.position.set(roofXMid, yMax, zMid);
       top.rotation.set(-Math.PI / 2, 0, 0);
       top.visible = true;
+      // Suppress unused-locals warning during transitions.
+      void floorXSpan; void floorXMid;
 
       // Posts — vertical cylinders at the mouth corners.
       const postNear = m.goalPosts[gi * 2 + 0];
@@ -413,8 +448,6 @@ export class DebugOverlay {
         crossbar.geometry = new THREE.CylinderGeometry(GOAL_POST_RADIUS, GOAL_POST_RADIUS, zSpan, 16);
       }
       crossbar.position.set(mouthX, yMax, zMid);
-      // Default cylinder axis is +Y; rotate -90° around X so it
-      // lies along world-z.
       crossbar.rotation.set(Math.PI / 2, 0, 0);
       crossbar.visible = true;
     }

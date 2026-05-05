@@ -69,7 +69,7 @@ no vendored copy.
 
 ## Football scrimmage
 
-Below the dashboard, two stickmen play continuous 30 s matches. The
+Below the dashboard, two stickmen play continuous 60 s matches. The
 controller is fully deterministic — pure-press behaviour with role
 hysteresis, asymmetric goalie reflex, and per-side personality
 seeded from each match's seed.

@@ -15,11 +15,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PORT = 8000;
+const PORT = Number(process.env.PORT) || 8000;
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const STATS_TARGET = process.env.STATS_TARGET || 'http://127.0.0.1:5055';
 
 const PROXIES = [
-  { prefix: '/api/stats', target: 'http://127.0.0.1:5055' },
+  { prefix: '/api/stats', target: STATS_TARGET },
 ];
 
 const MIME = {

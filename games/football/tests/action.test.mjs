@@ -5,9 +5,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createField,
-  createState,
-  createSeededRng,
   FIELD_HEIGHT,
   PLAYER_WIDTH,
   PLAYER_HEIGHT,
@@ -27,12 +24,9 @@ import {
   STAMINA_CONSERVE_MAGNITUDE,
   PUSH_POWER_BASE,
 } from '../ai/tuning.js';
+import { freshState } from './helpers/state.mjs';
 
 const personality = { kickAimYOffset: 0, pushPowerScale: 1 };
-
-function freshState(seed = 42) {
-  return createState(createField(), createSeededRng(seed));
-}
 
 test('NEUTRAL intent encodes all gates -1 and zero movement', () => {
   const state = freshState();

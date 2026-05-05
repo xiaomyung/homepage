@@ -4,9 +4,8 @@
 // physics player and produces a flat pose object the renderer
 // consumes to place meshes. Pure — no DOM, no three.js.
 //
-// This function is the single source of truth for how walk / run /
-// kick / airkick / push / celebrate poses combine. The layered
-// model reproduces the renderer's previous inline behaviour exactly:
+// Single source of truth for how walk / run / kick / airkick /
+// push / celebrate / grieve / matchend poses combine. Layered model:
 //
 //   1. Walk cycle always runs in the background; amplitude scales
 //      with smoothed speed.
@@ -15,14 +14,15 @@
 //   3. Kick body-english (dip / tilt / hip twist / support crouch /
 //      counter-arm swing) is added on top; the kicking leg is
 //      IK-solved (kickLegPose).
-//   4. Celebrate linearly interpolates arms + legs toward the
-//      jumping-jack extremes, weighted by the smoothed celebrate
-//      factor.
+//   4. Celebrate runs a jump cycle (crouch → push-off → apex →
+//      land) plus symmetric fist-pumps; arms and legs blend toward
+//      the celebrate pose by the smoothed `celeb` factor.
+//   5. Grieve / matchend overrides take precedence over celebrate
+//      where they apply (loser kneels, winner stands triumphant).
 //
 // Physics guarantees kick and push never overlap, so their
 // body-english contributions simply sum via upperTilt + pushBodyDip +
-// kickBodyDip. Celebrate overrides everything through the celeb
-// smoother.
+// kickBodyDip.
 
 import {
   AIRKICK_MS,
@@ -128,7 +128,7 @@ const WALK_BOB_FRAC       = 0.08;
 // celeb, grieve, matchWin/Lose, etc.) is treated as inactive and
 // its pose-layer override is skipped. Avoids floating-point dust at
 // state-transition tails.
-const LPF_DEAD_ZONE = 0.001;
+export const LPF_DEAD_ZONE = 0.001;
 
 // Push split-stance + squat tuning. Module-level so they live alongside
 // the other PUSH_* constants; consumers are inside composeStickmanPose.

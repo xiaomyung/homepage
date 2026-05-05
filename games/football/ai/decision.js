@@ -14,6 +14,7 @@
  */
 
 import {
+  BALL_TIEBREAK_SPEED_GATE,
   CONTENDER_MARGIN_TICKS,
   ROLE_HYSTERESIS_TICKS,
   FALLBACK_SAFETY_MARGIN,
@@ -51,14 +52,14 @@ export const ROLES = Object.freeze({
  *  Tiebreak: ball-velocity-vector points toward whose half-line; if
  *  velocity is small, default to side='left'. */
 function rawContenderSide(perception) {
-  const m = perception.selfInterceptTicks;
-  const o = perception.oppInterceptTicks;
-  if (Number.isFinite(m) && Number.isFinite(o)) {
-    if (m + CONTENDER_MARGIN_TICKS < o) return ROLE_CONTENDER;
-    if (o + CONTENDER_MARGIN_TICKS < m) return ROLE_SUPPORT;
+  const selfTicks = perception.selfInterceptTicks;
+  const oppTicks = perception.oppInterceptTicks;
+  if (Number.isFinite(selfTicks) && Number.isFinite(oppTicks)) {
+    if (selfTicks + CONTENDER_MARGIN_TICKS < oppTicks) return ROLE_CONTENDER;
+    if (oppTicks + CONTENDER_MARGIN_TICKS < selfTicks) return ROLE_SUPPORT;
   } else {
-    if (Number.isFinite(m) && !Number.isFinite(o)) return ROLE_CONTENDER;
-    if (!Number.isFinite(m) && Number.isFinite(o)) return ROLE_SUPPORT;
+    if (Number.isFinite(selfTicks) && !Number.isFinite(oppTicks)) return ROLE_CONTENDER;
+    if (!Number.isFinite(selfTicks) && Number.isFinite(oppTicks)) return ROLE_SUPPORT;
   }
   return null;
 }
@@ -67,7 +68,7 @@ function rawContenderSide(perception) {
 function tiebreakContender(state, selfSide) {
   const ball = state.ball;
   const speed = Math.hypot(ball.vx, ball.vy);
-  if (speed > 0.5) {
+  if (speed > BALL_TIEBREAK_SPEED_GATE) {
     return (ball.vx < 0) === (selfSide === 'left') ? ROLE_CONTENDER : ROLE_SUPPORT;
   }
   return selfSide === 'left' ? ROLE_CONTENDER : ROLE_SUPPORT;
@@ -112,9 +113,6 @@ function resolveRole(state, side, perception) {
 export function decide(state, which, perception) {
   const self = state[which];
   const opp = state[which === 'p1' ? 'p2' : 'p1'];
-
-  state.aiRoleState ||= { left: { role: null, since: 0 }, right: { role: null, since: 0 } };
-  state.aiRoleState[self.side] ||= { role: null, since: 0 };
 
   if (perception.selfBlocked) {
     return { kind: INTENT_NEUTRAL, role: null, push: false };

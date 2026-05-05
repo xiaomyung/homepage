@@ -1,13 +1,11 @@
-// Animation state advancement — the pure, per-frame bookkeeping that
-// used to sit at the top of `_addStickman()`. Extracted so the pose
-// composer (poses.js), the renderer, and future test harnesses can
-// share one authoritative source for LPF smoothing, phase
-// accumulation, push-progress edge detection, and derived state
-// (is the player kicking? pushing? celebrating?).
-//
-// Pure — no DOM, no three.js — imported from the renderer.
+// Animation state advancement — pure, per-frame bookkeeping shared
+// by the pose composer, renderer, and test harnesses. Owns LPF
+// smoothing, phase accumulation, push-progress edge detection, and
+// the derived state label (is the player kicking? pushing?
+// celebrating?). Pure — no DOM, no three.js.
 
 import { REACT_ANIM_MS, Z_STRETCH, wrapAngle } from '../physics.js';
+import { LPF_DEAD_ZONE } from './poses.js';
 
 // ── Smoothing + phase-rate tuning ────────────────────────────
 // Low-pass smoothing factor for tilt / amplitude / celebrate. Values
@@ -111,15 +109,6 @@ export function createAnimState(tick, player) {
   };
 }
 
-/** Advance one frame of anim state in place. Returns a snapshot
- *  object (populated into `out` to avoid per-frame allocation) that
- *  the pose composer consumes.
- *
- *  Effective velocity is derived from POSITION DELTA (player.x -
- *  anim.lastX), not player.vx — this matches the existing renderer
- *  behaviour and lets teleporting scenarios zero out walk animation
- *  by syncing anim.lastX after a jump.
- */
 /** Low-pass an animation heading toward `target`, seeding `animHeading`
  *  with `seed` on first use. Returns the new `animHeading`. */
 function lpfHeading(anim, seed, target) {
@@ -129,6 +118,15 @@ function lpfHeading(anim, seed, target) {
   return anim.animHeading;
 }
 
+/** Advance one frame of anim state in place. Returns a snapshot
+ *  object (populated into `out` to avoid per-frame allocation) that
+ *  the pose composer consumes.
+ *
+ *  Effective velocity is derived from POSITION DELTA (player.x -
+ *  anim.lastX), not player.vx — this matches the existing renderer
+ *  behaviour and lets teleporting scenarios zero out walk animation
+ *  by syncing anim.lastX after a jump.
+ */
 export function advanceAnimState(
   anim, player, tick, isCelebrating, out,
   isGrieving = false, isReposition = false,
@@ -137,14 +135,13 @@ export function advanceAnimState(
 ) {
   const dt = tick > anim.lastTick ? tick - anim.lastTick : 0;
 
-  // Tick-rewind handling: when the simulation restarts (showcase
-  // replay, new match via `resetStateInPlace`, scenario re-init in
-  // the harness), `tick` jumps backwards. Without resyncing here,
-  // `anim.lastTick` would stay frozen at the old high value and
-  // every subsequent frame would compute `dt = 0` until physics
-  // caught up — the stickman would slide without animating for an
-  // entire match. Resync the reference frame so the next physics
-  // tick produces a sane `dt = 1`.
+  // Tick-rewind handling: when the simulation restarts (new match
+  // via `resetStateInPlace`, scenario re-init in the harness), `tick`
+  // jumps backwards. Without resyncing here, `anim.lastTick` would
+  // stay frozen at the old high value and every subsequent frame
+  // would compute `dt = 0` until physics caught up — the stickman
+  // would slide without animating for an entire match. Resync the
+  // reference frame so the next physics tick produces a sane `dt = 1`.
   if (tick < anim.lastTick) {
     anim.lastTick = tick;
     anim.lastX    = player.x;
@@ -264,7 +261,7 @@ export function advanceAnimState(
     // restPhase advances only while `rest` is active, so the LPF
     // tail on exit doesn't add residual rotation. Reset to 0 when
     // rest is fully off so re-entry starts at a clean angle.
-    if (anim.rest > 0.001) {
+    if (anim.rest > LPF_DEAD_ZONE) {
       anim.restPhase = (anim.restPhase + REST_PHASE_RATE * dt) % TWO_PI;
     } else {
       anim.restPhase = 0;
@@ -341,13 +338,16 @@ export function advanceAnimState(
   out.kick           = kick;
   // Victim hit-reaction passthrough (purely read-only from physics).
   // reactT is 0→1 over REACT_ANIM_MS; reactForce is normalized 0..1.
+  // Physics guarantees the react* fields are written numerically when
+  // reactTimer > 0 and zeroed by clearInProgressActions otherwise, so
+  // no defensive `|| 0` fallbacks are needed.
   if (player.reactTimer > 0) {
     out.reactT       = 1 - (player.reactTimer / REACT_ANIM_MS);
-    out.reactForce   = player.reactForce  || 0;
-    out.reactDirX    = player.reactDirX   || 0;
-    out.reactDirZ    = player.reactDirZ   || 0;
-    out.reactType    = player.reactType   || 'jab';
-    out.reactLatSign = player.reactLatSign || 1;
+    out.reactForce   = player.reactForce;
+    out.reactDirX    = player.reactDirX;
+    out.reactDirZ    = player.reactDirZ;
+    out.reactType    = player.reactType;
+    out.reactLatSign = player.reactLatSign;
   } else {
     out.reactT       = 0;
     out.reactForce   = 0;

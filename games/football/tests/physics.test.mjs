@@ -45,39 +45,14 @@ import {
   ACTION_VEC_SIZE,
   endMatchByTime,
 } from '../physics.js';
-
-/** Build a 9-float action vector by action-slot name rather than
- *  magic index. All fields default to the neutral "do nothing" value
- *  (gates at -1, power/direction at 0). */
-function action({ moveX = 0, moveY = 0, kickGate = -1, kickDx = 0, kickDy = 0, kickDz = 0, kickPower = 0, pushGate = -1, pushPower = 0 } = {}) {
-  const a = new Array(ACTION_VEC_SIZE);
-  a[ACTION_MOVE_X]     = moveX;
-  a[ACTION_MOVE_Y]     = moveY;
-  a[ACTION_KICK_GATE]  = kickGate;
-  a[ACTION_KICK_DX]    = kickDx;
-  a[ACTION_KICK_DY]    = kickDy;
-  a[ACTION_KICK_DZ]    = kickDz;
-  a[ACTION_KICK_POWER] = kickPower;
-  a[ACTION_PUSH_GATE]  = pushGate;
-  a[ACTION_PUSH_POWER] = pushPower;
-  return a;
-}
-
-const NOOP = action();
-const moveAction = (mx, my = 0) => action({ moveX: mx, moveY: my });
-const pushAction = (power = 1) => action({ pushGate: 1, pushPower: power });
-const kickAction = (dx = 1, dy = 0, dz = 0, power = 1) =>
-  action({ kickGate: 1, kickDx: dx, kickDy: dy, kickDz: dz, kickPower: power });
-
-/** Fresh state with seeded RNG, grace frames zeroed, and events enabled. */
-function freshState(seed = 42) {
-  const field = createField();
-  const rng = createSeededRng(seed);
-  const state = createState(field, rng);
-  state.graceFrames = 0;
-  state.recordEvents = true;
-  return state;
-}
+import {
+  freshState,
+  action,
+  NOOP,
+  moveAction,
+  pushAction,
+  kickAction,
+} from './helpers/state.mjs';
 
 /* ── Test 1: stamina charged from actual displacement ──────── */
 

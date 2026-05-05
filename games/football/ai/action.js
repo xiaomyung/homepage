@@ -64,9 +64,9 @@ function moveToward(self, tx, ty, captureRadius = 0) {
 }
 
 function magnitudeFor(self, perception) {
-  if (perception.oppExhausted) return 1.0;
-  if (self.stamina < STAMINA_CONSERVE_THRESHOLD) return STAMINA_CONSERVE_MAGNITUDE;
-  return 1.0;
+  return perception.oppExhausted || self.stamina >= STAMINA_CONSERVE_THRESHOLD
+    ? 1.0
+    : STAMINA_CONSERVE_MAGNITUDE;
 }
 
 /**
@@ -131,8 +131,9 @@ function kickApproach(state, self, perception, personality) {
 /**
  * Encode intent into a 9-float action vector. Pure; allocates fresh Float64Array.
  *
- * personality: { kickAimYOffset, pushPowerScale } in [-1..1] range applied via
- * tuning constants in main caller.
+ * personality: { kickAimYOffset, pushPowerScale } — kickAimYOffset is signed
+ * within ±KICK_AIM_OFFSET_RANGE (±0.03 of goal width), pushPowerScale lives
+ * around 1.0 ± PUSH_POWER_RANGE (±0.10).
  */
 export function encode(state, which, perception, intent, personality) {
   const self = state[which];
@@ -151,31 +152,34 @@ export function encode(state, which, perception, intent, personality) {
   // spot and any drift during windup would shift the hip (and therefore
   // the foot world position relative to the frozen foot target) and
   // break contact. The approach run already aligned heading.
-  const kind = intent.kind;
-  let target = (kind === INTENT_KINDS.GOALIE
-              || kind === INTENT_KINDS.CONTENDER_RUN
-              || kind === INTENT_KINDS.SUPPORT)
-    ? intent.target
-    : null;
+  const movesTowardTarget = !self.kick.active && (
+    intent.kind === INTENT_KINDS.GOALIE
+    || intent.kind === INTENT_KINDS.CONTENDER_RUN
+    || intent.kind === INTENT_KINDS.SUPPORT
+  );
 
-  if (self.kick.active) target = null;
-
-  if (target) {
+  if (movesTowardTarget) {
     // Capture radius only applies to GOALIE (target is a fixed goal-line
     // point); CONTENDER_RUN/SUPPORT pursue continuously toward attackKickSpot
     // and the slowdown ramp brings them to a controlled arrival.
-    const captureRadius = kind === INTENT_KINDS.GOALIE ? FALLBACK_CAPTURE_RADIUS : 0;
-    const { mx, my } = moveToward(self, target.x, target.y, captureRadius);
+    const isGoalie = intent.kind === INTENT_KINDS.GOALIE;
+    const captureRadius = isGoalie ? FALLBACK_CAPTURE_RADIUS : 0;
+    const { mx, my } = moveToward(self, intent.target.x, intent.target.y, captureRadius);
     let mag = magnitudeFor(self, perception);
-    // Distance-based approach slowdown — see APPROACH_RAMP_DIST in tuning.js.
-    const t = Math.min(1, perception.selfDistToBall / APPROACH_RAMP_DIST);
-    const approachMag = APPROACH_MIN_MAGNITUDE + (1 - APPROACH_MIN_MAGNITUDE) * t;
-    mag = Math.min(mag, approachMag);
+    // Distance-based approach slowdown — only on ball-pursuit intents
+    // (CONTENDER_RUN / SUPPORT), where selfDistToBall is the actual
+    // distance left to cover. GOALIE chases the goal line, not the
+    // ball, so the ramp would slow the player down for unrelated reasons.
+    if (!isGoalie) {
+      const t = Math.min(1, perception.selfDistToBall / APPROACH_RAMP_DIST);
+      const approachMag = APPROACH_MIN_MAGNITUDE + (1 - APPROACH_MIN_MAGNITUDE) * t;
+      mag = Math.min(mag, approachMag);
+    }
     out[ACTION_MOVE_X] = mx * mag;
     out[ACTION_MOVE_Y] = my * mag;
   }
 
-  if (kind === INTENT_KINDS.CONTENDER_KICK && !self.kick.active) {
+  if (intent.kind === INTENT_KINDS.CONTENDER_KICK && !self.kick.active) {
     const dir = kickApproach(state, self, perception, personality);
     out[ACTION_KICK_GATE] = 1;
     out[ACTION_KICK_DX] = dir.dx;

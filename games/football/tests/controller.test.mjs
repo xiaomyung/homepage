@@ -8,9 +8,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createField,
-  createState,
-  createSeededRng,
   tick as physicsTick,
   FIELD_HEIGHT,
   PLAYER_WIDTH,
@@ -20,16 +17,10 @@ import {
   ACTION_KICK_GATE,
   ACTION_PUSH_GATE,
 } from '../physics.js';
-import { decide, derivePersonality, ACTION_VEC_SIZE } from '../ai/controller.js';
+import { decide, ACTION_VEC_SIZE } from '../ai/controller.js';
+import { freshState as baseFreshState } from './helpers/state.mjs';
 
-function freshState(seed = 42) {
-  const s = createState(createField(), createSeededRng(seed));
-  const personalityRng = createSeededRng(seed ^ 0x5A5A5A5A);
-  s.aiPersonality = derivePersonality(personalityRng);
-  s.aiRoleState = { left: { role: null, since: 0 }, right: { role: null, since: 0 } };
-  s.aiRng = createSeededRng(seed ^ 0xA5A5A5A5);
-  return s;
-}
+const freshState = (seed = 42) => baseFreshState(seed, { withAI: true, recordEvents: false });
 
 test('decide returns Float64Array of ACTION_VEC_SIZE finite floats', () => {
   const state = freshState();

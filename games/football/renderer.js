@@ -4,8 +4,7 @@
  * Everything is solid 3D geometry: goals are cylinders, stickmen are
  * capsules + sphere heads, ball is a sphere, particles are instanced
  * spheres, field lines are THREE.Line segments, ground shadows are
- * shader-filled planes. No glyph / SDF atlas / font — the old
- * billboarded-ASCII pipeline is gone.
+ * shader-filled planes.
  *
  * Coordinate mapping:
  *   physics.x → three.js.x  (field horizontal)
@@ -132,6 +131,47 @@ const CAMERA_TILT_DEG = 55;
 // pause, and back to LIVE when play resumes.
 const FOLLOW_ZOOM_LIVE = 0.60;
 const FOLLOW_ZOOM_DEAD = 1.00;
+// Lead distance fraction — actionX is offset by leadX = ballSide *
+// distance * LEAD_FRACTION so the camera looks slightly past the ball
+// in the direction of play.
+const FOLLOW_LEAD_FRACTION = 0.22;
+
+// Player name-label tunables (billboarded sprites above the head).
+const NAME_LABEL_HEAD_GAP    = 5;
+const NAME_LABEL_CANVAS_W    = 256;
+const NAME_LABEL_CANVAS_H    = 64;
+const NAME_LABEL_FONT        = '500 38px "Iosevka Term", monospace';
+const NAME_LABEL_TEXT_COLOR  = '#cdd6f4';
+const NAME_LABEL_SHADOW_COLOR = 'rgba(0,0,0,0.9)';
+const NAME_LABEL_SHADOW_BLUR = 6;
+const NAME_LABEL_SCALE_X     = 36;
+const NAME_LABEL_SCALE_Y     = 9;
+// Overlap-fade thresholds (screen-space pixels between the two
+// labels). Above FADE_BELOW = full opacity; below FADE_FULL = hidden;
+// linear ramp between.
+const NAME_LABEL_FADE_BELOW  = 80;
+const NAME_LABEL_FADE_FULL   = 30;
+
+// Ball shadow scaling per world-z of altitude — shadow grows + fades
+// as the ball climbs.
+const BALL_SHADOW_GROWTH_PER_Z = 0.04;
+const BALL_SHADOW_FADE_PER_Z   = 0.06;
+
+// Debug freecam input sensitivities.
+const DEBUG_CAM_DRAG_SENS    = 0.005;   // rad / pixel
+const DEBUG_CAM_PAN_FRAC     = 0.01;    // fraction of distance per frame
+const DEBUG_CAM_WHEEL_SENS   = 0.001;   // dist multiplier per wheel-delta
+const DEBUG_CAM_DIST_MIN     = 40;
+const DEBUG_CAM_DIST_MAX     = 4000;
+
+// Rest-star geometry (orbiting spinning star meshes around an
+// exhausted-and-recovering player's head).
+const REST_STAR_RADIUS_FRAC      = 1.55;  // × head radius — orbit radius
+const REST_STAR_HEIGHT_FRAC      = 0.85;  // × head radius — vertical lift
+const REST_STAR_SCALE_BASE       = 0.6;   // baseline visual scale
+const REST_STAR_SCALE_OPACITY    = 0.4;   // opacity-modulated scale
+const REST_STAR_TUMBLE_FRAC      = 0.6;   // tumble-vs-orbit ratio
+const REST_STAR_COUNTER_SPIN     = -1.6;  // counter-spin rad/sec
 
 /* ── Shaders ───────────────────────────────────────────────── */
 
@@ -755,8 +795,8 @@ export class Renderer {
       // grows slightly and fades as the ball rises.
       const shadow = this._ballShadows[bi];
       const airH = Math.max(0, b.z || 0);
-      const ballShadowR = BALL_VISUAL_RADIUS * (1 + airH * 0.04);
-      const ballShadowA = SHADOW_ALPHA_BASE / (1 + airH * 0.06);
+      const ballShadowR = BALL_VISUAL_RADIUS * (1 + airH * BALL_SHADOW_GROWTH_PER_Z);
+      const ballShadowA = SHADOW_ALPHA_BASE / (1 + airH * BALL_SHADOW_FADE_PER_Z);
       shadow.visible = true;
       shadow.position.set(b.x, SHADOW_Y, b.y * Z_STRETCH);
       shadow.scale.set(ballShadowR * 2, ballShadowR * 2, 1);
@@ -887,9 +927,9 @@ export class Renderer {
       const dy = e.clientY - dc.lastPointerY;
       dc.lastPointerX = e.clientX;
       dc.lastPointerY = e.clientY;
-      dc.yaw -= dx * 0.005;
+      dc.yaw -= dx * DEBUG_CAM_DRAG_SENS;
       const half = Math.PI / 2 - 0.02;
-      dc.pitch = Math.max(-half, Math.min(half, dc.pitch - dy * 0.005));
+      dc.pitch = Math.max(-half, Math.min(half, dc.pitch - dy * DEBUG_CAM_DRAG_SENS));
     });
     const stopDrag = (e) => {
       this._debugCam.dragging = false;
@@ -901,7 +941,8 @@ export class Renderer {
       const dc = this._debugCam;
       if (!dc.active) return;
       e.preventDefault();
-      dc.distance = Math.max(40, Math.min(4000, dc.distance * (1 + e.deltaY * 0.001)));
+      dc.distance = Math.max(DEBUG_CAM_DIST_MIN,
+        Math.min(DEBUG_CAM_DIST_MAX, dc.distance * (1 + e.deltaY * DEBUG_CAM_WHEEL_SENS)));
     }, { passive: false });
     this._debugKeydown = (e) => {
       const dc = this._debugCam;
@@ -943,7 +984,7 @@ export class Renderer {
       dc.pitch = dc.defaultPitch;
       dc.keys.delete('r');
     }
-    const speed = dc.distance * 0.01;
+    const speed = dc.distance * DEBUG_CAM_PAN_FRAC;
     const forwardX = -Math.sin(dc.yaw);
     const forwardZ = -Math.cos(dc.yaw);
     const rightX = Math.cos(dc.yaw);
@@ -1064,7 +1105,7 @@ export class Renderer {
       fc.zoom = zoomTarget;
       fc.zoomV = 0;
       const { distance: d0 } = this._computeDistance(fc.zoom);
-      fc.leadX = sideForLead * d0 * 0.22;
+      fc.leadX = sideForLead * d0 * FOLLOW_LEAD_FRACTION;
       fc.leadVX = 0;
       fc.initialized = true;
     }
@@ -1081,8 +1122,7 @@ export class Renderer {
     // Compute distance from the *smoothed* zoom so the whole view
     // (position, lead magnitude) pans out together.
     const { distance, height, backOff } = this._computeDistance(fc.zoom);
-    const LEAD_FRACTION = 0.22;
-    const leadTarget = sideForLead * distance * LEAD_FRACTION;
+    const leadTarget = sideForLead * distance * FOLLOW_LEAD_FRACTION;
 
     [fc.posX,  fc.velX]  = stepSpring(fc.posX,  fc.velX,  posTarget,  K_POS,  C_POS);
     [fc.lookX, fc.lookVX] = stepSpring(fc.lookX, fc.lookVX, lookTarget, K_LOOK, C_LOOK);
@@ -1138,9 +1178,8 @@ export class Renderer {
     // Penalty area (18-yard box) — closed rectangle on the ground in
     // front of each goal, with the back edge along the goal line.
     // 6-yard goal area nested inside. Both are drawn as LineLoop so
-    // all four sides render (the old open Line left the back edge
-    // floating). Sizes are tuned so the penalty box fits inside the
-    // touchlines of this (much wider-than-real) mouth/field
+    // all four sides render. Sizes are tuned so the penalty box fits
+    // inside the touchlines of this (much wider-than-real) mouth/field
     // proportion.
     const penaltyHalfY  = mouthHalfZ * 1.35;
     const penaltyDepth  = mouthHalfZ * 1.55;
@@ -1478,7 +1517,7 @@ export class Renderer {
       return;
     }
     const labels = this._nameLabels;
-    const offsetY = STICKMAN_HEAD_RADIUS + 5;
+    const offsetY = STICKMAN_HEAD_RADIUS + NAME_LABEL_HEAD_GAP;
     for (let i = 0; i < 2; i++) {
       const p = players[i];
       const anim = this._animByPlayer.get(p);
@@ -1500,11 +1539,10 @@ export class Renderer {
     const dx = (a.x - b.x) * w;
     const dy = (a.y - b.y) * h;
     const pixelDist = Math.hypot(dx, dy);
-    const FADE_BELOW = 80;
-    const FADE_FULL = 30;
     let alpha = 1;
-    if (pixelDist < FADE_BELOW) {
-      alpha = Math.max(0, (pixelDist - FADE_FULL) / (FADE_BELOW - FADE_FULL));
+    if (pixelDist < NAME_LABEL_FADE_BELOW) {
+      alpha = Math.max(0, (pixelDist - NAME_LABEL_FADE_FULL)
+                       / (NAME_LABEL_FADE_BELOW - NAME_LABEL_FADE_FULL));
     }
     labels[0].mat.opacity = alpha;
     labels[1].mat.opacity = alpha;
@@ -1515,8 +1553,8 @@ export class Renderer {
    *  via _setLabelText. */
   _makeNameLabel() {
     const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 64;
+    canvas.width = NAME_LABEL_CANVAS_W;
+    canvas.height = NAME_LABEL_CANVAS_H;
     const ctx = canvas.getContext('2d');
     const texture = new THREE.CanvasTexture(canvas);
     texture.minFilter = THREE.LinearFilter;
@@ -1530,7 +1568,7 @@ export class Renderer {
     const mesh = new THREE.Sprite(mat);
     // World-space scale tuned so labels read as small floating tags
     // at the camera's working distance without overpowering the figure.
-    mesh.scale.set(36, 9, 1);
+    mesh.scale.set(NAME_LABEL_SCALE_X, NAME_LABEL_SCALE_Y, 1);
     mesh.renderOrder = 999;
     this.scene.add(mesh);
     return { mesh, canvas, ctx, texture, mat, name: '' };
@@ -1542,12 +1580,12 @@ export class Renderer {
     label.name = name;
     const { ctx, canvas, texture } = label;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.font = '500 38px "Iosevka Term", monospace';
+    ctx.font = NAME_LABEL_FONT;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#cdd6f4';
-    ctx.shadowColor = 'rgba(0,0,0,0.9)';
-    ctx.shadowBlur = 6;
+    ctx.fillStyle = NAME_LABEL_TEXT_COLOR;
+    ctx.shadowColor = NAME_LABEL_SHADOW_COLOR;
+    ctx.shadowBlur = NAME_LABEL_SHADOW_BLUR;
     ctx.fillText(name, canvas.width / 2, canvas.height / 2);
     texture.needsUpdate = true;
   }
@@ -1566,18 +1604,16 @@ export class Renderer {
 
   /** Place 3 dazed stars in a horizontal ring above the head, rotating
    *  around the player's vertical axis. Phase comes from `animSnap.restPhase`
-   *  but is multiplied by -1.6 so the ring counter-rotates 60% faster
-   *  than the body's own wobble, exaggerating the dizzy read.
+   *  multiplied by REST_STAR_COUNTER_SPIN so the ring counter-rotates
+   *  faster than the body's own wobble, exaggerating the dizzy read.
    *  Opacity = animSnap.rest, so stars fade in/out with the LPF factor. */
   _placeRestStars(pose, animSnap) {
-    const ringRadius = STICKMAN_HEAD_RADIUS * 1.55;
-    const ringHeight = STICKMAN_HEAD_RADIUS * 0.85;  // above the head
+    const ringRadius = STICKMAN_HEAD_RADIUS * REST_STAR_RADIUS_FRAC;
+    const ringHeight = STICKMAN_HEAD_RADIUS * REST_STAR_HEIGHT_FRAC;
     const cy = pose.headY + ringHeight;
     const opacity = Math.min(1, animSnap.rest);
-    const scale = 0.6 + 0.4 * opacity;
-    // Counter-spin: stars orbit faster than the body and the opposite
-    // way, exaggerating the dizzy read.
-    const spin = -animSnap.restPhase * 1.6;
+    const scale = REST_STAR_SCALE_BASE + REST_STAR_SCALE_OPACITY * opacity;
+    const spin = animSnap.restPhase * REST_STAR_COUNTER_SPIN;
     for (let i = 0; i < 3; i++) {
       const idx = this._restStarCursor++;
       while (this._restStars.length <= idx) this._mkRestStar();
@@ -1590,7 +1626,7 @@ export class Renderer {
       );
       // Each star also tumbles around its own axis so it's not a flat
       // billboard — gives a metallic twinkle.
-      mesh.rotation.set(theta * 0.6, theta, 0);
+      mesh.rotation.set(theta * REST_STAR_TUMBLE_FRAC, theta, 0);
       mesh.scale.set(scale, scale, scale);
       mesh.material.opacity = opacity;
       mesh.visible = true;

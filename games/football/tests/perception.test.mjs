@@ -5,18 +5,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createField,
-  createState,
-  createSeededRng,
   FIELD_HEIGHT,
   PLAYER_WIDTH,
   PLAYER_HEIGHT,
 } from '../physics.js';
 import { perceive, interceptTicks } from '../ai/perception.js';
-
-function freshState(seed = 42) {
-  return createState(createField(), createSeededRng(seed));
-}
+import { freshState } from './helpers/state.mjs';
 
 test('selfDistToBall and oppDistToBall are Euclidean distances', () => {
   const state = freshState();

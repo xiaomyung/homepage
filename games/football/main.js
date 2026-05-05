@@ -25,7 +25,8 @@ import {
   createFreeCamToggle,
   createFollowCamToggle,
 } from './ui.js';
-import { MATCH_DURATION_MS, MAX_SHOWCASE_TICKS, ACTION_STRIDE_TICKS } from './ai/tuning.js';
+import { MATCH_DURATION_MS, MAX_SHOWCASE_TICKS } from './ai/tuning.js';
+import { RNG_SALT_PERSONALITY, RNG_SALT_NAMES } from './rng-salts.js';
 
 let renderer = null;
 let scoreboard = null;
@@ -36,22 +37,11 @@ const MAX_TICKS_PER_FRAME = 5;
 // Visibility-stall recovery: if the tab is hidden long enough that
 // state.tick stops advancing, force a fresh match on resume.
 const TAB_STALL_THRESHOLD_MS = 2000;
-// Seed-space upper bound (uint31) and per-stream salt constants for
-// derived RNGs. Salts must be distinct so the streams don't correlate.
 const SEED_UPPER = 2 ** 31;
-const RNG_SALT_PERSONALITY = 0x5A5A5A5A;
-const RNG_SALT_NAMES       = 0x12345678;
 
-// Showcase physics RNG — same LCG params as createSeededRng. Inlined so
-// nextShowcase() can re-seed by mutating showcaseRngSeed without
-// allocating a new closure each match.
-let showcaseRngSeed = 1;
-function showcaseRngFn() {
-  showcaseRngSeed = (Math.imul(showcaseRngSeed, 1664525) + 1013904223) >>> 0;
-  return showcaseRngSeed / 4294967296;
-}
+let showcaseRng = createSeededRng(1);
 const showcaseField = createField();
-const showcaseState = createState(showcaseField, showcaseRngFn);
+const showcaseState = createState(showcaseField, showcaseRng);
 
 async function main() {
   const canvas = document.getElementById('game-canvas');
@@ -86,10 +76,6 @@ async function main() {
  *     evict the canvas's WebGL context under memory pressure or when
  *     another tab steals contexts, leaving the page permanently blank
  *     until the user closes and reopens.
- *
- * No heap watchdog: with training gone, sustained heap pressure is
- * gone; the prior auto-reload-at-75% added complexity without
- * addressing the actual blank-page failure mode.
  */
 let lastVisibleTick = 0;
 let lastVisibleAt = 0;
@@ -131,8 +117,8 @@ function installRecovery(canvas) {
 
 function nextShowcase() {
   const seed = (Math.random() * SEED_UPPER) >>> 0 || 1;
-  showcaseRngSeed = seed;
-  resetStateInPlace(showcaseState, showcaseField, showcaseRngFn);
+  showcaseRng = createSeededRng(seed);
+  resetStateInPlace(showcaseState, showcaseField, showcaseRng);
   const state = showcaseState;
   state.recordEvents = true;
 
@@ -196,15 +182,7 @@ function frameInner(now) {
       physicsTick(state, null, null);
       continue;
     }
-    let p1Action = currentMatch.p1Action;
-    let p2Action = currentMatch.p2Action;
-    if (state.tick % ACTION_STRIDE_TICKS === 0 || !p1Action) {
-      p1Action = decide(state, 'p1');
-      p2Action = decide(state, 'p2');
-      currentMatch.p1Action = p1Action;
-      currentMatch.p2Action = p2Action;
-    }
-    physicsTick(state, p1Action, p2Action);
+    physicsTick(state, decide(state, 'p1'), decide(state, 'p2'));
   }
 
   if (state.pauseState === 'matchend' && state.winner) {
@@ -216,11 +194,10 @@ function frameInner(now) {
   // while the time-up matchend reposition runs.
   const elapsedMs = Math.min(state.tick * TICK_MS, MATCH_DURATION_MS);
   scoreboard.setTimer(elapsedMs / 1000, MATCH_DURATION_MS / 1000);
-  const lr = state.aiRoleState?.left?.role;
-  const rr = state.aiRoleState?.right?.role;
+  const paused = state.pauseState !== null;
   scoreboard.setRoles(
-    state.pauseState !== null ? null : lr,
-    state.pauseState !== null ? null : rr,
+    paused ? null : state.aiRoleState.left.role,
+    paused ? null : state.aiRoleState.right.role,
   );
   renderer.renderState(state);
 }

@@ -45,13 +45,23 @@ fixed = re.sub(
     src,
 )
 if "handle /api/stats" not in fixed:
+    # Anchor 1 (legacy): the old football-broker handle block, if it
+    # still survives in the Caddyfile from a prior revision.
     fixed = re.sub(
         r"(\thandle /api/football/\* \{[^}]*\}\n)",
         r"\1\n" + correct,
         fixed, count=1,
     )
-    if "handle /api/stats" not in fixed:
-        sys.exit("could not find /api/football handle block to anchor against")
+if "handle /api/stats" not in fixed:
+    # Anchor 2 (current): the first redir block in xiaomyung.com.
+    # The portal always carries at least one redir, so this is stable.
+    fixed = re.sub(
+        r"(\tredir /\S+ https://[^\n]+\n)",
+        correct + r"\n\1",
+        fixed, count=1,
+    )
+if "handle /api/stats" not in fixed:
+    sys.exit("could not find a stable anchor in the xiaomyung.com block")
 if fixed != src:
     with open(path, "w") as f:
         f.write(fixed)

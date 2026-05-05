@@ -14,6 +14,9 @@ export const PREDICTION_HORIZON_TICKS = Math.round(500 / TICK_MS);
 
 export const ROLE_HYSTERESIS_TICKS = 15;
 export const CONTENDER_MARGIN_TICKS = 2;
+// Ball speed (physics units / tick) above which the role tiebreak
+// uses ball direction instead of falling back to side='left'.
+export const BALL_TIEBREAK_SPEED_GATE = 0.5;
 
 export const STAMINA_CONSERVE_THRESHOLD = 0.30;
 export const STAMINA_CONSERVE_MAGNITUDE = 0.7;

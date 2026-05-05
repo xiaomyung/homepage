@@ -180,6 +180,11 @@ const MATCHEND_NEUTRAL_TICKS = Math.ceil(2500 / TICK_MS);
 const RESPAWN_GRACE = 30;
 const REPOSITION_SPEED = 6;
 const REPOSITION_TOL = 5;
+// Per-tick fraction of remaining distance — clamp to REPOSITION_SPEED
+// so the start of the walk-back doesn't pop. y-axis moves at half x's
+// max speed so depth-axis residue settles slower than the wider field.
+const REPOSITION_LERP_FRAC    = 0.1;
+const REPOSITION_Y_SPEED_FRAC = 0.5;
 const RESPAWN_DELAY_TICKS = Math.ceil(300 / TICK_MS);
 
 /* ── Stickman rig constants (shared with renderer) ─────────────
@@ -221,6 +226,17 @@ const BODY_TANG_RETAIN = 0.25;
 // the ball to the player's forward face instead of clamping behind.
 const TUNNEL_CORRECTION_MIN_SPEED = 1.0;
 const TUNNEL_CORRECTION_BEHIND_DOT = -0.3;
+
+// Stuck-on-top escape thresholds (see resolveBallVsBodyCapsule).
+// `nyU` is the contact-normal y-component (1 = perfectly vertical);
+// the tangential cap is in world units / tick.
+const STUCK_ON_TOP_NORMAL_THRESHOLD = 0.95;
+const STUCK_ON_TOP_TANG_THRESHOLD   = 0.05;
+const STUCK_ON_TOP_SLIDE_SPEED      = 0.5;
+
+// Minimum bounce velocity to record a particle event — gates out
+// settle-noise so microscopic ground bounces don't spawn dust.
+const BOUNCE_EVENT_MIN = 0.3;
 
 // Body column vertical anchors above the ground (z=0). Hip base is
 // where the leg capsules meet the torso; shoulder sits one torso
@@ -1243,14 +1259,14 @@ function tryBodyContact(state, p, collider, wx, wy, wz, wvx, wvy, wvz, colliderR
   // directly onto head / shoulder) produces zero tangential velocity
   // after cushion and re-clamps each tick. Give a small deterministic
   // forward slide so gravity carries the ball off the body instead
-  // of pinning it on top. Cap is small (~0.5) so non-pathological
-  // cases aren't affected.
-  if (vDotN < 0 && nyU > 0.95
-      && Math.abs(newWVX) < 0.05 && Math.abs(newWVZ) < 0.05) {
+  // of pinning it on top.
+  if (vDotN < 0 && nyU > STUCK_ON_TOP_NORMAL_THRESHOLD
+      && Math.abs(newWVX) < STUCK_ON_TOP_TANG_THRESHOLD
+      && Math.abs(newWVZ) < STUCK_ON_TOP_TANG_THRESHOLD) {
     const fwdX = Math.cos(p.heading);
     const fwdZ = Math.sin(p.heading);
-    newWVX = fwdX * 0.5;
-    newWVZ = fwdZ * 0.5;
+    newWVX = fwdX * STUCK_ON_TOP_SLIDE_SPEED;
+    newWVZ = fwdZ * STUCK_ON_TOP_SLIDE_SPEED;
   }
 
   ball.x  = newWX;
@@ -1777,11 +1793,10 @@ export function canKickReach(state, p, safetyMargin = 0) {
 }
 
 /**
- * Reachability + facing gate. Called from applyAction when the NN
- * or fallback asks to kick. Returns true if the commit succeeded
- * and the kick is now active. Failure reasons are surfaced as
- * `kick_missed` events so the teacher and trained brains both see
- * the same rejection signal.
+ * Reachability + facing gate. Called from applyAction when the
+ * controller asks to kick. Returns true if the commit succeeded and
+ * the kick is now active. Failure reasons surface as `kick_missed`
+ * events so callers and tests can observe the rejection.
  */
 const _scratchFoot = { x: 0, y: 0, z: 0 };
 function tryStartKick(state, p, dx, dy, dz, power) {
@@ -1811,7 +1826,9 @@ function tryStartKick(state, p, dx, dy, dz, power) {
   }
   // Reach budget: leg solves in (fwd, up); the perp axis is consumed
   // by the leg yaw so distances inside LATERAL_FOOT_FLEX don't eat
-  // into the 2D leg-length budget. Mirrors canKickReach exactly.
+  // into the 2D leg-length budget. Same gate as canKickReach (which
+  // the controller polls before sending the kick action). Defense in
+  // depth: keep both in sync.
   const perpEff = clamp(local.perp, -LATERAL_FOOT_FLEX, LATERAL_FOOT_FLEX);
   const dist = Math.hypot(local.fwd, local.up, perpEff);
   if (dist > KICK_REACH_MAX) {
@@ -2020,13 +2037,6 @@ const UPPERCUT_WINDUP = [-0.3,       1.7,         0, 0];
 // the right-arm fist finishes on the pusher's LEFT (and vice versa)
 // — a chin-height punch driving up through the target from below.
 const UPPERCUT_STRIKE = [2.0,        3.0,         -0.50, -0.80];
-
-function writePose(out, kf, armSign) {
-  out.upperAngle = kf[0];
-  out.lowerAngle = kf[1];
-  out.upperYaw   = kf[2] * armSign;
-  out.lowerYaw   = kf[3] * armSign;
-}
 
 function blendPose(out, a, b, t, armSign) {
   out.upperAngle = _lerp(a[0], b[0], t);
@@ -2262,18 +2272,13 @@ function pushStillInRange(state, pusher, victim) {
 }
 
 function tryPush(state, pusher, victim, powerNorm) {
+  if (pusher.kick.active) return;
+  if (pusher.pushTimer > 0) return;
+  if (!pushStillInRange(state, pusher, victim)) return;
+
   const f = state.field;
   const pusherCenterX = pusher.x + f.playerWidth / 2;
   const victimCenterX = victim.x + f.playerWidth / 2;
-
-  if (pusher.kick.active) return;
-  if (pusher.pushTimer > 0) return;
-  if (Math.abs(pusherCenterX - victimCenterX) > PUSH_RANGE_X) return;
-  if (Math.abs(pusher.y - victim.y) > PUSH_RANGE_Y) return;
-
-  const victimZ = (victim.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
-  if (!facingToward(pusher, victimCenterX, victimZ, PUSH_FACE_TOL)) return;
-
   const power01 = (clamp(powerNorm, -1, 1) + 1) / 2;
   const force = power01 * MAX_PUSH_FORCE * Math.max(MIN_PUSH_STAMINA, pusher.stamina);
 
@@ -2490,7 +2495,6 @@ function checkBallScoreOrOut(state) {
  * component that was reversed ('x' posts, 'y' field walls, 'z' ground/
  * ceiling); `force` is the magnitude of that component before the flip.
  */
-const BOUNCE_EVENT_MIN = 0.3;
 function recordBounce(state, axis, force) {
   if (!state.recordEvents) return;
   if (force < BOUNCE_EVENT_MIN) return;
@@ -2714,22 +2718,8 @@ function advancePause(state) {
   }
 
   if (state.pauseState === 'reposition') {
-    const f = state.field;
-    const tx1 = kickoffSpawnX(f, 'left');
-    const tx2 = kickoffSpawnX(f, 'right');
-    const cy = FIELD_HEIGHT / 2;
-
-    state.p1.stamina = Math.min(1, state.p1.stamina + STAMINA_REGEN);
-    state.p2.stamina = Math.min(1, state.p2.stamina + STAMINA_REGEN);
-    stepReposition(state.p1, tx1, cy);
-    stepReposition(state.p2, tx2, cy);
-
-    if (
-      Math.abs(state.p1.x - tx1) < REPOSITION_TOL &&
-      Math.abs(state.p2.x - tx2) < REPOSITION_TOL &&
-      Math.abs(state.p1.y - cy) < REPOSITION_TOL &&
-      Math.abs(state.p2.y - cy) < REPOSITION_TOL
-    ) {
+    const { tx1, tx2, cy } = stepBothPlayersToKickoff(state);
+    if (bothPlayersAtKickoff(state, tx1, tx2, cy)) {
       state.pauseState = 'waiting';
       state.pauseTimer = RESPAWN_DELAY_TICKS;
     }
@@ -2748,7 +2738,9 @@ function advancePause(state) {
 
 /** Trigger the time-up matchend flow: walk both players back to
  *  kickoff and then finalize. No celebrate/grieve cinematic since
- *  there's no winner to highlight. Idempotent. */
+ *  there's no winner to highlight. Returns nothing; idempotent —
+ *  silently no-ops if a pause is already running or the match is
+ *  already over. */
 export function endMatchByTime(state) {
   if (state.pauseState !== null || state.matchOver) return;
   clearInProgressActions(state.p1);
@@ -2769,21 +2761,9 @@ export function endMatchByTime(state) {
  *  the moment both players reach kickoff. */
 function advanceMatchend(state) {
   if (state.matchEndPhase === 'reposition') {
-    const f = state.field;
-    const tx1 = kickoffSpawnX(f, 'left');
-    const tx2 = kickoffSpawnX(f, 'right');
-    const cy = FIELD_HEIGHT / 2;
-    state.p1.stamina = Math.min(1, state.p1.stamina + STAMINA_REGEN);
-    state.p2.stamina = Math.min(1, state.p2.stamina + STAMINA_REGEN);
-    stepReposition(state.p1, tx1, cy);
-    stepReposition(state.p2, tx2, cy);
+    const { tx1, tx2, cy } = stepBothPlayersToKickoff(state);
     state.pauseTimer--;
-    const arrived =
-      Math.abs(state.p1.x - tx1) < REPOSITION_TOL &&
-      Math.abs(state.p2.x - tx2) < REPOSITION_TOL &&
-      Math.abs(state.p1.y - cy) < REPOSITION_TOL &&
-      Math.abs(state.p2.y - cy) < REPOSITION_TOL;
-    if (arrived || state.pauseTimer <= 0) {
+    if (bothPlayersAtKickoff(state, tx1, tx2, cy) || state.pauseTimer <= 0) {
       // Snap physics heading to face-each-other so the upcoming
       // pose / neutral phases LPF onto a clean reference (stepReposition
       // only translates — heading was whatever it was at goal time).
@@ -2822,12 +2802,34 @@ function stepReposition(p, tx, ty) {
   const absDx = Math.abs(dx);
   const absDy = Math.abs(dy);
   if (absDx > REPOSITION_TOL || absDy > REPOSITION_TOL) {
-    p.x += Math.sign(dx) * Math.min(absDx * 0.1, REPOSITION_SPEED);
-    p.y += Math.sign(dy) * Math.min(absDy * 0.1, REPOSITION_SPEED * 0.5);
+    p.x += Math.sign(dx) * Math.min(absDx * REPOSITION_LERP_FRAC, REPOSITION_SPEED);
+    p.y += Math.sign(dy) * Math.min(absDy * REPOSITION_LERP_FRAC, REPOSITION_SPEED * REPOSITION_Y_SPEED_FRAC);
   } else {
     p.x = tx;
     p.y = ty;
   }
+}
+
+/** Slow stamina regen + walk both players one step toward their
+ *  kickoff spots. Returns the spot coordinates so the caller can
+ *  pass them to bothPlayersAtKickoff without recomputing. */
+function stepBothPlayersToKickoff(state) {
+  const f = state.field;
+  const tx1 = kickoffSpawnX(f, 'left');
+  const tx2 = kickoffSpawnX(f, 'right');
+  const cy = FIELD_HEIGHT / 2;
+  state.p1.stamina = Math.min(1, state.p1.stamina + STAMINA_REGEN);
+  state.p2.stamina = Math.min(1, state.p2.stamina + STAMINA_REGEN);
+  stepReposition(state.p1, tx1, cy);
+  stepReposition(state.p2, tx2, cy);
+  return { tx1, tx2, cy };
+}
+
+function bothPlayersAtKickoff(state, tx1, tx2, cy) {
+  return Math.abs(state.p1.x - tx1) < REPOSITION_TOL
+      && Math.abs(state.p2.x - tx2) < REPOSITION_TOL
+      && Math.abs(state.p1.y - cy) < REPOSITION_TOL
+      && Math.abs(state.p2.y - cy) < REPOSITION_TOL;
 }
 
 /* ── Helpers ──────────────────────────────────────────────────── */

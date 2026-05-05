@@ -5,9 +5,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createField,
-  createState,
-  createSeededRng,
   FIELD_HEIGHT,
   PLAYER_WIDTH,
   PLAYER_HEIGHT,
@@ -15,9 +12,14 @@ import {
 import { perceive } from '../ai/perception.js';
 import { decide, INTENT_KINDS, ROLES } from '../ai/decision.js';
 import { ROLE_HYSTERESIS_TICKS } from '../ai/tuning.js';
+import { freshState as baseFreshState } from './helpers/state.mjs';
 
+// Decision tests pin behaviour against a NEUTRAL personality (all
+// offsets zero) — the helper's withAI:true mode would derive non-zero
+// personality offsets via derivePersonality, which decision doesn't
+// read but the explicit zero keeps the fixture intent clear.
 function freshState(seed = 42) {
-  const s = createState(createField(), createSeededRng(seed));
+  const s = baseFreshState(seed, { recordEvents: false });
   s.aiRoleState = { left: { role: null, since: 0 }, right: { role: null, since: 0 } };
   s.aiPersonality = {
     left: { kickAimYOffset: 0, pushPowerScale: 1 },

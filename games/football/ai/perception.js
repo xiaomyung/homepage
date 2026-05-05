@@ -9,6 +9,7 @@ import {
   FIELD_HEIGHT,
   MAX_PLAYER_SPEED,
   PUSH_FACE_TOL,
+  PUSH_RANGE_X,
   canKickReach,
   wrapAngle,
 } from '../physics.js';
@@ -22,10 +23,6 @@ import {
   GOALIE_THREAT_VEL,
   PUSH_RANGE_FRAC,
 } from './tuning.js';
-
-const SHORT_HORIZON_TICKS = 6;
-const LONG_HORIZON_TICKS = 30;
-const PUSH_RANGE_X = PLAYER_WIDTH;
 
 function playerCenter(p) {
   return { x: p.x + PLAYER_WIDTH / 2, y: p.y + PLAYER_HEIGHT / 2 };
@@ -47,11 +44,6 @@ export function interceptTicks(ball, p, horizon = PREDICTION_HORIZON_TICKS) {
     if (Math.hypot(bx - cx, by - cy) <= MAX_PLAYER_SPEED * k + 1e-6) return k;
   }
   return Infinity;
-}
-
-/** Linear ball position prediction `ticks` ahead in (x, y). */
-function predictBallXY(ball, ticks) {
-  return { x: ball.x + ball.vx * ticks, y: ball.y + ball.vy * ticks };
 }
 
 /** Point just behind the ball on the line ball -> opp goal centre.
@@ -138,9 +130,6 @@ export function perceive(state, which) {
   const selfInterceptTicks = interceptTicks(ball, self);
   const oppInterceptTicks = interceptTicks(ball, opp);
 
-  const ballPredShort = predictBallXY(ball, SHORT_HORIZON_TICKS);
-  const ballPredLong = predictBallXY(ball, LONG_HORIZON_TICKS);
-
   const kickSpot = attackKickSpot(field, ball, self.side);
 
   const selfHasKickReach = canKickReach(state, self, FALLBACK_SAFETY_MARGIN);
@@ -168,7 +157,6 @@ export function perceive(state, which) {
     oppCx: oc.x, oppCy: oc.y,
     selfDistToBall, oppDistToBall, selfDistToOpp,
     selfInterceptTicks, oppInterceptTicks,
-    ballPredShort, ballPredLong,
     attackKickSpot: kickSpot,
     selfHasKickReach, oppHasKickReach,
     oppBlocksLane,

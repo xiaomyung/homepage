@@ -7,16 +7,33 @@
  * placeholders for future stat widgets — they show "—" by default.
  */
 
+/** Format `seconds` as `MM:SS`, zero-padded. */
+function fmtMmSs(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+/** Look up a DOM element by id and throw a clear error if missing.
+ *  Used by the scoreboard / options-panel factories where the page
+ *  is always expected to ship the relevant markup; a missing id is
+ *  a bug, not a graceful-degradation case. */
+function requireEl(id) {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`[football/ui] required element #${id} missing`);
+  return el;
+}
+
 /* ── Scoreboard ─────────────────────────────────────────── */
 
 export function createScoreboard() {
   const el = {
-    p1Dot: document.getElementById('game-p1-dot'),
-    p1Name: document.getElementById('game-p1-name'),
-    p2Dot: document.getElementById('game-p2-dot'),
-    p2Name: document.getElementById('game-p2-name'),
-    score: document.getElementById('game-score'),
-    timer: document.getElementById('game-timer'),
+    p1Dot: requireEl('game-p1-dot'),
+    p1Name: requireEl('game-p1-name'),
+    p2Dot: requireEl('game-p2-dot'),
+    p2Name: requireEl('game-p2-name'),
+    score: requireEl('game-score'),
+    timer: requireEl('game-timer'),
   };
 
   return {
@@ -44,14 +61,9 @@ export function createScoreboard() {
       el.score.textContent = `Winner: ${name}`;
     },
     setTimer(seconds, totalSeconds) {
-      const fmt = (t) => {
-        const m = Math.floor(t / 60);
-        const s = Math.floor(t % 60);
-        return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-      };
       el.timer.textContent = totalSeconds != null
-        ? `${fmt(seconds)} / ${fmt(totalSeconds)}`
-        : fmt(seconds);
+        ? `${fmtMmSs(seconds)} / ${fmtMmSs(totalSeconds)}`
+        : fmtMmSs(seconds);
     },
   };
 }
@@ -59,8 +71,8 @@ export function createScoreboard() {
 /* ── Options button (panel toggle) ──────────────────────── */
 
 export function createOptionsToggle() {
-  const btn = document.getElementById('game-options-btn');
-  const panel = document.getElementById('game-options-panel');
+  const btn = requireEl('game-options-btn');
+  const panel = requireEl('game-options-panel');
   let open = false;
 
   const render = () => {

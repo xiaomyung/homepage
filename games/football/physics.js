@@ -1300,16 +1300,20 @@ function resolvePlayerPairCollision(p1, p2, pre1x, pre1y, pre2x, pre2y) {
   // 2 * STICKMAN_HEAD_RADIUS = 8 keeps the heads exactly tangent and
   // makes pair contact read as 'next to' instead of 'merged'.
   const r = 2 * STICKMAN_HEAD_RADIUS;
-  // Pre-tick centers in world coords.
+  // Pre-tick centers in world coords. Body anchor is `p.y * Z_STRETCH`
+  // (no PLAYER_HEIGHT/2 offset) — matches resolveBallVsBodyCapsule,
+  // hipAnchor, the kick / push gates, and the rendered figure. Only
+  // deltas matter for the swept-sphere math, so the absolute-position
+  // change is behaviour-preserving relative to the prior convention.
   const preC1x = pre1x + PLAYER_WIDTH / 2;
-  const preC1z = (pre1y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const preC1z = pre1y * Z_STRETCH;
   const preC2x = pre2x + PLAYER_WIDTH / 2;
-  const preC2z = (pre2y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const preC2z = pre2y * Z_STRETCH;
   // Post-tick centers.
   const postC1x = p1.x + PLAYER_WIDTH / 2;
-  const postC1z = (p1.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const postC1z = p1.y * Z_STRETCH;
   const postC2x = p2.x + PLAYER_WIDTH / 2;
-  const postC2z = (p2.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const postC2z = p2.y * Z_STRETCH;
 
   const preDx = preC1x - preC2x, preDz = preC1z - preC2z;
   const postDx = postC1x - postC2x, postDz = postC1z - postC2z;
@@ -1386,9 +1390,9 @@ function resolvePlayerPairCollision(p1, p2, pre1x, pre1y, pre2x, pre2y) {
   // positions are still overlapping — push them apart to contact
   // distance. Otherwise we've landed exactly at contact distance.
   const c1x = p1.x + PLAYER_WIDTH / 2;
-  const c1z = (p1.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const c1z = p1.y * Z_STRETCH;
   const c2x = p2.x + PLAYER_WIDTH / 2;
-  const c2z = (p2.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
+  const c2z = p2.y * Z_STRETCH;
   const dx = c1x - c2x;
   const dz = c1z - c2z;
   const dist2 = dx * dx + dz * dz;

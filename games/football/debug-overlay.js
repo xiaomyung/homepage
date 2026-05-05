@@ -31,7 +31,6 @@ import {
   HIP_BASE_Z,
   KICK_FACE_TOL,
   KICK_REACH_MAX,
-  PLAYER_HEIGHT,
   PLAYER_WIDTH,
   PUSH_FACE_TOL,
   PUSH_RANGE_X,
@@ -249,12 +248,10 @@ export class DebugOverlay {
     for (const mesh of this._meshes.allMeshes) mesh.visible = false;
   }
 
-  /** Update per-player meshes. Mirrors the resolver anchors exactly:
-   *    body / head / kick reach → hipAnchor (X = p.x + W/2, Y = HIP_BASE_Z + airZ, Z = p.y * Z_STRETCH).
-   *    pair disc                → player CENTER (uses (p.y + PLAYER_HEIGHT/2) * Z_STRETCH per the resolver).
-   *    push plate / push cone   → pusher Y has NO PLAYER_HEIGHT/2 offset in tryPush.
-   *    foot                     → ikFootWorld(p), the live IK position.
-   */
+  /** Update per-player meshes. All collider centres now share one
+   *  convention — `p.y * Z_STRETCH` for world-z — matching the body
+   *  capsule, kick gate, hip anchor, push gate, pair-collision
+   *  resolver, and the rendered figure. */
   _drawPlayers(players) {
     const m = this._meshes;
     for (let i = 0; i < players.length && i < 2; i++) {
@@ -265,8 +262,6 @@ export class DebugOverlay {
       const hipZ = p.y * Z_STRETCH;
       const torsoMidY = airZ + SHOULDER_Z / 2;
       const headY = HEAD_CENTER_Z + airZ;
-      const centerZ = (p.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
-      const pushCenterZ = p.y * Z_STRETCH;
 
       m.bodyCapsules[i].position.set(hipX, torsoMidY, hipZ);
       m.bodyCapsules[i].visible = true;
@@ -274,7 +269,7 @@ export class DebugOverlay {
       m.headSpheres[i].position.set(hipX, headY, hipZ);
       m.headSpheres[i].visible = true;
 
-      m.pairDiscs[i].position.set(hipX, PAIR_DISC_LIFT_Y, centerZ);
+      m.pairDiscs[i].position.set(hipX, PAIR_DISC_LIFT_Y, hipZ);
       m.pairDiscs[i].visible = true;
 
       m.kickReachSpheres[i].position.set(hipX, hipY, hipZ);
@@ -284,11 +279,11 @@ export class DebugOverlay {
       m.kickCones[i].rotation.set(-Math.PI / 2, 0, -p.heading);
       m.kickCones[i].visible = true;
 
-      m.pushCones[i].position.set(hipX, PUSH_CONE_LIFT_Y, pushCenterZ);
+      m.pushCones[i].position.set(hipX, PUSH_CONE_LIFT_Y, hipZ);
       m.pushCones[i].rotation.set(-Math.PI / 2, 0, -p.heading);
       m.pushCones[i].visible = true;
 
-      m.pushPlates[i].position.set(hipX, PUSH_PLATE_LIFT_Y, pushCenterZ);
+      m.pushPlates[i].position.set(hipX, PUSH_PLATE_LIFT_Y, hipZ);
       m.pushPlates[i].visible = true;
 
       // Foot sphere — only when actively kicking.

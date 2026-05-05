@@ -51,7 +51,10 @@ Works as-is with any Node 22+ install (Homebrew, nvm, fnm, distro package).
 | `games/blackhole/blackhole.js` | ASCII Schwarzschild lens background animation |
 | `games/football/main.js` | Football game entry point |
 | `games/football/physics.js` | Headless physics engine (DOM-free, pure math) |
+| `games/football/frame-loop.js` | Fixed-timestep rAF → tick accumulator (testable in isolation) |
 | `games/football/renderer.js` | Three.js 3D renderer (pooled capsule + sphere meshes, name labels, role dots) |
+| `games/football/renderer-math.js` | Pure renderer math (limb-angle helpers, easing) — extracted for unit tests |
+| `games/football/debug-overlay.js` | Translucent debug overlay — every physics collider as a coloured surface |
 | `games/football/animation/` | Pure animation pipeline: state.js + poses.js + curves.js + sampler |
 | `games/football/ai/controller.js` | Public seam: `decide(state, side) → Float64Array(9)` |
 | `games/football/ai/perception.js` | Pure: state → situational facts |
@@ -59,8 +62,9 @@ Works as-is with any Node 22+ install (Homebrew, nvm, fnm, distro package).
 | `games/football/ai/action.js` | Pure: intent → 9-float action vector |
 | `games/football/ai/tuning.js` | All controller tunables in one file |
 | `games/football/ai/names.js` | Footballer-name pool, seeded picker |
-| `games/football/ui.js` | Scoreboard (role dots, names, score, timer), camera toggles |
-| `games/football/tests/` | Node test runner tests — physics, ai/*, animation/*, frame-loop, stamina |
+| `games/football/rng-salts.js` | Shared seed-derivation salts (main.js + tests) |
+| `games/football/ui.js` | Scoreboard (role dots, names, score, timer), camera + debug toggles |
+| `games/football/tests/` | Node test runner tests — physics, ai/*, animation/*, frame-loop, stamina; shared `helpers/state.mjs` fixture |
 | `games/football/debug/` | Dev tools: test-renderer harness, Playwright screenshot scripts |
 | `fonts/` | Vendored Iosevka Term woff2 (regular + medium) |
 
@@ -96,10 +100,28 @@ seeded from each match's seed.
   exports the same `decide(state, side) → Float64Array(9)` and
   swaps in via one import.
 
+### Match flow
+
+60 s clock, first to `WIN_SCORE` goals wins. A winning goal
+triggers a matchend cinematic — both players walk to kickoff,
+camera dollies in, winner celebrates / loser grieves, camera
+dollies out, brief settle, then the next match starts. Time-up
+with no winner skips the cinematic — players walk back, then
+straight into the next match.
+
 ### Controls
 
-- **[ options ]** — toggles the panel: freecam + follow-ball
-  toggles, test-renderer link.
+- **[ options ]** — toggles the panel: follow-ball / freecam /
+  debug-overlay toggles, test-renderer link.
+- **[ debug: on/off ]** — paints every physics collider as a
+  translucent coloured surface (body capsule, head sphere,
+  pair-collision disc, kick reach + facing cone + lateral cap,
+  push range + facing cone, foot sphere, goal box / posts /
+  crossbar, field walls, ground / ceiling). All positions and
+  dimensions are read live from `state.field` and the player
+  records — change a constant in `physics.js` and the overlay
+  reflects it on next reload. Implementation in `debug-overlay.js`;
+  renderer.js just instantiates the class and forwards the toggle.
 - The **[ start ] / [ stop ] / [ reset ]** buttons in the panel
   are stubs — they sit in the DOM as layout placeholders for when
   learning gets re-introduced; clicking does nothing today.

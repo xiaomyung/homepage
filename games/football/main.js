@@ -24,6 +24,7 @@ import {
   createOptionsToggle,
   createFreeCamToggle,
   createFollowCamToggle,
+  createDebugToggle,
 } from './ui.js';
 import { MATCH_DURATION_MS, MAX_SHOWCASE_TICKS } from './ai/tuning.js';
 import { RNG_SALT_PERSONALITY, RNG_SALT_NAMES } from './rng-salts.js';
@@ -56,6 +57,7 @@ async function main() {
   let followCamCtl = null;
   freeCamCtl = createFreeCamToggle({ renderer, onChange: () => followCamCtl?.refresh() });
   followCamCtl = createFollowCamToggle({ renderer, onChange: () => freeCamCtl?.refresh() });
+  createDebugToggle({ renderer });
   renderer.setFollowCam(true);
   followCamCtl.refresh();
 

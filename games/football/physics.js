@@ -241,14 +241,14 @@ const BOUNCE_EVENT_MIN = 0.3;
 // Body column vertical anchors above the ground (z=0). Hip base is
 // where the leg capsules meet the torso; shoulder sits one torso
 // length above; head sits a neck-gap + head-radius above the shoulder.
-const HIP_BASE_Z      = STICKMAN_LIMB_FULL_H;                          // 20
+export const HIP_BASE_Z      = STICKMAN_LIMB_FULL_H;                   // 20
 const SHOULDER_Z      = HIP_BASE_Z + STICKMAN_SHOULDER_OFY;            // 40.24
 const HEAD_CENTER_Z   = SHOULDER_Z + STICKMAN_HEAD_GAP_Y + STICKMAN_HEAD_RADIUS; // 47.11
 
 // Maximum kick reach — full stretched leg length. See the Kick
 // constants block above for context; defined here because it needs
 // the rig constants.
-const KICK_REACH_MAX = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG;        // 20
+export const KICK_REACH_MAX = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG; // 20
 
 /* ── Field & state factories ──────────────────────────────────── */
 

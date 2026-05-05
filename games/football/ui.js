@@ -123,6 +123,30 @@ export function createFreeCamToggle({ renderer, onChange }) {
   return { refresh: render };
 }
 
+/* ── Debug-collider overlay toggle ──────────────────────── */
+
+/**
+ * Wires the options-panel debug toggle to the renderer's debug-mode
+ * flag. When on, the renderer overlays every physics collider as a
+ * translucent coloured surface (player capsule, push range, kick reach,
+ * foot, goal box, etc.).
+ */
+export function createDebugToggle({ renderer }) {
+  const btn = document.getElementById('game-debug-btn');
+  if (!btn) return null;
+  const render = () => {
+    const on = renderer.isDebugModeActive();
+    btn.textContent = on ? '[ debug: on ]' : '[ debug: off ]';
+    btn.dataset.active = on ? 'true' : 'false';
+  };
+  btn.addEventListener('click', () => {
+    renderer.setDebugMode(!renderer.isDebugModeActive());
+    render();
+  });
+  render();
+  return { refresh: render };
+}
+
 /* ── Follow-ball camera toggle ──────────────────────────── */
 
 export function createFollowCamToggle({ renderer, onChange }) {

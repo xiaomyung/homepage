@@ -1773,7 +1773,7 @@ export function ikFootWorld(p, out) {
 // rather than a sideways spread.
 export const LATERAL_FOOT_FLEX = 6;
 const FOOT_BALL_CONTACT_R = FOOT_RADIUS + BALL_RADIUS;
-const FOOT_LATERAL_REACH = LATERAL_FOOT_FLEX + FOOT_BALL_CONTACT_R;
+export const FOOT_LATERAL_REACH = LATERAL_FOOT_FLEX + FOOT_BALL_CONTACT_R;
 
 export function canKickReach(state, p, safetyMargin = 0) {
   const predicted = predictBallAtStrike(state.ball, strikeLeadTicks('ground'), _scratchPredicted);

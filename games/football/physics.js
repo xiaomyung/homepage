@@ -158,7 +158,11 @@ const GOAL_LINE_INSET = 6; // scoring line sits this far inside the mouth
 // mouth. Without this inset a ball clipping the visible post
 // surface would score through it.
 export const GOAL_POST_RADIUS = 1.2;
-const GOAL_MOUTH_Z = 26;  // crossbar height (unchanged)
+// Crossbar height — single source of truth for both physics
+// (goalBox.maxZ, the crossbar collider, the scoring ceiling) and the
+// rendered goal frame. Sized so the goal mouth comfortably clears
+// player head height (~51 world units) plus a small margin.
+const GOAL_MOUTH_Z = 58.5;
 const GOAL_MOUTH_WIDTH = 28.6;  // z-span of the mouth (30% + another 10% wider than the original 20)
 const GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - GOAL_MOUTH_WIDTH) / 2;
 const GOAL_MOUTH_Y_MAX = (FIELD_HEIGHT + GOAL_MOUTH_WIDTH) / 2;

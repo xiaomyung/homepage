@@ -1263,10 +1263,9 @@ export class Renderer {
     this._addArc(0, zNear, cornerR, cornerR, 3 * Math.PI / 2,  TWO_PI,          12, mutedMat);
 
     const goalWidth = (f.goalMouthYMax - f.goalMouthYMin) * Z_STRETCH;
-    // Crossbar height = physics crossbar height (state.field.goalMouthZMax).
-    // Previously the visible model used `goalMouthZMax * 2.25`, which made
-    // the rendered goal 2.25× taller than the physics collider — balls
-    // bounced off the crossbar at y=26 while the visible bar sat at y=58.5.
+    // Visible crossbar height = physics crossbar height. Single source
+    // of truth in physics (GOAL_MOUTH_Z → field.goalMouthZMax); both
+    // the rendered goal frame and the debug overlay read from here.
     const goalHeight = f.goalMouthZMax;
     const goalCenterZ = ((f.goalMouthYMin + f.goalMouthYMax) / 2) * Z_STRETCH;
 

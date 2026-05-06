@@ -5,63 +5,29 @@
 // celebrating?). Pure — no DOM, no three.js.
 
 import { REACT_ANIM_MS, Z_STRETCH, wrapAngle } from '../physics.js';
-import { LPF_DEAD_ZONE } from './poses.js';
-
-// ── Smoothing + phase-rate tuning ────────────────────────────
-// Low-pass smoothing factor for tilt / amplitude / celebrate. Values
-// converge to their targets in ~1/STICKMAN_SMOOTH frames.
-export const STICKMAN_SMOOTH = 0.15;
-
-// Walk-tilt shape. Below RUN_THRESHOLD, no forward/back lean. Above
-// it, tilt grows linearly with speed up to TILT_MAX.
-export const STICKMAN_RUN_THRESHOLD = 1.2;
-export const STICKMAN_TILT_PER_SPEED = 0.09;
-export const STICKMAN_TILT_MAX = 0.45;
-
-// Celebrate phase rate — drives the jump-cycle pose (crouch → launch →
-// apex → land) and fist-pump cadence. ~0.8 s per pump, slow enough for
-// the hop arc to read as a real jump.
-export const CELEB_PHASE_RATE = 0.125;
-
-// Grieve rotation rate — loser's gentle back-and-forth body rock.
-// ~80 ticks per cycle = ~1.3 s of sway.
-export const GRIEVE_PHASE_RATE = 0.08;
-
-// Rest (exhausted-and-recovering) body-spin rate. ~62 ticks per full
-// rotation ≈ 1 s — readable at game speed without inducing motion sickness.
-export const REST_PHASE_RATE = 0.10;
-
-// Heading the matchend pose snaps to so winner/loser both face the
-// camera (+z world axis = π/2 in the heading frame).
-const FACE_CAMERA_HEADING = Math.PI / 2;
-
-// TURN / STOP detection thresholds. Scales map raw angular velocity
-// (rad/tick) and deceleration (u/tick²) onto the 0..1 factor the
-// pose composer reads. Empirical — tuned against the locomotion
-// harness 'turn 180°' and 'hard stop' scenarios.
-export const TURN_ANGVEL_SCALE = 0.08;   // rad/tick that reads as "full turn"
-export const STOP_DECEL_SCALE  = 0.8;    // u/tick² deceleration that reads as "full stop brake"
-
-// Walk-cycle tuning. Amplitude grows linearly with speed up to a cap;
-// swing rate (radians per tick of phase advance) also rises with speed
-// so faster movement = faster step cadence.
-const WALK_AMP_PER_SPEED   = 0.35;
-const WALK_AMP_MAX         = 1.0;
-const SWING_RATE_BASE      = 0.2;
-const SWING_RATE_PER_SPEED = 0.04;
-
-// Reposition heading-override gate. Below this physics speed the
-// motion-vector heading is too noisy to track, so animHeading sticks
-// with the physics heading instead.
-const REPOSITION_SPEED_GATE = 0.3;
-
-// State-label gates. Used only to emit the advisory `out.state`
-// label; the pose composer reads smoothed factors directly.
-const STATE_LABEL_STOP_GATE = 0.5;
-const STATE_LABEL_TURN_GATE = 0.5;
-const STATE_LABEL_WALK_GATE = 0.5;
-
-const TWO_PI = Math.PI * 2;
+import {
+  STICKMAN_SMOOTH,
+  STICKMAN_RUN_THRESHOLD, STICKMAN_TILT_PER_SPEED, STICKMAN_TILT_MAX,
+  CELEB_PHASE_RATE, GRIEVE_PHASE_RATE, REST_PHASE_RATE,
+  FACE_CAMERA_HEADING,
+  TURN_ANGVEL_SCALE, STOP_DECEL_SCALE,
+  WALK_AMP_PER_SPEED, WALK_AMP_MAX,
+  SWING_RATE_BASE, SWING_RATE_PER_SPEED,
+  REPOSITION_SPEED_GATE,
+  STATE_LABEL_STOP_GATE, STATE_LABEL_TURN_GATE, STATE_LABEL_WALK_GATE,
+  TWO_PI,
+  LPF_DEAD_ZONE,
+} from './tuning.js';
+// Re-export the previously-public surface (STICKMAN_SMOOTH,
+// STICKMAN_RUN_THRESHOLD, STICKMAN_TILT_*, *_PHASE_RATE,
+// TURN_ANGVEL_SCALE, STOP_DECEL_SCALE) so consumers that imported
+// from animation/state.js continue to work.
+export {
+  STICKMAN_SMOOTH,
+  STICKMAN_RUN_THRESHOLD, STICKMAN_TILT_PER_SPEED, STICKMAN_TILT_MAX,
+  CELEB_PHASE_RATE, GRIEVE_PHASE_RATE, REST_PHASE_RATE,
+  TURN_ANGVEL_SCALE, STOP_DECEL_SCALE,
+} from './tuning.js';
 
 /** Allocate a fresh per-player animation state. Call once per
  *  player; mutate via advanceAnimState each frame. */

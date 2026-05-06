@@ -60,6 +60,7 @@ import {
 import {
   updateNameLabels, makeNameLabel, setLabelText,
 } from './renderer/scoreboard.js';
+import { renderState as renderStateImpl } from './renderer/update-loop.js';
 import {
   HORIZONTAL_MARGIN,
   STICKMAN_TORSO_SHELL_THICKNESS, STICKMAN_TORSO_FILL_RADIUS,
@@ -554,159 +555,8 @@ export class Renderer {
     this.renderer.dispose();
   }
 
-  renderState(state) {
-    const tick = state.tick || 0;
-    // state.players is the N-player path (any array of player-shaped
-    // objects). Falls back to [p1, p2] for the single-match case.
-    const players = state.players || [state.p1, state.p2];
-    const prevTorsoCursor    = this._stickmanTorsoCursor;
-    const prevUpperArmCursor = this._stickmanUpperArmCursor;
-    const prevLowerArmCursor = this._stickmanLowerArmCursor;
-    const prevLegCursor      = this._stickmanLegCursor;
-    const prevSphCursor      = this._stickmanSphCursor;
-    const prevPlayerShadowCursor = this._playerShadowCursor;
-    const prevBallCursor         = this._ballCursor;
-    const prevBallShadowCursor   = this._ballShadowCursor;
-    const prevRestStarCursor     = this._restStarCursor;
-    this._stickmanTorsoCursor    = 0;
-    this._stickmanUpperArmCursor = 0;
-    this._stickmanLowerArmCursor = 0;
-    this._stickmanLegCursor      = 0;
-    this._stickmanSphCursor      = 0;
-    this._playerShadowCursor     = 0;
-    this._ballCursor             = 0;
-    this._ballShadowCursor       = 0;
-    this._restStarCursor         = 0;
-    // Per-player dead-ball flags. The harness may stamp each player
-    // with `_scenePauseState` + `_sceneGoalScorer` + `_sceneWinner` so
-    // multiple independent scenarios inside one composite render
-    // frame don't cross-contaminate — in that case we read the
-    // player's own scenario state instead of the global composite.
-    // When those annotations aren't set (live match path), we fall
-    // back to the global state.pauseState.
-    for (let i = 0; i < players.length; i++) {
-      const p = players[i];
-      const pPause      = p._scenePauseState !== undefined ? p._scenePauseState : state.pauseState;
-      const pGoalScorer = p._sceneGoalScorer !== undefined ? p._sceneGoalScorer : state.goalScorer;
-      const pWinner     = p._sceneWinner     !== undefined ? p._sceneWinner     : state.winner;
-      const pSide       = p._sceneSide       !== undefined ? p._sceneSide
-                         : p === state.p1 ? 'left' : p === state.p2 ? 'right' : null;
-
-      const pCelebrating = pPause === 'celebrate';
-      const pMatchend    = pPause === 'matchend';
-      const pMatchEndPhase = state.matchEndPhase;
-
-      // Per-player flags drive both pose layers and the heading
-      // override in animation/state.js. The matchend cinematic layers
-      // its phases onto these existing flags:
-      //   reposition phase → walk-back, motion-direction heading
-      //   pose phase       → face camera + winner celebrates / loser grieves
-      //   neutral phase    → smooth turn back to face-each-other
-      let isScorer    = pCelebrating && pGoalScorer === p;
-      let isGrieving  = pCelebrating && pGoalScorer && pGoalScorer !== p;
-      let isReposition = pPause === 'reposition';
-      let faceCameraSmooth = false;
-      let faceEachOtherSmooth = false;
-      let isMatchendWin = false, isMatchendLose = false;
-
-      if (pMatchend && pWinner && pSide) {
-        const isWinner = pSide === pWinner;
-        if (pMatchEndPhase === 'reposition') {
-          isReposition = true;
-        } else if (pMatchEndPhase === 'pose') {
-          faceCameraSmooth = true;
-          isScorer = isWinner;
-          isGrieving = !isWinner;
-        } else if (pMatchEndPhase === 'neutral') {
-          faceEachOtherSmooth = true;
-        } else {
-          // Defensive fallback for harness scenarios that set
-          // pauseState='matchend' without matchEndPhase — keep the
-          // legacy static MATCHEND_WIN/LOSE pose.
-          isMatchendWin  = isWinner;
-          isMatchendLose = !isWinner;
-        }
-      }
-      this._addStickman(
-        p, COLOR_TEXT, tick, isScorer, isGrieving, isReposition,
-        isMatchendWin, isMatchendLose, faceCameraSmooth, faceEachOtherSmooth,
-      );
-      this._placePlayerShadow(p);
-    }
-    // Player name labels — drives the two billboarded sprites above
-    // the heads. Names come from state.matchNames; positions come from
-    // each player's last-rendered head pose stashed on player.anim.
-    this._updateNameLabels(state, players);
-    for (let i = this._stickmanTorsoCursor; i < prevTorsoCursor; i++) {
-      this._stickmanTorsoOutline[i].visible = false;
-      this._stickmanTorsoFill[i].visible = false;
-      this._stickmanTorsoDisc[i].visible = false;
-    }
-    for (let i = this._stickmanUpperArmCursor; i < prevUpperArmCursor; i++) this._stickmanUpperArm[i].visible = false;
-    for (let i = this._stickmanLowerArmCursor; i < prevLowerArmCursor; i++) this._stickmanLowerArm[i].visible = false;
-    for (let i = this._stickmanLegCursor; i < prevLegCursor; i++) this._stickmanLeg[i].visible = false;
-    for (let i = this._stickmanSphCursor; i < prevSphCursor; i++) this._stickmanSph[i].visible = false;
-    for (let i = this._playerShadowCursor; i < prevPlayerShadowCursor; i++) this._playerShadows[i].visible = false;
-    for (let i = this._restStarCursor; i < prevRestStarCursor; i++) this._restStars[i].visible = false;
-
-    // Balls — single-ball state.ball path is backward-compatible;
-    // state.balls[] is the N-ball path for harnesses/testing.
-    // Each ball mesh accumulates its own spin quaternion across
-    // frames, so callers must pass balls in stable index order.
-    const balls = state.balls || [state.ball];
-    const R = BALL_VISUAL_RADIUS;
-    for (let bi = 0; bi < balls.length; bi++) {
-      const b = balls[bi];
-      while (this._ballMeshes.length <= bi) this._mkBall();
-      while (this._ballShadows.length <= bi) this._ballShadows.push(this._makeShadow());
-      const mesh = this._ballMeshes[bi];
-      mesh.visible = true;
-      const ballAltitude = b.z || 0;
-      mesh.position.set(b.x, ballAltitude + BALL_VISUAL_RADIUS, b.y * Z_STRETCH);
-      mesh.scale.set(BALL_VISUAL_RADIUS, BALL_VISUAL_RADIUS, BALL_VISUAL_RADIUS);
-      // Rolling-without-slipping spin from linear velocity.
-      const omegaX = (b.vy * Z_STRETCH) / R;
-      const omegaZ = -b.vx / R;
-      const omegaMag = Math.sqrt(omegaX * omegaX + omegaZ * omegaZ);
-      if (omegaMag > 1e-5) {
-        this._ballSpinAxis.set(omegaX / omegaMag, 0, omegaZ / omegaMag);
-        this._ballSpinQuat.setFromAxisAngle(this._ballSpinAxis, omegaMag);
-        mesh.quaternion.premultiply(this._ballSpinQuat);
-      }
-      // Ground shadow for this ball — stays flat on the xz-plane,
-      // grows slightly and fades as the ball rises.
-      const shadow = this._ballShadows[bi];
-      const airH = Math.max(0, b.z || 0);
-      const ballShadowR = BALL_VISUAL_RADIUS * (1 + airH * BALL_SHADOW_GROWTH_PER_Z);
-      const ballShadowA = SHADOW_ALPHA_BASE / (1 + airH * BALL_SHADOW_FADE_PER_Z);
-      shadow.visible = true;
-      shadow.position.set(b.x, SHADOW_Y, b.y * Z_STRETCH);
-      shadow.scale.set(ballShadowR * 2, ballShadowR * 2, 1);
-      shadow._uAlpha.value = ballShadowA;
-    }
-    this._ballCursor       = balls.length;
-    this._ballShadowCursor = balls.length;
-    // Hide any ball / ball-shadow slots beyond what this frame used.
-    for (let i = this._ballCursor;       i < prevBallCursor;       i++) this._ballMeshes[i].visible = false;
-    for (let i = this._ballShadowCursor; i < prevBallShadowCursor; i++) this._ballShadows[i].visible = false;
-
-    // Consume per-frame physics events. `state.events` is cleared at
-    // the top of each tick, so anything here is brand-new this frame.
-    for (let i = 0; i < state.events.length; i++) {
-      const ev = state.events[i];
-      if (ev.type === 'ball_bounce') this._spawnBounceParticles(ev);
-      else if (ev.type === 'push_contact') this._spawnPushContactParticles(ev);
-      else if (ev.type === 'goal') this._spawnGoalBurst(ev.scorer);
-    }
-    this._stepParticles();
-    this._drawParticles();
-
-    this._debugOverlay.update(state, players);
-
-    if (this._followCam && this._followCam.active) this._stepFollowCam(state);
-    else if (this._debugCam && this._debugCam.active) this._stepDebugCam();
-    this.renderer.render(this.scene, this.camera);
-  }
+  /** Per-frame entry — implementation lives in renderer/update-loop.js. */
+  renderState(state) { return renderStateImpl(this, state); }
 
   /* ── Camera (implementations live in renderer/camera.js) ── */
   _placeCamera()                                { return placeCamera(this); }

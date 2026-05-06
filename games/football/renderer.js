@@ -61,6 +61,7 @@ import {
   updateNameLabels, makeNameLabel, setLabelText,
 } from './renderer/scoreboard.js';
 import { renderState as renderStateImpl } from './renderer/update-loop.js';
+import { initScene, disposeScene } from './renderer/scene.js';
 import {
   HORIZONTAL_MARGIN,
   STICKMAN_TORSO_SHELL_THICKNESS, STICKMAN_TORSO_FILL_RADIUS,
@@ -103,15 +104,17 @@ export class Renderer {
     this.fieldWidth = fieldWidth;
     this._field = createField(fieldWidth);
     this._debugCam = null;
-
-    this.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
-    this.renderer.setPixelRatio(window.devicePixelRatio || 1);
-    this.renderer.setClearColor(0x000000, 0);
-
-    this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(CAMERA_FOV, 2, 0.1, 4000);
     this._followCam = null;
-    this._placeCamera();
+
+    // Track static scene objects so dispose() can release them. Set
+    // up BEFORE initScene because initScene reads from no static
+    // arrays but later constructor steps push into them.
+    this._staticGeometries = [];
+    this._staticMaterials = [];
+
+    // Three.js renderer + scene + camera + lights all live in
+    // renderer/scene.js.
+    initScene(this, canvas);
     // Camera modes — both wired up at construction, start inactive.
     // Mutually exclusive: enabling one disables the other.
     this._initDebugCam();
@@ -119,27 +122,6 @@ export class Renderer {
     // Debug-collider overlay — fully self-contained module. Pool is
     // built lazily on first enable; renderer just forwards the toggle.
     this._debugOverlay = new DebugOverlay(this.scene);
-
-    // Track static scene objects so dispose() can release them.
-    this._staticGeometries = [];
-    this._staticMaterials = [];
-
-    // Lighting for the ball sphere and cylindrical stickmen. The
-    // rest of the scene is rendered with unlit line / basic materials,
-    // so these lights only affect meshes that use a lit material.
-    // Low ambient + strong directional gives pronounced terminator
-    // shading so the ball and stickmen read as solid 3D objects
-    // instead of flat discs / pipes.
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.35));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1.15);
-    dirLight.position.set(0.6, 1.0, 0.4);  // from upper-front
-    this.scene.add(dirLight);
-    // Second dim fill light from the opposite side so the shadow
-    // side of the ball doesn't go completely dead — gives a soft
-    // rim where the shaded half curves back around.
-    const fill = new THREE.DirectionalLight(0xffffff, 0.35);
-    fill.position.set(-0.4, 0.3, -0.5);
-    this.scene.add(fill);
 
     // Dedicated ball mesh: a real 3D sphere in world space at
     // (ball.x, ball.z, ball.y * Z_STRETCH). Visual radius equals
@@ -545,15 +527,9 @@ export class Renderer {
     this._placeCamera();
   }
 
-  dispose() {
-    if (this._resizeObserver) this._resizeObserver.disconnect();
-    if (this._debugKeydown) window.removeEventListener('keydown', this._debugKeydown);
-    if (this._debugKeyup) window.removeEventListener('keyup', this._debugKeyup);
-    for (const geom of this._staticGeometries) geom.dispose();
-    for (const mat of this._staticMaterials) mat.dispose();
-    while (this.scene.children.length > 0) this.scene.remove(this.scene.children[0]);
-    this.renderer.dispose();
-  }
+  /** Release every tracked geometry / material, drop scene children,
+   *  detach the WebGL context. Implementation in renderer/scene.js. */
+  dispose() { return disposeScene(this); }
 
   /** Per-frame entry — implementation lives in renderer/update-loop.js. */
   renderState(state) { return renderStateImpl(this, state); }

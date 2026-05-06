@@ -26,7 +26,7 @@ import {
   ACTION_VEC_SIZE,
 } from '../../physics.js';
 import { derivePersonality } from '../../ai/controller.js';
-import { RNG_SALT_PERSONALITY } from '../../rng-salts.js';
+import { RNG_SALT_PERSONALITY } from '../../util/rng-salts.js';
 
 export function freshState(seed = 42, { withAI = false, recordEvents = true, graceFrames = 0 } = {}) {
   const field = createField();

@@ -18,7 +18,7 @@ import {
 } from './physics.js';
 import { decide, derivePersonality } from './ai/controller.js';
 import { pickMatchNames } from './ai/names.js';
-import { computeTicks } from './frame-loop.js';
+import { computeTicks } from './util/frame-loop.js';
 import {
   createScoreboard,
   createOptionsToggle,
@@ -27,7 +27,7 @@ import {
   createDebugToggle,
 } from './ui.js';
 import { MATCH_DURATION_MS, MAX_SHOWCASE_TICKS } from './ai/tuning.js';
-import { RNG_SALT_PERSONALITY, RNG_SALT_NAMES } from './rng-salts.js';
+import { RNG_SALT_PERSONALITY, RNG_SALT_NAMES } from './util/rng-salts.js';
 
 let renderer = null;
 let scoreboard = null;

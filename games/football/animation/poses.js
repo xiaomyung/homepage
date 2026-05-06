@@ -39,7 +39,7 @@ import {
   kickLegPose,
   pushArmPose,
 } from '../physics.js';
-import { forearmAngleFor, shinAngleFor } from '../renderer-math.js';
+import { forearmAngleFor, shinAngleFor } from '../util/renderer-math.js';
 import {
   airkickTiltAt, airkickTuckAt, kickArmAngleAt, kickDipAt, kickTiltAt,
   kickHipTwistAt, kickSupportCrouchAt,

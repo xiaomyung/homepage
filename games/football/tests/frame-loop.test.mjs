@@ -6,7 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeTicks } from '../frame-loop.js';
+import { computeTicks } from '../util/frame-loop.js';
 
 const TICK_MS = 16;
 const MAX = 5;

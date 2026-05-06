@@ -22,7 +22,7 @@
 // Returns a number. No per-sample object allocation — the renderer
 // calls this in the hot draw path.
 
-import { easeInOut, easeOut } from '../renderer-math.js';
+import { easeInOut, easeOut } from '../util/renderer-math.js';
 
 const EASE_STEP   = (u) => (u < 0.9999 ? 0 : 1);
 const EASE_LINEAR = (u) => u;

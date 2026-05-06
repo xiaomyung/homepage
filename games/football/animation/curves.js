@@ -8,7 +8,7 @@
 // windup → strike → settle) and return the channel's contribution
 // at that phase.
 
-import { easeInOut, easeOut } from '../renderer-math.js';
+import { easeInOut, easeOut } from '../util/renderer-math.js';
 import { AIRKICK_PEAK_FRAC } from '../physics.js';
 import {
   PUSH_RAISE_T, PUSH_WINDUP_T, PUSH_STRIKE_T, PUSH_SETTLE_T,

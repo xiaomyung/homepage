@@ -34,13 +34,13 @@ import {
   Z_STRETCH,
   createField,
 } from './physics.js';
-import { DebugOverlay } from './debug-overlay.js';
+import { DebugOverlay } from './debug/overlay.js';
 import { advanceAnimState, createAnimState } from './animation/state.js';
 import { composeStickmanPose, createPoseScratch } from './animation/poses.js';
 import {
   staminaDiscRadius,
   updateStaminaClipPlane,
-} from './renderer-math.js';
+} from './util/renderer-math.js';
 import {
   HORIZONTAL_MARGIN,
   STICKMAN_TORSO_SHELL_THICKNESS, STICKMAN_TORSO_FILL_RADIUS,

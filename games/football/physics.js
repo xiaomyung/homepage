@@ -108,6 +108,13 @@ import { clamp, wrapAngle } from './physics/state.js';
 // Re-export for animation/state.js, ai/perception.js, and tests.
 export { wrapAngle } from './physics/state.js';
 
+import {
+  advancePush, advanceReactTimer, applyPushPhysics, tryPush,
+} from './physics/push.js';
+export {
+  pushArmExtension, pushArmPose,
+} from './physics/push.js';
+
 /* ── Main tick ────────────────────────────────────────────────── */
 
 export function tick(state, p1Act, p2Act) {
@@ -196,105 +203,7 @@ function applyRegenAndExhaustion(p) {
 // Action vector layout (ACTION_*) and per-type push strike thresholds
 // (PUSH_STRIKE_TIMER) come from physics/tuning.js — see imports above.
 
-/** Tick a push cooldown forward. Returns true if the player is still
- *  mid-push and should not accept new actions this tick — mirrors
- *  `advanceKick`'s in-flight-lock contract. Also commits the pending
- *  push impulse to the victim at the strike tick, so the victim only
- *  moves on contact rather than on the windup frame. */
-function advancePush(state, p) {
-  if (p.pushTimer <= 0) return false;
-  const prevTimer = p.pushTimer;
-  p.pushTimer -= TICK_MS;
-  if (p.pushTimer < 0) p.pushTimer = 0;
-  // Strike fires on the single tick where pushTimer crosses the
-  // per-type threshold (jab extends further than uppercut, so it
-  // connects later in the strike blend). One-shot by construction:
-  // after committing, the pending pointer is nulled so subsequent
-  // ticks through the recovery phase do not re-apply the impulse.
-  const threshold = PUSH_STRIKE_TIMER[p.pushType] || PUSH_STRIKE_TIMER.jab;
-  if (p.pendingPushVictim && prevTimer > threshold && p.pushTimer <= threshold) {
-    const victim = p.pendingPushVictim;
-    // Re-check range + facing at strike time. The windup is ~400ms,
-    // long enough for the victim to back out of reach — without this
-    // gate the pre-computed impulse from tryPush would still land on
-    // a victim who already ran away. Pusher's animation continues
-    // through recovery as a whiff so they still pay the cooldown.
-    if (!pushStillInRange(state, p, victim)) {
-      p.pendingPushVictim = null;
-      p.pendingPushVx = 0;
-      p.pendingPushVy = 0;
-      if (state.recordEvents) {
-        state.events.push({
-          type: 'push_missed',
-          pusher: p === state.p1 ? 'p1' : 'p2',
-          reason: 'out_of_range',
-        });
-      }
-      return true;
-    }
-    victim.pushVx = p.pendingPushVx;
-    victim.pushVy = p.pendingPushVy;
-    // Hit-reaction state. Stored on the victim so the pose composer
-    // can play a recoil animation keyed to the punch type, hit
-    // direction (in world xz), and force magnitude.
-    const impulseWX = p.pendingPushVx;
-    const impulseWZ = p.pendingPushVy * Z_STRETCH;
-    const impulseMag = Math.sqrt(impulseWX * impulseWX + impulseWZ * impulseWZ);
-    if (impulseMag > 1e-6) {
-      victim.reactDirX = impulseWX / impulseMag;
-      victim.reactDirZ = impulseWZ / impulseMag;
-    } else {
-      victim.reactDirX = 0;
-      victim.reactDirZ = 0;
-    }
-    victim.reactForce = Math.min(1, impulseMag / MAX_PUSH_FORCE);
-    victim.reactTimer = REACT_ANIM_MS;
-    victim.reactType = p.pushType;
-    // Hook recoil direction in the victim's frame. A right-arm hook
-    // APPROACHES the victim from the pusher's right → victim's left-
-    // side; the victim's body rocks AWAY from the approach = toward
-    // the victim's right. The fist's sweep direction in world xz is
-    // pusher's left for a right hook (pusher's right for a left hook);
-    // we project that onto the victim's lateral axis and NEGATE so
-    // the body whips opposite the sweep (away from the punch), not
-    // along it. Independent of impulse direction (which is axial
-    // along pusher heading for all punch types).
-    const pH = p.heading, vH = victim.heading;
-    const sweepX = p.pushArm === 'right' ? -Math.sin(pH) :  Math.sin(pH);
-    const sweepZ = p.pushArm === 'right' ?  Math.cos(pH) : -Math.cos(pH);
-    const vLatX = -Math.sin(vH), vLatZ = Math.cos(vH);
-    victim.reactLatSign = (sweepX * vLatX + sweepZ * vLatZ) >= 0 ? -1 : 1;
-    p.pendingPushVictim = null;
-    p.pendingPushVx = 0;
-    p.pendingPushVy = 0;
-    if (state.recordEvents) {
-      // Impact point at the victim's head. Coordinates use the
-      // ball_bounce convention: x = world x, y = physics y,
-      // z = world height.
-      const f = state.field;
-      state.events.push({
-        type: 'push_contact',
-        x: victim.x + f.playerWidth / 2,
-        y: victim.y,
-        z: HEAD_CENTER_Z,
-        force: victim.reactForce,
-      });
-    }
-  }
-  return true;
-}
 
-/** Tick the victim's hit-reaction timer down. Purely cosmetic — does
- *  NOT lock the victim's action, so they can retaliate while still
- *  playing the reaction animation. */
-function advanceReactTimer(p) {
-  if (p.reactTimer <= 0) return;
-  p.reactTimer -= TICK_MS;
-  if (p.reactTimer <= 0) {
-    p.reactTimer = 0;
-    p.reactForce = 0;
-  }
-}
 
 function applyAction(state, p, out) {
   // In-flight kicks must always tick forward to completion — even if
@@ -432,20 +341,6 @@ function applyMovement(state, p, moveX, moveY) {
 
 /* ── Push physics ─────────────────────────────────────────────── */
 
-function applyPushPhysics(p) {
-  if (p.pushVx * p.pushVx > PUSH_VEL_THRESHOLD_SQ) {
-    p.x += p.pushVx * PUSH_APPLY;
-    p.pushVx *= PUSH_DAMP;
-  } else {
-    p.pushVx = 0;
-  }
-  if (p.pushVy * p.pushVy > PUSH_VEL_THRESHOLD_SQ) {
-    p.y += p.pushVy * PUSH_APPLY;
-    p.pushVy *= PUSH_DAMP;
-  } else {
-    p.pushVy = 0;
-  }
-}
 
 function chargeStaminaFromDisplacement(p, preX, preY) {
   const dx = p.x - preX;
@@ -486,182 +381,8 @@ function chargeStaminaFromDisplacement(p, preX, preY) {
  * windup→strike boundary instead of jumping there. Strike holds
  * at 1, recovery eases back to 0. Returns 0 when no push active.
  */
-export function pushArmExtension(pushTimer) {
-  if (pushTimer <= 0) return 0;
-  const t = 1 - (pushTimer / PUSH_ANIM_MS);
-  // Same load+rise split as kickLegExtension: the last 30% of the
-  // windup ramps from PUSH_WINDUP_PEAK_TEFF up to 1 instead of
-  // jumping at the windup→strike boundary, so the fist doesn't
-  // teleport the last 30% of its travel in one frame.
-  const loadEndT = PUSH_WINDUP_FRAC * WINDUP_LOAD_FRAC;
-  if (t < loadEndT) {
-    return PUSH_WINDUP_PEAK_TEFF * (t / loadEndT);
-  }
-  if (t < PUSH_WINDUP_FRAC) {
-    const riseT = (t - loadEndT) / (PUSH_WINDUP_FRAC - loadEndT);
-    return PUSH_WINDUP_PEAK_TEFF + (1 - PUSH_WINDUP_PEAK_TEFF) * riseT;
-  }
-  if (t < PUSH_STRIKE_FRAC) return 1;
-  const recT = (t - PUSH_STRIKE_FRAC) / Math.max(1e-6, 1 - PUSH_STRIKE_FRAC);
-  return Math.max(0, 1 - recT);
-}
-
-/**
- * Scripted striking-arm pose for a punch. Three visually-distinct
- * variants share a single three-keyframe rig — rest (t=0), windup-
- * peak (t≈0.35) and strike (t=0.5) — interpolated by the progress
- * scalar derived from `pushTimer`. Each variant defines its own
- * keyframe angles so jab (straight forward thrust), hook (horizontal
- * cross-body sweep) and uppercut (vertical rising arc) read as
- * genuinely different motions, not cosmetic tweaks of one pose.
- *
- * Output is four angles consumed by the renderer's `_placeArm`:
- *   upperAngle / lowerAngle — hip-to-vertical polar swing
- *   upperYaw   / lowerYaw   — rotation of each segment's forward
- *                             direction around the vertical axis
- *
- * Hook uses `upperYaw` to carry the arm laterally; jab and uppercut
- * stay in the sagittal plane (yaw=0). The `pushArm` sign ('right' vs
- * 'left') flips hook polarity so either shoulder can throw.
- *
- * Pure, allocation-free into `out`.
- */
-
-// Lerp helper — not exported; local to the pose builders.
-const _lerp = (a, b, t) => a + (b - a) * t;
-
-// Per-variant keyframes (JAB_*, HOOK_*, UPPERCUT_*) live in physics/tuning.js.
-// Yaw magnitudes there are unsigned; `pushArm` supplies the sign at
-// assembly time (right arm swings from right-outward to cross-body;
-// left arm mirrors).
-// Arm-angle convention: 0 = straight down, π/2 = forward horizontal
-// (fist at shoulder height), π = straight up.
-
-function blendPose(out, a, b, t, armSign) {
-  out.upperAngle = _lerp(a[0], b[0], t);
-  out.lowerAngle = _lerp(a[1], b[1], t);
-  out.upperYaw   = _lerp(a[2], b[2], t) * armSign;
-  out.lowerYaw   = _lerp(a[3], b[3], t) * armSign;
-}
-
-function resolvePoseKeyframes(pushType) {
-  if (pushType === 'hook')     return [HOOK_REST,     HOOK_WINDUP,     HOOK_STRIKE];
-  if (pushType === 'uppercut') return [UPPERCUT_REST, UPPERCUT_WINDUP, UPPERCUT_STRIKE];
-  return [JAB_REST, JAB_WINDUP, JAB_STRIKE];
-}
-
-export function pushArmPose(player, out) {
-  if (!player || player.pushTimer <= 0) {
-    out.upperAngle = 0;
-    out.lowerAngle = 0;
-    out.upperYaw   = 0;
-    out.lowerYaw   = 0;
-    return out;
-  }
-  const t = 1 - (player.pushTimer / PUSH_ANIM_MS);
-  const [rest, windup, strike] = resolvePoseKeyframes(player.pushType);
-  // `pushArm` determines the sign of hook's lateral yaw. Left-arm
-  // hooks mirror right-arm hooks across the sagittal plane.
-  const armSign = player.pushArm === 'right' ? 1 : -1;
-
-  if (t < PUSH_WINDUP_FRAC) {
-    blendPose(out, rest, windup, t / PUSH_WINDUP_FRAC, armSign);
-  } else if (t < PUSH_STRIKE_FRAC) {
-    blendPose(out, windup, strike, (t - PUSH_WINDUP_FRAC) / (PUSH_STRIKE_FRAC - PUSH_WINDUP_FRAC), armSign);
-  } else {
-    const recT = (t - PUSH_STRIKE_FRAC) / Math.max(1e-6, 1 - PUSH_STRIKE_FRAC);
-    blendPose(out, strike, rest, recT, armSign);
-  }
-  return out;
-}
-
-
-/* ── Push ─────────────────────────────────────────────────────── */
-
-// Punch variant thresholds (PUSH_UPPERCUT_RANGE, PUSH_HOOK_RANGE) live
-// in physics/tuning.js. Very-close contact wants an uppercut (rising
-// arc, comes up under the chin); mid range is the hook (lateral sweep);
-// farther range is the jab (straight-forward reach). All three still
-// cover the same PUSH_RANGE_X gate, they just shape the animation
-// differently.
-
 /** Same gates as tryPush, used at the strike-commit tick to verify
  *  the victim hasn't escaped the range/facing cone during the windup. */
-function pushStillInRange(state, pusher, victim) {
-  const f = state.field;
-  const pusherCenterX = pusher.x + f.playerWidth / 2;
-  const victimCenterX = victim.x + f.playerWidth / 2;
-  if (Math.abs(pusherCenterX - victimCenterX) > PUSH_RANGE_X) return false;
-  if (Math.abs(pusher.y - victim.y) > PUSH_RANGE_Y) return false;
-  const victimZ = (victim.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
-  return facingToward(pusher, victimCenterX, victimZ, PUSH_FACE_TOL);
-}
-
-function tryPush(state, pusher, victim, powerNorm) {
-  if (pusher.kick.active) return;
-  if (pusher.pushTimer > 0) return;
-  if (!pushStillInRange(state, pusher, victim)) return;
-
-  const f = state.field;
-  const pusherCenterX = pusher.x + f.playerWidth / 2;
-  const victimCenterX = victim.x + f.playerWidth / 2;
-  const power01 = (clamp(powerNorm, -1, 1) + 1) / 2;
-  const force = power01 * MAX_PUSH_FORCE * Math.max(MIN_PUSH_STAMINA, pusher.stamina);
-
-  // Push direction = pusher's heading. The face gate above
-  // already ensures heading is within PUSH_FACE_TOL of the
-  // victim direction, so this launches the victim along the
-  // pusher's actual facing (not the relative-x sign shortcut).
-  // Heading lives in world space, so convert the z component
-  // back to physics-y via Z_STRETCH and re-normalize so that
-  // the push magnitude in physics space still equals `force`.
-  const fxWorld = Math.cos(pusher.heading);
-  const fzWorld = Math.sin(pusher.heading);
-  const fyPhys  = fzWorld / Z_STRETCH;
-  const pMag    = Math.sqrt(fxWorld * fxWorld + fyPhys * fyPhys) || 1;
-  pusher.pushTimer = PUSH_ANIM_MS;
-
-  // Schedule the impulse for the strike tick instead of applying now.
-  // The pending pointer + ∂v survives across ticks on the pusher; the
-  // strike tick in `advancePush` writes them into the victim's active
-  // push fields so physics applies the motion only on contact.
-  pusher.pendingPushVictim = victim;
-  pusher.pendingPushVx = (fxWorld / pMag) * force;
-  pusher.pendingPushVy = (fyPhys  / pMag) * force;
-
-  // Punch animation state. Pick the arm on the same side as the
-  // victim (perpendicular to the pusher's heading) so the swing
-  // reads naturally instead of crossing the body. Variant depends
-  // on the pusher→victim distance in the heading plane.
-  const victimCenterWX = victimCenterX;
-  const victimCenterWZ = victim.y * Z_STRETCH;
-  const pusherCenterWZ = pusher.y * Z_STRETCH;
-  const dx = victimCenterWX - pusherCenterX;
-  const dz = victimCenterWZ - pusherCenterWZ;
-  const fwdDist = dx * fxWorld + dz * fzWorld;
-  const perp    = -dx * fzWorld + dz * fxWorld;   // +ve = victim on pusher's right
-  pusher.pushArm = perp >= 0 ? 'right' : 'left';
-  if (fwdDist < PUSH_UPPERCUT_RANGE) pusher.pushType = 'uppercut';
-  else if (fwdDist < PUSH_HOOK_RANGE) pusher.pushType = 'hook';
-  else pusher.pushType = 'jab';
-  // Target height: jab/hook aim at the centre of the head; uppercut
-  // aims slightly above so the strike arc sweeps UP through the
-  // chin and lands with the fist over the crown. All three use the
-  // victim's body-axis in xz.
-  const headY      = HEAD_CENTER_Z;
-  const aboveHeadY = HEAD_CENTER_Z + STICKMAN_HEAD_RADIUS * 0.5;
-  pusher.pushTargetX = victimCenterWX;
-  pusher.pushTargetY = pusher.pushType === 'uppercut' ? aboveHeadY : headY;
-  pusher.pushTargetZ = victimCenterWZ;
-
-  pusher.stamina = Math.max(0, pusher.stamina - PUSH_STAMINA_COST * power01);
-  victim.stamina = Math.max(0, victim.stamina - PUSH_STAMINA_COST * power01 * PUSH_VICTIM_STAMINA_MULT);
-
-  if (state.recordEvents) {
-    const pusherWhich = pusher === state.p1 ? 'p1' : 'p2';
-    state.events.push({ type: 'push', pusher: pusherWhich, force, variant: pusher.pushType, arm: pusher.pushArm });
-  }
-}
 
 /* ── Ball physics live in physics/ball.js ─────────────────────── */
 

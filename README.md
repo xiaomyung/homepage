@@ -1,6 +1,6 @@
 # homepage
 
-Personal homelab dashboard — a static page with a live infra banner, health-check dots for every self-hosted service, an ASCII Schwarzschild black hole background, and a football mini-game where two deterministic AI stickmen play continuous live matches.
+Personal homelab dashboard — a static page with a live infra banner, health-check dots for every self-hosted service, and a football mini-game where two deterministic AI stickmen play continuous live matches.
 
 ## Running locally
 
@@ -26,7 +26,6 @@ Open **http://localhost:8000**.
 - **Service cards** show as offline — the health checks probe `*.home.arpa` domains that only resolve on the homelab. This is expected.
 - **Banner** shows `—` for every field — the stats endpoint needs node-exporter and Docker, which aren't present locally. This is expected.
 - **Football game** works fully — pure client-side controller-vs-controller showcase matches loop continuously.
-- **Black hole background** renders normally.
 
 ### Windows notes
 
@@ -48,7 +47,6 @@ Works as-is with any Node 22+ install (Homebrew, nvm, fnm, distro package).
 | `requirements.txt` | Optional: Playwright for the headless screenshot dev tool |
 | `stats/app.mjs` | `/api/stats` shim — parses node-exporter metrics + Docker status |
 | `stats/homepage-stats.service` | systemd unit for the stats shim |
-| `games/blackhole/blackhole.js` | ASCII Schwarzschild lens background animation |
 | `games/football/main.js` | Football game entry point |
 | `games/football/physics.js` | Headless physics engine (DOM-free, pure math) |
 | `games/football/frame-loop.js` | Fixed-timestep rAF → tick accumulator (testable in isolation) |

@@ -60,7 +60,6 @@ export const PUSH_RAISE_T      = 0.15;
 export const PUSH_WINDUP_T     = 0.35;
 export const PUSH_STRIKE_T     = 0.50;
 export const PUSH_SETTLE_T     = 0.70;
-export const PUSH_WINDUP_DIST  = 0.70 * STICKMAN_GLYPH_SIZE;
 export const PUSH_CROUCH_DEPTH = 0.30 * STICKMAN_GLYPH_SIZE;
 export const PUSH_HOP_DIST     = 0.40 * STICKMAN_GLYPH_SIZE;
 export const PUSH_BACK_TILT    = 0.28;   // rad — body leans back during windup

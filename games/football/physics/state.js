@@ -200,3 +200,18 @@ export function gaussRandom(rng) {
   const u2 = rng();
   return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
 }
+
+/* ── Tiny math helpers shared across the physics modules ──────── */
+
+export function clamp(v, lo, hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+
+/** Wrap an angle into (-π, π]. Apply after subtracting two angles to
+ *  get the shortest-arc signed difference. Imported by animation/state.js
+ *  and ai/perception.js (transitively via physics.js's re-export). */
+export function wrapAngle(a) {
+  while (a > Math.PI) a -= 2 * Math.PI;
+  while (a <= -Math.PI) a += 2 * Math.PI;
+  return a;
+}

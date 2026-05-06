@@ -183,7 +183,7 @@ test('CONTENDER_RUN pursuit closes y proportionally to world distance, not physi
   const v = encode(state, 'p1', perception, intent, personality);
 
   // The unit-vector ratio my/mx should match (dyWorld/dx), not (dyPhys/dx).
-  const dx = state.ball.x - (state.p1.x + 18 / 2);
+  const dx = state.ball.x - (state.p1.x + PLAYER_WIDTH / 2);
   const dyPhys = state.ball.y - (state.p1.y + PLAYER_HEIGHT / 2);
   const expectedRatio = (dyPhys * Z_STRETCH) / dx;
   const actualRatio = v[ACTION_MOVE_Y] / v[ACTION_MOVE_X];

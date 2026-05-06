@@ -42,41 +42,19 @@ import {
   ikFootWorld,
 } from './physics.js';
 
-// Render-order priority — overlay sits on top of the regular scene.
-const OVERLAY_RENDER_ORDER = 1000;
-
-// Translucent materials — colour + opacity per collider class.
-const COLOR_BODY        = 0xff5555;   // red — torso capsule
-const COLOR_HEAD        = 0xff9944;   // orange — head sphere
-const COLOR_PAIR        = 0xffd866;   // yellow — pair-collision disc
-const COLOR_KICK        = 0x66dd88;   // green — kick reach + face cone + lateral cap
-const COLOR_FOOT        = 0xee66ff;   // magenta — foot sphere
-const COLOR_PUSH        = 0x66bbff;   // blue — push range + face cone
-const COLOR_GOAL_BOX    = 0xff77cc;   // pink — goal interior planes
-const COLOR_GOAL_BAR    = 0xcc44dd;   // purple — posts + crossbar
-const COLOR_TOUCHLINE   = 0x66eedd;   // cyan — field touchline walls
-const COLOR_GROUND_SKY  = 0xcccccc;   // grey — ground + ceiling
-
-const OPACITY_BODY      = 0.22;
-const OPACITY_HEAD      = 0.22;
-const OPACITY_PAIR      = 0.18;
-const OPACITY_KICK_BUDGET = 0.10;     // bounding sphere (looser)
-const OPACITY_KICK_CONE = 0.18;
-const OPACITY_FOOT      = 0.55;
-const OPACITY_PUSH_PLATE = 0.14;
-const OPACITY_PUSH_CONE = 0.22;
-const OPACITY_GOAL_BOX  = 0.18;
-const OPACITY_GOAL_BAR  = 0.45;
-const OPACITY_TOUCHLINE = 0.04;       // environmental — barely there
-const OPACITY_GROUND    = 0.025;
-const OPACITY_LATERAL   = 0.55;       // line slab
-
-const SLAB_LIFT_Y       = 0.07;       // tiny ground lift to avoid z-fight
-const PUSH_PLATE_LIFT_Y = 0.05;
-const PUSH_CONE_LIFT_Y  = 0.08;
-const PAIR_DISC_LIFT_Y  = 0.06;
-const KICK_CONE_LIFT_Y  = 0.07;
-const GROUND_LIFT_Y     = 0.02;
+import {
+  OVERLAY_RENDER_ORDER,
+  COLOR_BODY, COLOR_HEAD, COLOR_PAIR, COLOR_KICK, COLOR_FOOT,
+  COLOR_PUSH, COLOR_GOAL_BOX, COLOR_GOAL_BAR, COLOR_TOUCHLINE, COLOR_GROUND_SKY,
+  OPACITY_BODY, OPACITY_HEAD, OPACITY_PAIR,
+  OPACITY_KICK_BUDGET, OPACITY_KICK_CONE,
+  OPACITY_FOOT,
+  OPACITY_PUSH_PLATE, OPACITY_PUSH_CONE,
+  OPACITY_GOAL_BOX, OPACITY_GOAL_BAR,
+  OPACITY_TOUCHLINE, OPACITY_GROUND, OPACITY_LATERAL,
+  SLAB_LIFT_Y, PUSH_PLATE_LIFT_Y, PUSH_CONE_LIFT_Y,
+  PAIR_DISC_LIFT_Y, KICK_CONE_LIFT_Y, GROUND_LIFT_Y,
+} from './debug/tuning.js';
 
 function makeFillMat(color, opacity) {
   return new THREE.MeshBasicMaterial({

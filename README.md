@@ -48,22 +48,22 @@ Works as-is with any Node 22+ install (Homebrew, nvm, fnm, distro package).
 | `stats/app.mjs` | `/api/stats` shim — parses node-exporter metrics + Docker status |
 | `stats/homepage-stats.service` | systemd unit for the stats shim |
 | `games/football/main.js` | Football game entry point |
-| `games/football/physics.js` | Headless physics engine (DOM-free, pure math) |
-| `games/football/frame-loop.js` | Fixed-timestep rAF → tick accumulator (testable in isolation) |
+| `games/football/physics.js` | Public-API shim — re-exports `physics/index.js` |
+| `games/football/physics/` | Headless physics engine split by concept: tuning / state / core (tick) / player / push / kick / ball / collisions / geometry / match-flow |
 | `games/football/renderer.js` | Three.js 3D renderer (pooled capsule + sphere meshes, name labels, role dots) |
-| `games/football/renderer-math.js` | Pure renderer math (limb-angle helpers, easing) — extracted for unit tests |
-| `games/football/debug-overlay.js` | Translucent debug overlay — every physics collider as a coloured surface |
-| `games/football/animation/` | Pure animation pipeline: state.js + poses.js + curves.js + sampler |
+| `games/football/renderer/tuning.js` | All visual / camera / particle / label constants |
+| `games/football/renderer/materials.js` | Pure helpers — rgb / staminaColorInto / buildBallTexture |
+| `games/football/util/` | Shared utilities: frame-loop, renderer-math, rng-salts |
+| `games/football/animation/` | Pure animation pipeline: tuning / state / poses / curves / sampler / keyframes / channels |
 | `games/football/ai/controller.js` | Public seam: `decide(state, side) → Float64Array(9)` |
 | `games/football/ai/perception.js` | Pure: state → situational facts |
 | `games/football/ai/decision.js` | Pure: facts + role hysteresis → tactical intent |
 | `games/football/ai/action.js` | Pure: intent → 9-float action vector |
 | `games/football/ai/tuning.js` | All controller tunables in one file |
 | `games/football/ai/names.js` | Footballer-name pool, seeded picker |
-| `games/football/rng-salts.js` | Shared seed-derivation salts (main.js + tests) |
 | `games/football/ui.js` | Scoreboard (role dots, names, score, timer), camera + debug toggles |
 | `games/football/tests/` | Node test runner tests — physics, ai/*, animation/*, frame-loop, stamina; shared `helpers/state.mjs` fixture |
-| `games/football/debug/` | Dev tools: test-renderer harness, Playwright screenshot scripts |
+| `games/football/debug/` | Dev tools: overlay (debug-collider visualizer), test-renderer harness, Playwright screenshot scripts |
 | `fonts/` | Vendored Iosevka Term woff2 (regular + medium) |
 
 Three.js is loaded from a pinned `unpkg` CDN URL in `renderer.js` —

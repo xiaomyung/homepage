@@ -6,261 +6,74 @@
  * createState(); the bundled createSeededRng() is the canonical source.
  */
 
-/* ── Constants ────────────────────────────────────────────────── */
+/* ── Constants imported from ./physics/tuning.js ──────────────── */
 
-export const FIELD_WIDTH_REF = 900;
-export const FIELD_HEIGHT = 54.6;
-const CEILING = 100;
+import {
+  // Field & time
+  FIELD_WIDTH_REF, FIELD_HEIGHT, CEILING, TICK_MS, STALL_TICKS,
+  // Ball physics
+  GRAVITY, AIR_FRICTION, GROUND_FRICTION, BOUNCE_RETAIN, AIR_BOUNCE,
+  WALL_BOUNCE_DAMP, BOUNCE_VZ_MIN, BALL_VEL_CUTOFF, BALL_VEL_CUTOFF_SQ,
+  BALL_RADIUS, RESPAWN_DROP_Z, BOUNCE_EVENT_MIN,
+  // Player movement
+  MAX_PLAYER_SPEED, PLAYER_ACCEL_TICKS, PLAYER_ACCEL,
+  MOVE_THRESHOLD, MOVE_THRESHOLD_SQ, STARTING_GAP,
+  PLAYER_WIDTH, PLAYER_HEIGHT, MIN_SPEED_STAMINA, MOVE_INPUT_DEAD_ZONE,
+  Z_STRETCH, PLAYER_TURN_TICKS, PLAYER_TURN_RATE,
+  KICK_FACE_TOL, PUSH_FACE_TOL,
+  // Stamina
+  STAMINA_REGEN, STAMINA_MOVE_BASE, STAMINA_MOVE_PER_UNIT,
+  STAMINA_MOVE_THRESHOLD, DIRECTION_CHANGE_DRAIN,
+  STAMINA_EXHAUSTION_THRESHOLD, STAMINA_KICK_DRAIN, STAMINA_AIRKICK_DRAIN,
+  // Stickman rig
+  STICKMAN_GLYPH_SIZE, STICKMAN_HIP_OFX, STICKMAN_SHOULDER_OFX,
+  STICKMAN_SHOULDER_OFY, STICKMAN_HEAD_GAP_Y, STICKMAN_LIMB_FULL_H,
+  STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG, STICKMAN_UPPER_ARM, STICKMAN_LOWER_ARM,
+  STICKMAN_TORSO_RADIUS, STICKMAN_HEAD_RADIUS, STICKMAN_LEG_RADIUS,
+  STICKMAN_LOWER_ARM_RADIUS, STICKMAN_UPPER_ARM_RADIUS,
+  HIP_BASE_Z, SHOULDER_Z, HEAD_CENTER_Z, KICK_REACH_MAX,
+  BODY_TANG_RETAIN, TUNNEL_CORRECTION_MIN_SPEED, TUNNEL_CORRECTION_BEHIND_DOT,
+  STUCK_ON_TOP_NORMAL_THRESHOLD, STUCK_ON_TOP_TANG_THRESHOLD, STUCK_ON_TOP_SLIDE_SPEED,
+  // Goal frame
+  GOAL_BACK_OFFSET, GOAL_DEPTH, GOAL_LINE_INSET,
+  GOAL_POST_RADIUS, GOAL_MOUTH_Z, ROOF_FRACTION,
+  GOAL_MOUTH_WIDTH, GOAL_MOUTH_Y_MIN, GOAL_MOUTH_Y_MAX,
+  // Match flow
+  WIN_SCORE, CELEBRATE_TICKS,
+  MATCHEND_REPOSITION_MAX_TICKS, MATCHEND_POSE_TICKS, MATCHEND_NEUTRAL_TICKS,
+  RESPAWN_GRACE, REPOSITION_SPEED, REPOSITION_TOL,
+  REPOSITION_LERP_FRAC, REPOSITION_Y_SPEED_FRAC, RESPAWN_DELAY_TICKS,
+  // Kick
+  MAX_KICK_POWER, MIN_KICK_POWER, MIN_KICK_STAMINA,
+  KICK_NOISE_SCALE, KICK_NOISE_VERT, AIRKICK_MAX_Z,
+  AIRKICK_MS, AIRKICK_PEAK_FRAC, AIRKICK_DZ_THRESHOLD,
+  KICK_WINDUP_MS, KICK_DURATION_MS, KICK_STRIKE_WINDOW_MS,
+  FOOT_RADIUS, KICK_DIR_MIN_LEN, WASTED_KICK_SPEED,
+  LATERAL_FOOT_FLEX, FOOT_BALL_CONTACT_R, FOOT_LATERAL_REACH,
+  WINDUP_PEAK_TEFF, WINDUP_LOAD_FRAC, KICK_COCK_FWD_FRAC, KICK_COCK_UP_FRAC,
+  // Push
+  PUSH_RANGE_X, PUSH_RANGE_SLACK_Y, PUSH_RANGE_Y,
+  MAX_PUSH_FORCE, PUSH_DAMP, PUSH_APPLY,
+  PUSH_VEL_THRESHOLD, PUSH_VEL_THRESHOLD_SQ, MIN_PUSH_STAMINA,
+  PUSH_ANIM_MS, REACT_ANIM_MS,
+  PUSH_WINDUP_FRAC, PUSH_STRIKE_FRAC, PUSH_CONTACT_FRAC,
+  PUSH_WINDUP_PEAK_TEFF, PUSH_STAMINA_COST, PUSH_VICTIM_STAMINA_MULT,
+  PUSH_STRIKE_TIMER, PUSH_UPPERCUT_RANGE, PUSH_HOOK_RANGE,
+  // Push keyframes
+  JAB_REST, JAB_WINDUP, JAB_STRIKE,
+  HOOK_REST, HOOK_WINDUP, HOOK_STRIKE,
+  UPPERCUT_REST, UPPERCUT_WINDUP, UPPERCUT_STRIKE,
+  // Action vector layout
+  ACTION_MOVE_X, ACTION_MOVE_Y, ACTION_KICK_GATE,
+  ACTION_KICK_DX, ACTION_KICK_DY, ACTION_KICK_DZ, ACTION_KICK_POWER,
+  ACTION_PUSH_GATE, ACTION_PUSH_POWER, ACTION_VEC_SIZE,
+} from './physics/tuning.js';
 
-export const TICK_MS = 16;
-// Mercy rule — if no kick for STALL_TICKS ticks (~10 s wall-clock), reset so
-// the match doesn't sit motionless. Visual mode just respawns the ball;
-// headless mode does a full kickoff (both players teleported).
-const STALL_TICKS = Math.ceil(10000 / TICK_MS);
-
-// Ball
-export const GRAVITY = 0.3;
-const AIR_FRICTION = 0.99;
-const GROUND_FRICTION = 0.944;
-const BOUNCE_RETAIN = 0.5;
-const AIR_BOUNCE = 0.6;
-const WALL_BOUNCE_DAMP = 0.5;
-const BOUNCE_VZ_MIN = 1.5;
-const BALL_VEL_CUTOFF = 0.1;
-const BALL_VEL_CUTOFF_SQ = BALL_VEL_CUTOFF * BALL_VEL_CUTOFF;
-// Single source of truth for the ball's physical + visual radius.
-// Physics collisions (goal, walls, body, ground) and the rendered
-// sphere both use this value so there is no drift between "where
-// physics thinks the ball is touching" and "where you see it touch".
-export const BALL_RADIUS = 4.224;
-const RESPAWN_DROP_Z = 60;
-
-// Player movement
-export const MAX_PLAYER_SPEED = 10;
-// Acceleration cap: limits |Δv| per tick so players can't start/stop
-// instantly. Full speed → stop takes PLAYER_ACCEL_TICKS ticks; a
-// 180° reversal takes 2×. Tuned for ~320 ms at 60 Hz.
-const PLAYER_ACCEL_TICKS = 20;
-const PLAYER_ACCEL = MAX_PLAYER_SPEED / PLAYER_ACCEL_TICKS;
-const MOVE_THRESHOLD = 0.1;
-const MOVE_THRESHOLD_SQ = MOVE_THRESHOLD * MOVE_THRESHOLD;
-const STARTING_GAP = 40;
-export const PLAYER_WIDTH = 18;
-export const PLAYER_HEIGHT = 6;
-const MIN_SPEED_STAMINA = 0.3;
-
-// Heading — angular orientation in world-space (cos(h), sin(h)*Z_STRETCH)
-// is the unit "front" vector of the stickman. Tracks visual motion
-// direction with bounded angular velocity (angular inertia), so a 180°
-// turn takes PLAYER_TURN_TICKS ticks regardless of the action input.
-// Also defines which way the player must face to land a kick or a push
-// — see FACE_TOL constants below.
-export const Z_STRETCH = 4.7;  // imported by renderer.js — single source of truth
-const PLAYER_TURN_TICKS = 20;  // ticks to complete a 180° turn
-const PLAYER_TURN_RATE = Math.PI / PLAYER_TURN_TICKS;
-export const KICK_FACE_TOL = Math.PI / 3;  // 60° cone toward ball
-export const PUSH_FACE_TOL = Math.PI / 3;  // 60° cone toward victim
-
-// Stamina
-const STAMINA_REGEN = 0.005;
-const STAMINA_MOVE_BASE = 0.003;
-const STAMINA_MOVE_PER_UNIT = 0.00036;
-const STAMINA_MOVE_THRESHOLD = 0.1;
-const DIRECTION_CHANGE_DRAIN = 0.02;
-const STAMINA_EXHAUSTION_THRESHOLD = 0.5;
-const STAMINA_KICK_DRAIN = 0.3;
-const STAMINA_AIRKICK_DRAIN = 0.1;
-
-// Kick
-const MAX_KICK_POWER = 22;
-const MIN_KICK_POWER = 0.15;
-const MIN_KICK_STAMINA = 0.2;
-const KICK_NOISE_SCALE = 0.3;
-const KICK_NOISE_VERT = 0.5;
-const AIRKICK_MAX_Z = 20;
-export const AIRKICK_MS = 350;
-export const AIRKICK_PEAK_FRAC = 0.5;
-const AIRKICK_DZ_THRESHOLD = 0.5;
-// Ground-kick timing: windup → strike window → recovery → idle.
-// `KICK_WINDUP_MS` and `AIRKICK_PEAK_FRAC * AIRKICK_MS` mark the
-// *start* of the strike phase (not the instant of impact); impact
-// fires at the first tick inside the strike window on which the
-// foot-contact sphere overlaps the ball.
-export const KICK_WINDUP_MS = 96;
-export const KICK_DURATION_MS = 288;
-// Contact window: IK locks the foot target and runs a sphere-vs-
-// ball overlap every tick. ~48 ms = 3 ticks — enough for the ball
-// to move into or out of the frozen target but not so long that
-// the strike feels slow. Air and ground kicks share the window.
-export const KICK_STRIKE_WINDOW_MS = 48;
-// Effective contact radius on the foot. Smaller than a real cleat
-// but large enough that a ball within ~1.5 world units of the
-// frozen foot target still registers a hit on the first tick.
-export const FOOT_RADIUS = 1.5;
-// Reachability gate: distance from the hip-anchor to the predicted
-// ball at strike time must not exceed the full stretched leg. See
-// `KICK_REACH_MAX` below — computed from the rig constants once
-// they're declared.
-const KICK_DIR_MIN_LEN = 0.01;
-const WASTED_KICK_SPEED = MIN_KICK_POWER * 0.1;
-
-// Push
-export const PUSH_RANGE_X = 30;
-// Push range on the depth axis: fists also swing in the (facing, up)
-// plane with ~zero lateral reach, so bodies must overlap (or nearly
-// touch) in y. PLAYER_HEIGHT covers the full overlap-to-touching
-// range from top-to-top, plus a small slack for animation timing.
-const PUSH_RANGE_SLACK_Y = 1;
-export const PUSH_RANGE_Y = PLAYER_HEIGHT + PUSH_RANGE_SLACK_Y;
-const MAX_PUSH_FORCE = 100;
-const PUSH_DAMP = 0.88;
-const PUSH_APPLY = 0.12;
-const PUSH_VEL_THRESHOLD = 0.5;
-const PUSH_VEL_THRESHOLD_SQ = PUSH_VEL_THRESHOLD * PUSH_VEL_THRESHOLD;
-const MIN_PUSH_STAMINA = 0.2;
-export const PUSH_ANIM_MS = 1000;
-// Victim's hit-reaction animation length. Independent of the pusher's
-// PUSH_ANIM_MS; intentionally shorter because a punch reaction is a
-// quick spike + recovery, not a full choreographed thrust.
-export const REACT_ANIM_MS = 550;
-// Sub-stage boundaries of the push animation as fractions of
-// PUSH_ANIM_MS. Used by pushArmExtension + pushArmPose for the
-// arm-blend transitions. Strike-commit timing is per-type (see
-// PUSH_CONTACT_FRAC / PUSH_STRIKE_TIMER below).
-const PUSH_WINDUP_FRAC = 0.35;   // windup → strike transition
-const PUSH_STRIKE_FRAC = 0.50;   // strike → recover transition;
-                                 //   pose blends WINDUP→STRIKE end
-                                 //   here; arm at peak forward.
-// Contact fraction per punch type — when the fist FIRST meets the
-// target. Different types engage at different pair distances
-// (uppercut PUSH_UPPERCUT_RANGE=14, hook <22, jab <PUSH_RANGE_X=30),
-// so the arm must extend further for a jab than an uppercut. Longer
-// throws land later in the WINDUP→STRIKE blend — closer to peak
-// extension — while close-range uppercuts connect early.
-const PUSH_CONTACT_FRAC = {
-  jab:      0.47,
-  hook:     0.46,
-  uppercut: 0.42,
-};
-const PUSH_WINDUP_PEAK_TEFF = 0.7;
-const PUSH_STAMINA_COST = 0.15;
-const PUSH_VICTIM_STAMINA_MULT = 3;
-
-// Goal frame
-const GOAL_BACK_OFFSET = 30;
-const GOAL_DEPTH = 78;
-const GOAL_LINE_INSET = 6; // scoring line sits this far inside the mouth
-// Physics radius of the goal posts / crossbar — imported by
-// renderer.js as the cylinder radius for the visible goal frame
-// (single source of truth). The mouth opening is inset by this
-// much on each side (y posts and crossbar) so the ball's sphere
-// must be fully past the post's inner surface to count as in the
-// mouth. Without this inset a ball clipping the visible post
-// surface would score through it.
-export const GOAL_POST_RADIUS = 1.2;
-// Crossbar height — single source of truth for both physics
-// (goalBox.maxZ, the crossbar collider, the scoring ceiling) and the
-// rendered goal frame. Sized so the goal mouth comfortably clears
-// player head height (~51 world units) plus a small margin.
-const GOAL_MOUTH_Z = 58.5;
-
-// Goal-net side profile: the roof of the net runs flat from the
-// front mouth back by `ROOF_FRACTION` of the goal depth, then the
-// back wall slants down from that point to the outer ground.
-// `roofBackX` (computed per goal) = mouthX + (backBotX - mouthX) * ROOF_FRACTION.
-// Both the rendered model and the physics colliders read this so
-// they stay in lockstep.
-export const ROOF_FRACTION = 0.35;
-const GOAL_MOUTH_WIDTH = 28.6;  // z-span of the mouth (30% + another 10% wider than the original 20)
-const GOAL_MOUTH_Y_MIN = (FIELD_HEIGHT - GOAL_MOUTH_WIDTH) / 2;
-const GOAL_MOUTH_Y_MAX = (FIELD_HEIGHT + GOAL_MOUTH_WIDTH) / 2;
-
-// Match
-const WIN_SCORE = 3;
-const CELEBRATE_TICKS = Math.ceil(1500 / TICK_MS);
-// Matchend cinematic — three sub-phases under pauseState='matchend',
-// dispatched via state.matchEndPhase:
-//   'reposition' — both players walk to kickoff (cap on stuck reposition)
-//   'pose'       — face camera, dolly-in, winner celebrates / loser grieves
-//   'neutral'    — face each other, dolly-out, brief settle, then finalize
-// Camera dolly is driven by the renderer's follow-cam zoom spring
-// (target switches per phase); animation heading override is driven
-// by faceCameraSmooth / faceEachOtherSmooth flags from the renderer.
-const MATCHEND_REPOSITION_MAX_TICKS = Math.ceil(4000 / TICK_MS);
-const MATCHEND_POSE_TICKS    = Math.ceil(4000 / TICK_MS);
-const MATCHEND_NEUTRAL_TICKS = Math.ceil(2500 / TICK_MS);
-const RESPAWN_GRACE = 30;
-const REPOSITION_SPEED = 6;
-const REPOSITION_TOL = 5;
-// Per-tick fraction of remaining distance — clamp to REPOSITION_SPEED
-// so the start of the walk-back doesn't pop. y-axis moves at half x's
-// max speed so depth-axis residue settles slower than the wider field.
-const REPOSITION_LERP_FRAC    = 0.1;
-const REPOSITION_Y_SPEED_FRAC = 0.5;
-const RESPAWN_DELAY_TICKS = Math.ceil(300 / TICK_MS);
-
-/* ── Stickman rig constants (shared with renderer) ─────────────
- *
- * All rig proportions live here. `renderer.js` imports them so a
- * single change — e.g. bumping torso radius — is picked up by both
- * the drawn silhouette AND the physics ball-vs-body collider without
- * drift. Dimensions are in world units (y-up, same axis for physics
- * z and rendering y).
- */
-export const STICKMAN_GLYPH_SIZE   = 22;
-export const STICKMAN_HIP_OFX      = 0.12 * STICKMAN_GLYPH_SIZE;       // 2.64
-export const STICKMAN_SHOULDER_OFX = 0.23814 * STICKMAN_GLYPH_SIZE;    // 5.2391 (~10.25% wider than the old 4.752)
-export const STICKMAN_SHOULDER_OFY = 0.92 * STICKMAN_GLYPH_SIZE;       // 20.24
-export const STICKMAN_HEAD_GAP_Y   = 0.0476 * STICKMAN_GLYPH_SIZE;    // 1.047 — head tucked close to the shoulders
-export const STICKMAN_LIMB_FULL_H  = 20;                               // was 19.8; cleaner 10+10 split
-export const STICKMAN_UPPER_LEG    = STICKMAN_LIMB_FULL_H / 2;         // 10
-export const STICKMAN_LOWER_LEG    = STICKMAN_LIMB_FULL_H / 2;         // 10
-export const STICKMAN_UPPER_ARM    = STICKMAN_LIMB_FULL_H / 2;         // 10
-export const STICKMAN_LOWER_ARM    = STICKMAN_LIMB_FULL_H / 2;         // 10
-export const STICKMAN_TORSO_RADIUS = 3.3;
-export const STICKMAN_HEAD_RADIUS  = 4.0;
-export const STICKMAN_LEG_RADIUS   = 2.2;
-// Arms taper: upper 15% thicker than the forearm, matching rough
-// human proportions. Used by the renderer's two-capsule-per-arm rig.
-export const STICKMAN_LOWER_ARM_RADIUS = STICKMAN_LEG_RADIUS * 0.8;    // 1.76
-export const STICKMAN_UPPER_ARM_RADIUS = STICKMAN_LOWER_ARM_RADIUS * 1.15; // ~2.024
-
-// Ball-trap inelastic deflect factor. 0 = full absorb (dead stop on
-// surface normal); 1 = elastic. 0.25 cushions the normal component
-// fully (v·n dropped) and retains 25 % of the tangential component
-// so the ball slides along the body surface and gravity settles it.
-const BODY_TANG_RETAIN = 0.25;
-// Tunnel-correction thresholds (see `tryBodyContact`): if the
-// player is moving faster than `TUNNEL_CORRECTION_MIN_SPEED` world
-// units/tick AND the ball's contact normal points more than
-// `TUNNEL_CORRECTION_BEHIND_DOT` *against* the player's forward
-// direction, the body moved past the ball in one tick — relocate
-// the ball to the player's forward face instead of clamping behind.
-const TUNNEL_CORRECTION_MIN_SPEED = 1.0;
-const TUNNEL_CORRECTION_BEHIND_DOT = -0.3;
-
-// Stuck-on-top escape thresholds (see resolveBallVsBodyCapsule).
-// `nyU` is the contact-normal y-component (1 = perfectly vertical);
-// the tangential cap is in world units / tick.
-const STUCK_ON_TOP_NORMAL_THRESHOLD = 0.95;
-const STUCK_ON_TOP_TANG_THRESHOLD   = 0.05;
-const STUCK_ON_TOP_SLIDE_SPEED      = 0.5;
-
-// Minimum bounce velocity to record a particle event — gates out
-// settle-noise so microscopic ground bounces don't spawn dust.
-const BOUNCE_EVENT_MIN = 0.3;
-
-// Body column vertical anchors above the ground (z=0). Hip base is
-// where the leg capsules meet the torso; shoulder sits one torso
-// length above; head sits a neck-gap + head-radius above the shoulder.
-export const HIP_BASE_Z      = STICKMAN_LIMB_FULL_H;                   // 20
-export const SHOULDER_Z      = HIP_BASE_Z + STICKMAN_SHOULDER_OFY;     // 40.24
-export const HEAD_CENTER_Z   = SHOULDER_Z + STICKMAN_HEAD_GAP_Y + STICKMAN_HEAD_RADIUS; // 47.11
-
-// Maximum kick reach — full stretched leg length. See the Kick
-// constants block above for context; defined here because it needs
-// the rig constants.
-export const KICK_REACH_MAX = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG; // 20
+// Re-export the public surface that callers (main.js, ai/, animation/,
+// renderer.js, debug-overlay.js, tests/*) currently consume from
+// physics.js. After the per-module split lands, callers will import
+// from physics/index.js and this shim disappears.
+export * from './physics/tuning.js';
 
 /* ── Field & state factories ──────────────────────────────────── */
 
@@ -566,31 +379,8 @@ function applyRegenAndExhaustion(p) {
 
 /* ── Action dispatch ─────────────────────────────────────────── */
 
-// Action vector layout — 9 floats consumed by `tick()`. Exported by
-// name so the controller, tests, and any future consumer can build /
-// read the vector without magic indices.
-export const ACTION_MOVE_X     = 0;
-export const ACTION_MOVE_Y     = 1;
-export const ACTION_KICK_GATE  = 2;
-export const ACTION_KICK_DX    = 3;
-export const ACTION_KICK_DY    = 4;
-export const ACTION_KICK_DZ    = 5;
-export const ACTION_KICK_POWER = 6;
-export const ACTION_PUSH_GATE  = 7;
-export const ACTION_PUSH_POWER = 8;
-export const ACTION_VEC_SIZE    = 9;
-
-/** Strike threshold in ms of `pushTimer` remaining, keyed by the
- *  pusher's pushType. Jab fist has to extend furthest and connects
- *  close to peak; uppercut engages at short range and connects
- *  early in the strike blend. pushTimer counts DOWN from
- *  PUSH_ANIM_MS, so the trigger for a type is
- *  `PUSH_ANIM_MS * (1 - PUSH_CONTACT_FRAC[type])`. */
-const PUSH_STRIKE_TIMER = {
-  jab:      PUSH_ANIM_MS * (1 - PUSH_CONTACT_FRAC.jab),
-  hook:     PUSH_ANIM_MS * (1 - PUSH_CONTACT_FRAC.hook),
-  uppercut: PUSH_ANIM_MS * (1 - PUSH_CONTACT_FRAC.uppercut),
-};
+// Action vector layout (ACTION_*) and per-type push strike thresholds
+// (PUSH_STRIKE_TIMER) come from physics/tuning.js — see imports above.
 
 /** Tick a push cooldown forward. Returns true if the player is still
  *  mid-push and should not accept new actions this tick — mirrors
@@ -763,10 +553,9 @@ export function facingToward(p, worldX, worldZ, tol) {
 
 /* ── Movement ─────────────────────────────────────────────────── */
 
-// Motion input dead zone — floating-point filtering. Mirrors
-// `FALLBACK_DEAD_ZONE` in `ai/tuning.js`. Increase if a noisy controller
-// is introduced.
-const MOVE_INPUT_DEAD_ZONE = 0.02;
+// Motion input dead zone (MOVE_INPUT_DEAD_ZONE) — floating-point
+// filtering. Mirrors `FALLBACK_DEAD_ZONE` in `ai/tuning.js`. Imported
+// from physics/tuning.js.
 
 function applyMovement(state, p, moveX, moveY) {
   if (Math.abs(moveX) < MOVE_INPUT_DEAD_ZONE) moveX = 0;
@@ -1815,10 +1604,8 @@ export function ikFootWorld(p, out) {
 // the sagittal plane, capped at LATERAL_FOOT_FLEX world units. Contact
 // succeeds when the lateral offset is within (foot+ball) of the flex
 // limit. The cap keeps the leg motion looking like a natural twist
-// rather than a sideways spread.
-export const LATERAL_FOOT_FLEX = 6;
-const FOOT_BALL_CONTACT_R = FOOT_RADIUS + BALL_RADIUS;
-export const FOOT_LATERAL_REACH = LATERAL_FOOT_FLEX + FOOT_BALL_CONTACT_R;
+// rather than a sideways spread. LATERAL_FOOT_FLEX, FOOT_BALL_CONTACT_R,
+// and FOOT_LATERAL_REACH are imported from physics/tuning.js above.
 
 export function canKickReach(state, p, safetyMargin = 0) {
   const predicted = predictBallAtStrike(state.ball, strikeLeadTicks('ground'), _scratchPredicted);
@@ -1954,9 +1741,8 @@ function testFootContact(state, p) {
  *
  * Shared by the renderer (for drawing) and the `kickLegPose`
  * helper below; exported so tests can assert the stage curve
- * without re-deriving it.
+ * without re-deriving it. WINDUP_PEAK_TEFF imported from physics/tuning.js.
  */
-const WINDUP_PEAK_TEFF = 0.7;
 
 /** Stage-boundary timings for a kick: windup ends at `windupMs`,
  *  strike window closes at `strikeEndMs`, full kick ends at
@@ -1977,8 +1763,8 @@ function kickPhaseTimes(kick) {
 // This guarantees the strike phase starts with the leg already at
 // full extension, so the windup→strike boundary has no discontinuity
 // (the previous "tEff hops 0.7 → 1.0 in a single tick" caused the
-// last 30% of leg travel to teleport in one frame).
-const WINDUP_LOAD_FRAC = 0.7;
+// last 30% of leg travel to teleport in one frame). WINDUP_LOAD_FRAC
+// imported from physics/tuning.js.
 export function kickLegExtension(kick) {
   if (!kick || !kick.active) return 0;
   const { windupMs, strikeEndMs, durationMs } = kickPhaseTimes(kick);
@@ -2049,39 +1835,12 @@ export function pushArmExtension(pushTimer) {
 // Lerp helper — not exported; local to the pose builders.
 const _lerp = (a, b, t) => a + (b - a) * t;
 
-// Per-variant keyframes as [upper, lower, upperYawMag, lowerYawMag].
-// Yaw magnitudes are unsigned; `pushArm` supplies the sign at
+// Per-variant keyframes (JAB_*, HOOK_*, UPPERCUT_*) live in physics/tuning.js.
+// Yaw magnitudes there are unsigned; `pushArm` supplies the sign at
 // assembly time (right arm swings from right-outward to cross-body;
 // left arm mirrors).
 // Arm-angle convention: 0 = straight down, π/2 = forward horizontal
-// (fist at shoulder height), π = straight up. With UPPER_ARM +
-// LOWER_ARM = 20 and the shoulder 6.9 units below the head, landing
-// a fist at head level needs the arm tilted ≈20° above horizontal
-// → angle-from-vertical ≈ π/2 + 0.35 ≈ 1.92 rad.
-
-const JAB_REST   = [0,    0,    0, 0];
-const JAB_WINDUP = [-0.25, 2.4, 0, 0];
-// Jab strike: straight arm angled up to head height.
-const JAB_STRIKE = [1.92, 1.92, 0, 0];
-
-const HOOK_REST   = [0,          0,           0,           0];
-// Windup: arm raised to head-height, yawed outward to the striking side;
-// forearm bent 90° inward (pointing forward relative to body).
-const HOOK_WINDUP = [1.92, 1.92, Math.PI / 2, 0];
-// Strike: upper arm swept across body at head-height; yaw flips to a
-// small cross-body sign; forearm extends past to continue the arc.
-const HOOK_STRIKE = [1.92, 1.92, -0.35,      -1.2];
-
-const UPPERCUT_REST   = [0,          0,           0, 0];
-// Windup: elbow drops low and tucks, forearm rotated forward near the
-// belly — classic cocked-uppercut stance.
-const UPPERCUT_WINDUP = [-0.3,       1.7,         0, 0];
-// Strike: upper arm rises forward-and-up (elbow well above shoulder),
-// forearm whips almost straight up so the fist ends clearly above the
-// head. Yaw tucks the arm inward toward the pusher's centerline so
-// the right-arm fist finishes on the pusher's LEFT (and vice versa)
-// — a chin-height punch driving up through the target from below.
-const UPPERCUT_STRIKE = [2.0,        3.0,         -0.50, -0.80];
+// (fist at shoulder height), π = straight up.
 
 function blendPose(out, a, b, t, armSign) {
   out.upperAngle = _lerp(a[0], b[0], t);
@@ -2141,9 +1900,8 @@ export function pushArmPose(player, out) {
 //   rise (tEff: WINDUP_PEAK_TEFF → 1):      cock → target
 // Strike holds at target. Recovery does NOT pass through cock
 // (that would look like a re-load); it lerps target → rest
-// directly so the leg settles after follow-through.
-const KICK_COCK_FWD_FRAC = 0.20;  // foot 20% of leg-length behind hip
-const KICK_COCK_UP_FRAC  = 0.50;  // foot at 50% of leg-length below hip
+// directly so the leg settles after follow-through. KICK_COCK_FWD_FRAC
+// and KICK_COCK_UP_FRAC are imported from physics/tuning.js.
 export function kickLegPose(kick, hipWX, hipWY, hipWZ, forwardX, forwardZ, out) {
   if (!kick || !kick.active) {
     out.upperAngle = 0;
@@ -2295,14 +2053,12 @@ function executeKick(state, p) {
 
 /* ── Push ─────────────────────────────────────────────────────── */
 
-// Punch variant thresholds, in world-xz units (pusher→victim
-// distance projected onto the heading plane). Very-close contact
-// wants an uppercut (rising arc, comes up under the chin); mid
-// range is the hook (lateral sweep); farther range is the jab
-// (straight-forward reach). All three still cover the same
-// `PUSH_RANGE_X` gate, they just shape the animation differently.
-const PUSH_UPPERCUT_RANGE = 14;
-const PUSH_HOOK_RANGE     = 22;
+// Punch variant thresholds (PUSH_UPPERCUT_RANGE, PUSH_HOOK_RANGE) live
+// in physics/tuning.js. Very-close contact wants an uppercut (rising
+// arc, comes up under the chin); mid range is the hook (lateral sweep);
+// farther range is the jab (straight-forward reach). All three still
+// cover the same PUSH_RANGE_X gate, they just shape the animation
+// differently.
 
 /** Same gates as tryPush, used at the strike-commit tick to verify
  *  the victim hasn't escaped the range/facing cone during the windup. */

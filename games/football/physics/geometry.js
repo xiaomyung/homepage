@@ -221,78 +221,135 @@ export function resolveBallVsGoalBars(state, box) {
 
 /**
  * Ball vs one goal's EXTERIOR non-bar faces: back wall, two side
- * walls, roof. Each is a flat rectangular plane; the ball bounces off
- * the outside face with standard reflected velocity. Runs only when
- * the ball is outside the goal (inGoal=false).
+ * walls, roof. Each face is solid in BOTH directions when inGoal=false:
+ * a ball overlapping the plane gets pushed to the side its center is
+ * already on (so a ball that slipped inside without scoring is pushed
+ * back inside the box rather than tunneled out, and a ball arriving
+ * from outside is pushed back outside as before). Runs only when
+ * inGoal=false; resolveBallInsideGoal owns the absorbing-net path
+ * after a goal counts.
  */
 export function resolveBallVsGoalExterior(state, box) {
   const ball = state.ball;
   if (ball.frozen) return;
   const isLeft = box === state.field.goalBoxLeft;
 
-  // Back wall — slanted, modeled per-height as a vertical wall.
+  // Back wall — slanted, modeled per-height as a vertical wall at the
+  // slope's x for the ball's current ceiling.
   const floorBackX = isLeft ? box.minX : box.maxX;
   const roofBackX  = box.roofBackX;
   const ballCYBack = Math.max(0, Math.min(box.maxZ, ball.z + BALL_RADIUS));
   const slopeXatY  = floorBackX + (ballCYBack / box.maxZ) * (roofBackX - floorBackX);
-  const inwardVxBack = isLeft ? ball.vx : -ball.vx;
-  const fullyPastBack = isLeft
-    ? ball.x - BALL_RADIUS >= slopeXatY
-    : ball.x + BALL_RADIUS <= slopeXatY;
-  if (inwardVxBack > 0 && !fullyPastBack
+  if (ball.x - BALL_RADIUS < slopeXatY && ball.x + BALL_RADIUS > slopeXatY
       && ball.y + BALL_RADIUS > box.minY
       && ball.y - BALL_RADIUS < box.maxY
       && ball.z - BALL_RADIUS < box.maxZ) {
-    ball.x = isLeft ? slopeXatY - BALL_RADIUS : slopeXatY + BALL_RADIUS;
-    const pre = Math.abs(ball.vx);
-    ball.vx = -ball.vx * BOUNCE_RETAIN;
-    recordBounce(state, 'x', pre);
+    // Inside the box is the mouth side: x > slopeXatY for left, x <
+    // slopeXatY for right. Velocity sign disambiguates which side the
+    // ball came from when overlap is straddling.
+    const insideVx = isLeft ? ball.vx < 0 : ball.vx > 0;   // moving deeper / into back wall from inside
+    const outsideVx = isLeft ? ball.vx > 0 : ball.vx < 0;  // moving from behind goal into the box
+    const fromInside = insideVx
+      || (ball.vx === 0 && (isLeft ? ball.x >= slopeXatY : ball.x <= slopeXatY));
+    if (fromInside) {
+      ball.x = slopeXatY + (isLeft ? +1 : -1) * BALL_RADIUS;
+      if (insideVx) {
+        const pre = Math.abs(ball.vx);
+        ball.vx = -ball.vx * BOUNCE_RETAIN;
+        recordBounce(state, 'x', pre);
+      }
+    } else {
+      ball.x = slopeXatY + (isLeft ? -1 : +1) * BALL_RADIUS;
+      if (outsideVx) {
+        const pre = Math.abs(ball.vx);
+        ball.vx = -ball.vx * BOUNCE_RETAIN;
+        recordBounce(state, 'x', pre);
+      }
+    }
   }
   if (ball.frozen) return;
 
   // Lower side wall — plane at y=mouthYMin.
-  const fullyPastLower = ball.y - BALL_RADIUS >= box.minY;
-  if (ball.vy > 0 && !fullyPastLower
-      && ball.y + BALL_RADIUS > box.minY
+  // Substepping bounds motion at BALL_RADIUS, so an overlap implies
+  // the ball just crossed the plane this substep — its velocity sign
+  // tells us which side it came from. vy < 0 (downward) means it was
+  // inside the box and is exiting; vy > 0 means it was outside and is
+  // entering. vy == 0 falls back to center position.
+  if (ball.y - BALL_RADIUS < box.minY && ball.y + BALL_RADIUS > box.minY
       && ball.x + BALL_RADIUS > box.minX
       && ball.x - BALL_RADIUS < box.maxX
       && ball.z - BALL_RADIUS < box.maxZ) {
-    ball.y = box.minY - BALL_RADIUS;
-    const pre = Math.abs(ball.vy);
-    ball.vy = -ball.vy * BOUNCE_RETAIN;
-    recordBounce(state, 'y', pre);
+    const fromInside = ball.vy < 0 || (ball.vy === 0 && ball.y >= box.minY);
+    if (fromInside) {
+      ball.y = box.minY + BALL_RADIUS;
+      if (ball.vy < 0) {
+        const pre = Math.abs(ball.vy);
+        ball.vy = -ball.vy * BOUNCE_RETAIN;
+        recordBounce(state, 'y', pre);
+      }
+    } else {
+      ball.y = box.minY - BALL_RADIUS;
+      if (ball.vy > 0) {
+        const pre = Math.abs(ball.vy);
+        ball.vy = -ball.vy * BOUNCE_RETAIN;
+        recordBounce(state, 'y', pre);
+      }
+    }
   }
   if (ball.frozen) return;
 
-  // Upper side wall — plane at y=mouthYMax.
-  const fullyPastUpper = ball.y + BALL_RADIUS <= box.maxY;
-  if (ball.vy < 0 && !fullyPastUpper
-      && ball.y - BALL_RADIUS < box.maxY
+  // Upper side wall — plane at y=mouthYMax. vy > 0 means inside and
+  // exiting upward; vy < 0 means outside and entering downward.
+  if (ball.y - BALL_RADIUS < box.maxY && ball.y + BALL_RADIUS > box.maxY
       && ball.x + BALL_RADIUS > box.minX
       && ball.x - BALL_RADIUS < box.maxX
       && ball.z - BALL_RADIUS < box.maxZ) {
-    ball.y = box.maxY + BALL_RADIUS;
-    const pre = Math.abs(ball.vy);
-    ball.vy = -ball.vy * BOUNCE_RETAIN;
-    recordBounce(state, 'y', pre);
+    const fromInside = ball.vy > 0 || (ball.vy === 0 && ball.y <= box.maxY);
+    if (fromInside) {
+      ball.y = box.maxY - BALL_RADIUS;
+      if (ball.vy > 0) {
+        const pre = Math.abs(ball.vy);
+        ball.vy = -ball.vy * BOUNCE_RETAIN;
+        recordBounce(state, 'y', pre);
+      }
+    } else {
+      ball.y = box.maxY + BALL_RADIUS;
+      if (ball.vy < 0) {
+        const pre = Math.abs(ball.vy);
+        ball.vy = -ball.vy * BOUNCE_RETAIN;
+        recordBounce(state, 'y', pre);
+      }
+    }
   }
   if (ball.frozen) return;
 
   // Roof — flat plane at z=mouthZMax, truncated to the front-
-  // rectangular portion of the trapezoidal net.
+  // rectangular portion of the trapezoidal net. vz > 0 (rising) means
+  // inside and hitting the underside; vz < 0 (falling) means outside
+  // and landing on top.
   const xMouth = isLeft ? box.maxX : box.minX;
   const roofXLo = Math.min(xMouth, roofBackX);
   const roofXHi = Math.max(xMouth, roofBackX);
-  const fullyPastRoof = ball.z + BALL_RADIUS <= box.maxZ;
-  if (ball.vz < 0 && !fullyPastRoof
-      && ball.z - BALL_RADIUS < box.maxZ
+  if (ball.z - BALL_RADIUS < box.maxZ && ball.z + BALL_RADIUS > box.maxZ
       && ball.x + BALL_RADIUS > roofXLo
       && ball.x - BALL_RADIUS < roofXHi
       && ball.y + BALL_RADIUS > box.minY
       && ball.y - BALL_RADIUS < box.maxY) {
-    ball.z = box.maxZ + BALL_RADIUS;
-    const pre = Math.abs(ball.vz);
-    ball.vz = -ball.vz * BOUNCE_RETAIN;
-    recordBounce(state, 'z', pre);
+    const fromInside = ball.vz > 0 || (ball.vz === 0 && ball.z <= box.maxZ);
+    if (fromInside) {
+      ball.z = box.maxZ - BALL_RADIUS;
+      if (ball.vz > 0) {
+        const pre = Math.abs(ball.vz);
+        ball.vz = -ball.vz * BOUNCE_RETAIN;
+        recordBounce(state, 'z', pre);
+      }
+    } else {
+      ball.z = box.maxZ + BALL_RADIUS;
+      if (ball.vz < 0) {
+        const pre = Math.abs(ball.vz);
+        ball.vz = -ball.vz * BOUNCE_RETAIN;
+        recordBounce(state, 'z', pre);
+      }
+    }
   }
 }

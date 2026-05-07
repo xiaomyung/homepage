@@ -88,12 +88,13 @@ test('ball clipping the post from outside the mouth bounces back', () => {
   assert.ok(state.ball.vx < 0, `expected vx reversed, got ${state.ball.vx}`);
 });
 
-test('ball in mouth, below crossbar, fully past goal line scores for the other side', () => {
+test('ball fully past the goal-line sensor scores for the other side', () => {
   const state = freshState();
   const f = state.field;
-  // Place ball fully past the right goal line (ball edge past the line, not
-  // just the center), inside the mouth, on the ground.
-  state.ball.x = f.goalLineR + BALL_RADIUS + 2;
+  // Place ball fully past the right goal sensor's back face (ball
+  // trailing edge past sensor.maxX), inside the mouth aperture, on
+  // the ground.
+  state.ball.x = f.goalSensorRight.maxX + BALL_RADIUS + 0.5;
   state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
   state.ball.z = 0;
   state.ball.vx = 0.5;
@@ -102,7 +103,7 @@ test('ball in mouth, below crossbar, fully past goal line scores for the other s
 
   tick(state, NOOP, NOOP);
 
-  // Ball crossed goalLineR → right goal conceded → LEFT scores
+  // Ball crossed the sensor → right goal conceded → LEFT scores
   assert.equal(state.scoreL, 1, 'left should have scored into right goal');
   assert.equal(state.scoreR, 0);
   assert.ok(
@@ -277,6 +278,35 @@ test('airborne ball hitting the lower side net from outside bounces back', () =>
   );
   assert.equal(state.ball.inGoal, false);
   assert.equal(state.scoreR, 0);
+});
+
+test('side wall is solid from INSIDE the goal box (no tunneling out)', () => {
+  // Regression for the "ball flies through the goal frame wall" bug:
+  // a ball that ends up inside the goal box without scoring (e.g.
+  // post deflection sending it through the mouth at an awkward Y)
+  // must still be contained by the side walls. Direction-of-approach
+  // gates in the old exterior resolver let inside-going-out balls
+  // pass through cleanly. Bidirectional resolver should bounce them.
+  const state = freshState();
+  const f = state.field;
+  // Park the ball inside the left goal box, just above the lower side
+  // wall (y = mouthYMin), moving toward it from inside.
+  state.ball.x = f.goalLineL - 12;             // well inside the box
+  state.ball.y = f.goalMouthYMin + 1;          // 1 unit inside the wall
+  state.ball.z = 5;
+  state.ball.vx = 0; state.ball.vy = -4; state.ball.vz = 0; // heading toward wall
+  state.ball.frozen = false;
+  state.ball.inGoal = false;                    // !inGoal so the exterior path runs
+  state.graceFrames = 999;                      // suppress scoring during the test
+  for (let i = 0; i < 5; i++) tick(state, NOOP, NOOP);
+  assert.ok(
+    state.ball.y >= f.goalMouthYMin,
+    `ball must not tunnel through inside lower wall, got y=${state.ball.y}`,
+  );
+  assert.ok(
+    state.ball.vy >= 0,
+    `inside-out hit must flip vy positive, got ${state.ball.vy}`,
+  );
 });
 
 test('airborne ball hitting the upper side net from outside bounces back', () => {

@@ -165,6 +165,8 @@ export function resetBall(state) {
   ball.vz = 0;
   ball.frozen = false;
   ball.inGoal = false;
+  ball.crossedLineL = false;
+  ball.crossedLineR = false;
   state.graceFrames = RESPAWN_GRACE;
   state.lastKickTick = state.tick;
 }

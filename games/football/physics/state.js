@@ -145,6 +145,8 @@ export function resetStateInPlace(state, field, rng) {
   ball.z = RESPAWN_DROP_Z; ball.vz = 0;
   ball.frozen = false;
   ball.inGoal = false;
+  ball.crossedLineL = false;
+  ball.crossedLineR = false;
   initPlayer(state.p1, 'left', field);
   initPlayer(state.p2, 'right', field);
   state.scoreL = 0;
@@ -182,6 +184,8 @@ export function createState(field, rng = createSeededRng(0)) {
       z: 0, vz: 0,
       frozen: false,
       inGoal: false,
+      crossedLineL: false,
+      crossedLineR: false,
     },
     p1: createPlayer('left', field),
     p2: createPlayer('right', field),

@@ -222,14 +222,17 @@ export function resolveBallVsGoalBars(state, box) {
 /**
  * Ball vs one goal's EXTERIOR non-bar faces: back wall, two side
  * walls, roof. Each face is solid in BOTH directions when inGoal=false:
- * a ball overlapping the plane gets pushed to the side its center is
- * already on (so a ball that slipped inside without scoring is pushed
- * back inside the box rather than tunneled out, and a ball arriving
- * from outside is pushed back outside as before). Runs only when
- * inGoal=false; resolveBallInsideGoal owns the absorbing-net path
- * after a goal counts.
+ * a ball straddling the plane gets pushed back to whichever side it
+ * came from in the pre-substep position. Runs only when inGoal=false;
+ * resolveBallInsideGoal owns the absorbing-net path after a goal counts.
+ *
+ * Pre-substep position (preX, preY, preZ) is the ball position before
+ * this substep's move + post-bar bounce. It's the only reliable
+ * side-of signal — current position can be on the "wrong" side after
+ * a glancing post bounce, and current velocity reflects whatever the
+ * post bounce just imparted, not the ball's prior trajectory.
  */
-export function resolveBallVsGoalExterior(state, box) {
+export function resolveBallVsGoalExterior(state, box, preX, preY, preZ) {
   const ball = state.ball;
   if (ball.frozen) return;
   const isLeft = box === state.field.goalBoxLeft;
@@ -244,23 +247,22 @@ export function resolveBallVsGoalExterior(state, box) {
       && ball.y + BALL_RADIUS > box.minY
       && ball.y - BALL_RADIUS < box.maxY
       && ball.z - BALL_RADIUS < box.maxZ) {
-    // Inside the box is the mouth side: x > slopeXatY for left, x <
-    // slopeXatY for right. Velocity sign disambiguates which side the
-    // ball came from when overlap is straddling.
-    const insideVx = isLeft ? ball.vx < 0 : ball.vx > 0;   // moving deeper / into back wall from inside
-    const outsideVx = isLeft ? ball.vx > 0 : ball.vx < 0;  // moving from behind goal into the box
-    const fromInside = insideVx
-      || (ball.vx === 0 && (isLeft ? ball.x >= slopeXatY : ball.x <= slopeXatY));
+    // Inside the box is the mouth side (x > slopeXatY for left,
+    // x < slopeXatY for right). Pre-substep position names the side
+    // the ball came from.
+    const fromInside = isLeft ? preX >= slopeXatY : preX <= slopeXatY;
     if (fromInside) {
       ball.x = slopeXatY + (isLeft ? +1 : -1) * BALL_RADIUS;
-      if (insideVx) {
+      const intoWall = isLeft ? ball.vx < 0 : ball.vx > 0;
+      if (intoWall) {
         const pre = Math.abs(ball.vx);
         ball.vx = -ball.vx * BOUNCE_RETAIN;
         recordBounce(state, 'x', pre);
       }
     } else {
       ball.x = slopeXatY + (isLeft ? -1 : +1) * BALL_RADIUS;
-      if (outsideVx) {
+      const intoWall = isLeft ? ball.vx > 0 : ball.vx < 0;
+      if (intoWall) {
         const pre = Math.abs(ball.vx);
         ball.vx = -ball.vx * BOUNCE_RETAIN;
         recordBounce(state, 'x', pre);
@@ -269,17 +271,14 @@ export function resolveBallVsGoalExterior(state, box) {
   }
   if (ball.frozen) return;
 
-  // Lower side wall — plane at y=mouthYMin.
-  // Substepping bounds motion at BALL_RADIUS, so an overlap implies
-  // the ball just crossed the plane this substep — its velocity sign
-  // tells us which side it came from. vy < 0 (downward) means it was
-  // inside the box and is exiting; vy > 0 means it was outside and is
-  // entering. vy == 0 falls back to center position.
+  // Lower side wall — plane at y=mouthYMin. Pre-substep ball.y >=
+  // wallY ⇒ ball was inside the box and is exiting; pre-substep
+  // ball.y < wallY ⇒ ball was outside and the wall is glancing it.
   if (ball.y - BALL_RADIUS < box.minY && ball.y + BALL_RADIUS > box.minY
       && ball.x + BALL_RADIUS > box.minX
       && ball.x - BALL_RADIUS < box.maxX
       && ball.z - BALL_RADIUS < box.maxZ) {
-    const fromInside = ball.vy < 0 || (ball.vy === 0 && ball.y >= box.minY);
+    const fromInside = preY >= box.minY;
     if (fromInside) {
       ball.y = box.minY + BALL_RADIUS;
       if (ball.vy < 0) {
@@ -298,13 +297,13 @@ export function resolveBallVsGoalExterior(state, box) {
   }
   if (ball.frozen) return;
 
-  // Upper side wall — plane at y=mouthYMax. vy > 0 means inside and
-  // exiting upward; vy < 0 means outside and entering downward.
+  // Upper side wall — plane at y=mouthYMax. Pre-substep ball.y <=
+  // wallY ⇒ inside and exiting upward.
   if (ball.y - BALL_RADIUS < box.maxY && ball.y + BALL_RADIUS > box.maxY
       && ball.x + BALL_RADIUS > box.minX
       && ball.x - BALL_RADIUS < box.maxX
       && ball.z - BALL_RADIUS < box.maxZ) {
-    const fromInside = ball.vy > 0 || (ball.vy === 0 && ball.y <= box.maxY);
+    const fromInside = preY <= box.maxY;
     if (fromInside) {
       ball.y = box.maxY - BALL_RADIUS;
       if (ball.vy > 0) {
@@ -324,9 +323,8 @@ export function resolveBallVsGoalExterior(state, box) {
   if (ball.frozen) return;
 
   // Roof — flat plane at z=mouthZMax, truncated to the front-
-  // rectangular portion of the trapezoidal net. vz > 0 (rising) means
-  // inside and hitting the underside; vz < 0 (falling) means outside
-  // and landing on top.
+  // rectangular portion of the trapezoidal net. Pre-substep ball.z <=
+  // wallZ ⇒ inside and hitting the underside.
   const xMouth = isLeft ? box.maxX : box.minX;
   const roofXLo = Math.min(xMouth, roofBackX);
   const roofXHi = Math.max(xMouth, roofBackX);
@@ -335,7 +333,7 @@ export function resolveBallVsGoalExterior(state, box) {
       && ball.x - BALL_RADIUS < roofXHi
       && ball.y + BALL_RADIUS > box.minY
       && ball.y - BALL_RADIUS < box.maxY) {
-    const fromInside = ball.vz > 0 || (ball.vz === 0 && ball.z <= box.maxZ);
+    const fromInside = preZ <= box.maxZ;
     if (fromInside) {
       ball.z = box.maxZ - BALL_RADIUS;
       if (ball.vz > 0) {

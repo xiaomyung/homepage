@@ -58,6 +58,14 @@ export function updateBall(state) {
   const field = state.field;
 
   for (let s = 0; s < substeps; s++) {
+    // Pre-substep position — passed to the goal-exterior resolver so
+    // it can tell which side the ball was on before this substep
+    // moved (and a possible post-bar bounce shoved) it. Position is
+    // the only reliable side-of signal: post bounces can flip
+    // velocity in arbitrary directions.
+    const preX = ball.x;
+    const preY = ball.y;
+    const preZ = ball.z;
     ball.x += ball.vx * invN;
     ball.y += ball.vy * invN;
 
@@ -73,7 +81,7 @@ export function updateBall(state) {
       recordBounce(state, 'y', preVy);
     }
 
-    checkBallScoreOrOut(state);
+    checkBallScoreOrOut(state, preX);
     if (ball.frozen) return;
     // Bars (posts + crossbar) are solid from both sides.
     resolveBallVsGoalBars(state, field.goalBoxLeft);
@@ -83,9 +91,9 @@ export function updateBall(state) {
       resolveBallInsideGoal(state, field.goalBoxLeft);
       resolveBallInsideGoal(state, field.goalBoxRight);
     } else {
-      // Outside the goal — solid bounce planes.
-      resolveBallVsGoalExterior(state, field.goalBoxLeft);
-      resolveBallVsGoalExterior(state, field.goalBoxRight);
+      // Outside the goal — solid bounce planes (bidirectional).
+      resolveBallVsGoalExterior(state, field.goalBoxLeft, preX, preY, preZ);
+      resolveBallVsGoalExterior(state, field.goalBoxRight, preX, preY, preZ);
     }
     if (ball.frozen) return;
     // Ball vs player bodies — cushion + deflect trap. On a clamp,
@@ -103,7 +111,7 @@ export function updateBall(state) {
   if (ball.vy * ball.vy < BALL_VEL_CUTOFF_SQ) ball.vy = 0;
 }
 
-function checkBallScoreOrOut(state) {
+function checkBallScoreOrOut(state, preX) {
   const f = state.field;
   const ball = state.ball;
   if (ball.frozen) return;
@@ -114,23 +122,31 @@ function checkBallScoreOrOut(state) {
     return;
   }
 
+  // Track inward goal-line crossings — set when the ball center
+  // transitions from the field side to the goal side this substep,
+  // cleared on resetBall. Goals only fire when the corresponding
+  // flag is set, so a ball that fell into a goal box from behind
+  // (past the back wall, never crossed the line) cannot score.
+  if (preX > f.goalLineL && ball.x <= f.goalLineL) ball.crossedLineL = true;
+  if (preX < f.goalLineR && ball.x >= f.goalLineR) ball.crossedLineR = true;
+
   if (state.graceFrames > 0) return;
 
-  if (ballFullyCrossedSensor(ball, f.goalSensorLeft, 'left')) {
+  if (ball.crossedLineL && ballFullyCrossedSensor(ball, f.goalSensorLeft, 'left')) {
     scoreGoal(state, 'left');
     return;
   }
-  if (ballFullyCrossedSensor(ball, f.goalSensorRight, 'right')) {
+  if (ball.crossedLineR && ballFullyCrossedSensor(ball, f.goalSensorRight, 'right')) {
     scoreGoal(state, 'right');
   }
 }
 
-// Ball has fully crossed the goal-line slab when its trailing edge has
-// passed the slab's back face AND its y/z extents fit through the mouth
-// aperture. Posts and the crossbar are physical (sphere-cylinder
-// collision in geometry.js::resolveBallVsGoalBars), so any trajectory
-// that would clip them is bounced before this check sees it — the
-// aperture spans post-to-post and floor-to-crossbar with no inset.
+// Ball is fully past the slab's back face AND its y/z extents fit
+// through the mouth aperture. Posts and the crossbar are physical
+// (sphere-cylinder collision in geometry.js::resolveBallVsGoalBars),
+// so any trajectory that would clip them is bounced before this
+// check sees it — the aperture spans post-to-post and floor-to-
+// crossbar with no inset.
 function ballFullyCrossedSensor(ball, s, side) {
   const fullyPast = side === 'left'
     ? ball.x + BALL_RADIUS <= s.minX

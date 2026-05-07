@@ -386,10 +386,10 @@ test('winning goal goes straight to matchend reposition (no at-spot celebrate)',
   // See project_football_scoring_sides memory: side arg names the
   // goal that conceded. Pre-seed scoreL=2 so the next score is 3 = win.
   state.scoreL = 2;
-  state.ball.x = state.field.goalLineR + 1;
+  state.ball.x = state.field.goalLineR - 1;   // field side, just outside line
   state.ball.y = FIELD_HEIGHT / 2;
   state.ball.z = 0;
-  state.ball.vx = 5;
+  state.ball.vx = 12;                         // fast enough to fully cross the slab in one tick
   state.ball.vy = 0;
   state.ball.vz = 0;
   state.graceFrames = 0;
@@ -438,10 +438,10 @@ test('matchend phase machine: reposition → pose → neutral → finalize', () 
   state.headless = false;
   state.recordEvents = false;
   state.scoreL = 2;
-  state.ball.x = state.field.goalLineR + 1;
+  state.ball.x = state.field.goalLineR - 1;
   state.ball.y = FIELD_HEIGHT / 2;
   state.ball.z = 0;
-  state.ball.vx = 5;
+  state.ball.vx = 12;
   state.graceFrames = 0;
   tick(state, null, null);
 
@@ -469,10 +469,10 @@ test('non-winning goal celebrates then reposition (no matchend)', () => {
   state.headless = false;
   state.recordEvents = false;
   state.scoreR = 0;   // first goal of the match, nowhere near WIN_SCORE
-  state.ball.x = state.field.goalLineR + 1;
+  state.ball.x = state.field.goalLineR - 1;
   state.ball.y = FIELD_HEIGHT / 2;
   state.ball.z = 0;
-  state.ball.vx = 5;
+  state.ball.vx = 12;
   state.graceFrames = 0;
   tick(state, null, null);
 

@@ -91,15 +91,16 @@ test('ball clipping the post from outside the mouth bounces back', () => {
 test('ball fully past the goal-line sensor scores for the other side', () => {
   const state = freshState();
   const f = state.field;
-  // Place ball fully past the right goal sensor's back face (ball
-  // trailing edge past sensor.maxX), inside the mouth aperture, on
-  // the ground.
-  state.ball.x = f.goalSensorRight.maxX + BALL_RADIUS + 0.5;
+  // Place ball just on the field side of the right goal line and
+  // shoot inward fast enough that one tick crosses the line AND
+  // fully passes the sensor slab.
+  state.ball.x = f.goalLineR - 1;
   state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
   state.ball.z = 0;
-  state.ball.vx = 0.5;
+  state.ball.vx = 12;
   state.ball.vy = 0;
   state.ball.vz = 0;
+  state.recordEvents = true;
 
   tick(state, NOOP, NOOP);
 

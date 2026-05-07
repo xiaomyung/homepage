@@ -102,6 +102,17 @@ export const STUCK_ON_TOP_NORMAL_THRESHOLD = 0.95;
 export const STUCK_ON_TOP_TANG_THRESHOLD   = 0.05;
 export const STUCK_ON_TOP_SLIDE_SPEED      = 0.5;
 
+// Player pair-collision personal-space gap. After each pair contact
+// the resolver pushes the pair to dist = r + this gap, so they don't
+// settle at exactly the collision radius (the steady-state lock the
+// AI's inward pursuit can't break out of on its own).
+export const PLAYER_PAIR_SEPARATION_GAP    = 2;
+// Stuck-pair escalator. After this many consecutive ticks of contact,
+// add an outward velocity impulse to break the deadlock. Threshold
+// deliberately above any legitimate scrum length.
+export const PLAYER_PAIR_STUCK_TICKS       = 180;   // ~3s @ TICK_MS=16
+export const PLAYER_PAIR_STUCK_IMPULSE     = 1.5;
+
 // World-space anchors derived from the rig.
 export const HIP_BASE_Z      = STICKMAN_LIMB_FULL_H;                                // 20
 export const SHOULDER_Z      = HIP_BASE_Z + STICKMAN_SHOULDER_OFY;                   // 40.24

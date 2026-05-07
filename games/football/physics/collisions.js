@@ -13,6 +13,7 @@ import {
   STUCK_ON_TOP_NORMAL_THRESHOLD, STUCK_ON_TOP_TANG_THRESHOLD, STUCK_ON_TOP_SLIDE_SPEED,
   FIELD_HEIGHT, PLAYER_HEIGHT, PLAYER_WIDTH, Z_STRETCH,
   STICKMAN_HEAD_RADIUS, STICKMAN_TORSO_RADIUS, SHOULDER_Z, HEAD_CENTER_Z,
+  PLAYER_PAIR_SEPARATION_GAP, PLAYER_PAIR_STUCK_TICKS, PLAYER_PAIR_STUCK_IMPULSE,
 } from './tuning.js';
 import { closestPointOnSegment } from './geometry.js';
 
@@ -255,9 +256,15 @@ function tryBodyContact(state, p, collider, wx, wy, wz, wvx, wvy, wvz, colliderR
  * easily cross the contact diameter in one tick.
  *
  * Takes pre-tick positions so we can solve for the exact time of
- * first contact along the linear motion.
+ * first contact along the linear motion. After resolving, separates
+ * the pair to dist = r + PLAYER_PAIR_SEPARATION_GAP so a steady-state
+ * inward AI press can't lock them at exactly the contact distance.
+ *
+ * Tracks consecutive contact ticks on `state.pairContactTicks`; once
+ * the pair has been touching for PLAYER_PAIR_STUCK_TICKS in a row
+ * (~3s), apply an outward velocity impulse and reset the counter.
  */
-export function resolvePlayerPairCollision(p1, p2, pre1x, pre1y, pre2x, pre2y) {
+export function resolvePlayerPairCollision(state, p1, p2, pre1x, pre1y, pre2x, pre2y) {
   const r = 2 * STICKMAN_HEAD_RADIUS;
   // Pre-tick centers in world coords.
   const preC1x = pre1x + PLAYER_WIDTH / 2;
@@ -288,7 +295,10 @@ export function resolvePlayerPairCollision(p1, p2, pre1x, pre1y, pre2x, pre2y) {
     else if (tStar >= 1) minDist2 = postDist2;
     else                 minDist2 = preDist2 + 2 * tStar * preDotM + tStar * tStar * aMot;
   }
-  if (minDist2 >= r * r) return;
+  if (minDist2 >= r * r) {
+    state.pairContactTicks = 0;
+    return;
+  }
 
   // Solve |preD + t * m|² = r² for t in [0, 1].
   let tc = 0;
@@ -330,8 +340,12 @@ export function resolvePlayerPairCollision(p1, p2, pre1x, pre1y, pre2x, pre2y) {
     const inv = 1 / dist;
     nxU = dx * inv; nzU = dz * inv;
   }
-  if (dist < r - 1e-6) {
-    const half = (r - dist) / 2;
+  // Always separate to r + GAP so the pair doesn't settle at exactly
+  // the contact distance — a steady-state lock the AI's inward press
+  // can't break out of on its own.
+  const targetDist = r + PLAYER_PAIR_SEPARATION_GAP;
+  if (dist < targetDist - 1e-6) {
+    const half = (targetDist - dist) / 2;
     const wx = nxU * half, wz = nzU * half;
     p1.x += wx;  p1.y += wz / Z_STRETCH;
     p2.x -= wx;  p2.y -= wz / Z_STRETCH;
@@ -358,5 +372,18 @@ export function resolvePlayerPairCollision(p1, p2, pre1x, pre1y, pre2x, pre2y) {
   if (pv2DotN > 0) {
     p2.pushVx -= pv2DotN * nxU;
     p2.pushVy -= pv2DotN * nzU / Z_STRETCH;
+  }
+
+  // Stuck-pair escalator. Increment for this contact tick; once the
+  // pair has been touching for ~3s (PLAYER_PAIR_STUCK_TICKS), apply
+  // an outward velocity impulse to either side so the deadlock breaks
+  // even if the AI keeps pressing inward harder than the gap.
+  state.pairContactTicks++;
+  if (state.pairContactTicks >= PLAYER_PAIR_STUCK_TICKS) {
+    p1.vx += nxU * PLAYER_PAIR_STUCK_IMPULSE;
+    p1.vy += (nzU * PLAYER_PAIR_STUCK_IMPULSE) / Z_STRETCH;
+    p2.vx -= nxU * PLAYER_PAIR_STUCK_IMPULSE;
+    p2.vy -= (nzU * PLAYER_PAIR_STUCK_IMPULSE) / Z_STRETCH;
+    state.pairContactTicks = 0;
   }
 }

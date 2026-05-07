@@ -159,6 +159,7 @@ export function resetStateInPlace(state, field, rng) {
   state.goalScorer = null;
   state.matchOver = false;
   state.winner = null;
+  state.pairContactTicks = 0;
   state.events.length = 0;
   state.recordEvents = false;
   state.headless = false;
@@ -196,6 +197,7 @@ export function createState(field, rng = createSeededRng(0)) {
     goalScorer: null,
     matchOver: false,
     winner: null,
+    pairContactTicks: 0,
     events: [],
     recordEvents: false,
     headless: false,

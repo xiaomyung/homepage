@@ -35,6 +35,8 @@ export function resetToKickoff(state) {
   ball.vz = 0;
   ball.frozen = false;
   ball.inGoal = false;
+  ball.crossedLineL = false;
+  ball.crossedLineR = false;
 
   const cy = FIELD_HEIGHT / 2;
   const { p1, p2 } = state;

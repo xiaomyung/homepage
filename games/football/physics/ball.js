@@ -111,6 +111,15 @@ export function updateBall(state) {
   if (ball.vy * ball.vy < BALL_VEL_CUTOFF_SQ) ball.vy = 0;
 }
 
+/**
+ * Per-substep score / out-of-bounds gate. Tracks per-line inward
+ * crossings on `state.ball.crossedLineL/R` (set when the ball center
+ * transitions from the field side to the goal side this substep,
+ * cleared by resetBall / resetToKickoff). A goal fires only when the
+ * matching flag is set AND the ball has fully crossed the line slab —
+ * blocks false scores from balls that arrived behind the goal box
+ * without ever crossing the line.
+ */
 function checkBallScoreOrOut(state, preX) {
   const f = state.field;
   const ball = state.ball;

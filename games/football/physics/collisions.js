@@ -44,7 +44,7 @@ export function goalBox(f, side) {
  * `useZ=false` ignores z axis — used for 2D players. Returns null if
  * the AABBs do not overlap.
  */
-export function minPenetrationPush(ent, box, useZ, vel) {
+function minPenetrationPush(ent, box, useZ, vel) {
   if (ent.maxX <= box.minX || ent.minX >= box.maxX) return null;
   if (ent.maxY <= box.minY || ent.minY >= box.maxY) return null;
   if (useZ && (ent.maxZ <= box.minZ || ent.minZ >= box.maxZ)) return null;
@@ -93,7 +93,7 @@ export function clampAndCollide(state, p) {
   clampPlayerToField(p, f);
 }
 
-export function resolvePlayerGoalBox(p, pw, box) {
+function resolvePlayerGoalBox(p, pw, box) {
   const ent = _scratchEnt2D;
   ent.minX = p.x; ent.maxX = p.x + pw;
   ent.minY = p.y; ent.maxY = p.y + PLAYER_HEIGHT;

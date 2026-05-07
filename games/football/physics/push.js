@@ -32,7 +32,7 @@ import { clamp, wrapAngle } from './state.js';
 
 /** Same gates as tryPush, used at the strike-commit tick to verify
  *  the victim hasn't escaped the range/facing cone during the windup. */
-export function pushStillInRange(state, pusher, victim) {
+function pushStillInRange(state, pusher, victim) {
   const f = state.field;
   const pusherCenterX = pusher.x + f.playerWidth / 2;
   const victimCenterX = victim.x + f.playerWidth / 2;

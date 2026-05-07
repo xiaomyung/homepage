@@ -103,7 +103,7 @@ export function updateBall(state) {
   if (ball.vy * ball.vy < BALL_VEL_CUTOFF_SQ) ball.vy = 0;
 }
 
-export function checkBallScoreOrOut(state) {
+function checkBallScoreOrOut(state) {
   const f = state.field;
   const ball = state.ball;
   if (ball.frozen) return;

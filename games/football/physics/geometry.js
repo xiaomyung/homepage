@@ -152,7 +152,7 @@ export function resolveBallInsideGoal(state, box) {
  * and the crossbar. Returns true on contact and emits a bounce event
  * along the true contact normal.
  */
-export function resolveBallVsCylinder(state, ax, ay, az, bx, by, bz, radius) {
+function resolveBallVsCylinder(state, ax, ay, az, bx, by, bz, radius) {
   const ball = state.ball;
   if (ball.frozen) return false;
 

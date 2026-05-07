@@ -12,10 +12,6 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CADDYFILE="/etc/caddy/Caddyfile"
 
-# Retire the football broker if it was installed by an older revision.
-sudo systemctl disable --quiet football-evolution.service 2>/dev/null || true
-sudo systemctl stop --quiet football-evolution.service 2>/dev/null || true
-
 # ── systemd units ─────────────────────────────────────────────────────────────
 install_unit() {
   local src="$1"
@@ -45,16 +41,8 @@ fixed = re.sub(
     src,
 )
 if "handle /api/stats" not in fixed:
-    # Anchor 1 (legacy): the old football-broker handle block, if it
-    # still survives in the Caddyfile from a prior revision.
-    fixed = re.sub(
-        r"(\thandle /api/football/\* \{[^}]*\}\n)",
-        r"\1\n" + correct,
-        fixed, count=1,
-    )
-if "handle /api/stats" not in fixed:
-    # Anchor 2 (current): the first redir block in xiaomyung.com.
-    # The portal always carries at least one redir, so this is stable.
+    # Anchor on the first redir block in xiaomyung.com — the portal
+    # always carries at least one redir, so this is stable.
     fixed = re.sub(
         r"(\tredir /\S+ https://[^\n]+\n)",
         correct + r"\n\1",

@@ -119,14 +119,14 @@ export function buildFieldLines(ctx) {
   addGoal(ctx, f.goalLineR, f.goalRRight, goalCenterZ, goalWidth, goalHeight, lineMat, netMat, goalLineMat);
 }
 
-export function addStatic(ctx, obj, geometry) {
+function addStatic(ctx, obj, geometry) {
   ctx.scene.add(obj);
   if (geometry) ctx._staticGeometries.push(geometry);
 }
 
 /** Add a thin cylinder spanning from point A to point B, used as a
  *  "thick line" for the goal frame bars. */
-export function addBar(ctx, a, b, material) {
+function addBar(ctx, a, b, material) {
   const dir = b.clone().sub(a);
   const length = dir.length();
   if (length < 1e-6) return;
@@ -144,7 +144,7 @@ export function addBar(ctx, a, b, material) {
 }
 
 /** Add an XZ-plane ellipse arc centered at (cx, cz). */
-export function addArc(ctx, cx, cz, rx, rz, aStart, aEnd, segments, material) {
+function addArc(ctx, cx, cz, rx, rz, aStart, aEnd, segments, material) {
   const points = [];
   for (let i = 0; i <= segments; i++) {
     const a = aStart + (i / segments) * (aEnd - aStart);
@@ -164,7 +164,7 @@ export function addArc(ctx, cx, cz, rx, rz, aStart, aEnd, segments, material) {
  * slanted back net to the outer ground. Caller decides orientation
  * via the (mouthX, backBotX) pair.
  */
-export function addGoal(ctx, mouthX, backBotX, centerZ, width, height, mat, netMat, goalLineMat) {
+function addGoal(ctx, mouthX, backBotX, centerZ, width, height, mat, netMat, goalLineMat) {
   const halfW = width / 2;
   const backTopX = mouthX + (backBotX - mouthX) * ROOF_FRACTION;
   const zMin = centerZ - halfW;

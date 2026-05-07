@@ -120,6 +120,12 @@ export const GOAL_MOUTH_WIDTH   = 28.6;  // y-span of the mouth
 export const GOAL_MOUTH_Y_MIN   = (FIELD_HEIGHT - GOAL_MOUTH_WIDTH) / 2;
 export const GOAL_MOUTH_Y_MAX   = (FIELD_HEIGHT + GOAL_MOUTH_WIDTH) / 2;
 
+// Goal-sensor slab depth — distance the ball's trailing edge must
+// travel past the goal line for the score to register. Sized
+// > BALL_RADIUS so the ball-substep loop (capped at BALL_RADIUS per
+// substep in physics/ball.js) cannot tunnel the slab undetected.
+export const GOAL_SENSOR_DEPTH  = 6;
+
 /* ── Match flow ───────────────────────────────────────────────── */
 
 export const WIN_SCORE                     = 3;

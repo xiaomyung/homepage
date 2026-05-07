@@ -13,7 +13,7 @@ import {
   GRAVITY, AIR_FRICTION, GROUND_FRICTION,
   AIR_BOUNCE, WALL_BOUNCE_DAMP, BOUNCE_VZ_MIN,
   BALL_VEL_CUTOFF_SQ, BALL_RADIUS,
-  CEILING, FIELD_HEIGHT, GOAL_POST_RADIUS,
+  CEILING, FIELD_HEIGHT,
 } from './tuning.js';
 import {
   recordBounce,
@@ -116,29 +116,28 @@ function checkBallScoreOrOut(state) {
 
   if (state.graceFrames > 0) return;
 
-  const crossedL = ball.x < f.goalLineL;
-  const crossedR = ball.x > f.goalLineR;
-  if (!crossedL && !crossedR) return;
+  if (ballFullyCrossedSensor(ball, f.goalSensorLeft, 'left')) {
+    scoreGoal(state, 'left');
+    return;
+  }
+  if (ballFullyCrossedSensor(ball, f.goalSensorRight, 'right')) {
+    scoreGoal(state, 'right');
+  }
+}
 
-  // Goal requires the whole ball past the line AND the ball fully
-  // inside the goal mouth opening (between posts, below crossbar).
-  // The "ball.x ± BALL_RADIUS inside the back wall" clause prevents
-  // a false score for a ball that was never actually kicked into the
-  // mouth.
-  const fullyPastL = ball.x + BALL_RADIUS <= f.goalLineL
-                  && ball.x - BALL_RADIUS >= f.goalLLeft;
-  const fullyPastR = ball.x - BALL_RADIUS >= f.goalLineR
-                  && ball.x + BALL_RADIUS <= f.goalRRight;
-  // Mouth opening is inset by GOAL_POST_RADIUS so the ball must be
-  // fully clear of the physical post cylinders.
-  const withinMouthY =
-    ball.y - BALL_RADIUS >= f.goalMouthYMin + GOAL_POST_RADIUS
-    && ball.y + BALL_RADIUS <= f.goalMouthYMax - GOAL_POST_RADIUS;
-  const belowCrossbar =
-    ball.z + BALL_RADIUS <= f.goalMouthZMax - GOAL_POST_RADIUS;
-
-  const goalL = crossedL && fullyPastL && withinMouthY && belowCrossbar;
-  const goalR = crossedR && fullyPastR && withinMouthY && belowCrossbar;
-  if (goalL) scoreGoal(state, 'left');
-  else if (goalR) scoreGoal(state, 'right');
+// Ball has fully crossed the goal-line slab when its trailing edge has
+// passed the slab's back face AND its y/z extents fit through the mouth
+// aperture. Posts and the crossbar are physical (sphere-cylinder
+// collision in geometry.js::resolveBallVsGoalBars), so any trajectory
+// that would clip them is bounced before this check sees it — the
+// aperture spans post-to-post and floor-to-crossbar with no inset.
+function ballFullyCrossedSensor(ball, s, side) {
+  const fullyPast = side === 'left'
+    ? ball.x + BALL_RADIUS <= s.minX
+    : ball.x - BALL_RADIUS >= s.maxX;
+  if (!fullyPast) return false;
+  return ball.y >= s.minY
+      && ball.y <= s.maxY
+      && ball.z >= s.minZ
+      && ball.z + BALL_RADIUS <= s.maxZ;
 }

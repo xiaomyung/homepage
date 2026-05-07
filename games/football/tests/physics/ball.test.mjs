@@ -115,6 +115,61 @@ test('ball continues moving after scoring instead of freezing', () => {
   assert.ok(state.ball.inGoal, 'inGoal flag should be set');
 });
 
+test('ball cleanly through the lower mouth shoulder scores', () => {
+  // The old inset gate added GOAL_POST_RADIUS to mouthYMin in the
+  // scoring test, killing goals where ball.y was just inside the post.
+  // Posts physically deflect anything they touch — once the ball is
+  // past the line and inside the aperture it must score.
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = f.goalLineL - BALL_RADIUS - 2;
+  state.ball.y = f.goalMouthYMin + BALL_RADIUS + 0.01; // just clear of the lower post
+  state.ball.z = 0;
+  state.ball.vx = -10; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  tick(state, NOOP, NOOP);
+  assert.equal(state.scoreR, 1, `lower-shoulder shot must score, ball.y=${state.ball.y}`);
+});
+
+test('ball cleanly through the upper mouth shoulder scores', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = f.goalLineR + BALL_RADIUS + 2;
+  state.ball.y = f.goalMouthYMax - BALL_RADIUS - 0.01; // just clear of the upper post
+  state.ball.z = 0;
+  state.ball.vx = 10; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  tick(state, NOOP, NOOP);
+  assert.equal(state.scoreL, 1, `upper-shoulder shot must score, ball.y=${state.ball.y}`);
+});
+
+test('low-velocity shot rolling between the posts still scores', () => {
+  // The original bug is reproducible at very low ball speeds. With the
+  // sensor approach a ball at 1 unit/tick still fully crosses the slab
+  // within a handful of ticks.
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = f.goalLineL - BALL_RADIUS - 0.5;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = -1; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  for (let i = 0; i < 30 && state.scoreR === 0; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.scoreR, 1, 'low-velocity rolling shot must score');
+});
+
+test('ball just below the crossbar scores', () => {
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = f.goalLineR + BALL_RADIUS + 2;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = f.goalMouthZMax - BALL_RADIUS - 0.01; // just below crossbar
+  state.ball.vx = 10; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  tick(state, NOOP, NOOP);
+  assert.equal(state.scoreL, 1, `under-bar shot must score, ball.z=${state.ball.z}`);
+});
+
 test('ball straight at torso — trap fires immediately and kills normal velocity', () => {
   const state = trapState();
   state.recordEvents = true;

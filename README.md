@@ -104,10 +104,10 @@ straight into the next match.
   translucent coloured surface (body capsule, head sphere,
   pair-collision disc, kick reach + facing cone + lateral cap,
   push range + facing cone, foot sphere, goal box / posts /
-  crossbar, field walls, ground / ceiling). All positions and
-  dimensions are read live from `state.field` and the player
-  records — change a constant in `physics/tuning.js` and the
-  overlay reflects it on next reload. Implementation in
+  crossbar, goal scoring sensor, field walls, ground / ceiling).
+  All positions and dimensions are read live from `state.field`
+  and the player records — change a constant in `physics/tuning.js`
+  and the overlay reflects it on next reload. Implementation in
   `debug/overlay.js`; the `Renderer` class in `renderer/index.js`
   just instantiates it and forwards the toggle.
 

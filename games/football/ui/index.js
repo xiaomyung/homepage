@@ -2,9 +2,8 @@
  * Football v2 — UI wiring.
  *
  * Binds the DOM elements authored in index.html to the showcase loop:
- * scoreboard (role dots, names, score, timer), options panel toggle,
- * free/follow camera toggles. Some elements in index.html are unwired
- * placeholders for future stat widgets — they show "—" by default.
+ * scoreboard (role dots, names, score, timer), options-panel toggle,
+ * follow-cam / freecam / debug-overlay toggles.
  */
 
 /** Format `seconds` as `MM:SS`, zero-padded. */

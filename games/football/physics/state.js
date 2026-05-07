@@ -12,6 +12,7 @@ import {
   PLAYER_WIDTH, PLAYER_HEIGHT, STARTING_GAP,
   GOAL_BACK_OFFSET, GOAL_DEPTH, GOAL_LINE_INSET,
   GOAL_MOUTH_Y_MIN, GOAL_MOUTH_Y_MAX, GOAL_MOUTH_Z, ROOF_FRACTION,
+  GOAL_SENSOR_DEPTH,
   RESPAWN_DROP_Z, RESPAWN_GRACE,
 } from './tuning.js';
 
@@ -57,6 +58,25 @@ export function createField(width = FIELD_WIDTH_REF) {
     minY: GOAL_MOUTH_Y_MIN, maxY: GOAL_MOUTH_Y_MAX,
     minZ: 0, maxZ: GOAL_MOUTH_Z,
     roofBackX: goalLineR + (goalRRight - goalLineR) * ROOF_FRACTION,
+  };
+  // Goal sensors — thin AABB slabs at each goal line spanning the full
+  // mouth aperture (post-to-post, floor-to-crossbar; no insets, since
+  // the post / crossbar cylinders physically deflect any contact-touching
+  // trajectory). The sensor's *front face* sits exactly on the goal
+  // line; the *back face* is GOAL_SENSOR_DEPTH units inside the goal.
+  // A goal scores when the ball's trailing edge has fully crossed the
+  // back face — see physics/ball.js::ballFullyCrossedSensor.
+  field.goalSensorLeft = {
+    minX: goalLineL - GOAL_SENSOR_DEPTH,
+    maxX: goalLineL,
+    minY: GOAL_MOUTH_Y_MIN, maxY: GOAL_MOUTH_Y_MAX,
+    minZ: 0, maxZ: GOAL_MOUTH_Z,
+  };
+  field.goalSensorRight = {
+    minX: goalLineR,
+    maxX: goalLineR + GOAL_SENSOR_DEPTH,
+    minY: GOAL_MOUTH_Y_MIN, maxY: GOAL_MOUTH_Y_MAX,
+    minZ: 0, maxZ: GOAL_MOUTH_Z,
   };
   return field;
 }
@@ -125,6 +145,8 @@ export function resetStateInPlace(state, field, rng) {
   ball.z = RESPAWN_DROP_Z; ball.vz = 0;
   ball.frozen = false;
   ball.inGoal = false;
+  ball.crossedLineL = false;
+  ball.crossedLineR = false;
   initPlayer(state.p1, 'left', field);
   initPlayer(state.p2, 'right', field);
   state.scoreL = 0;
@@ -139,6 +161,7 @@ export function resetStateInPlace(state, field, rng) {
   state.goalScorer = null;
   state.matchOver = false;
   state.winner = null;
+  state.pairContactTicks = 0;
   state.events.length = 0;
   state.recordEvents = false;
   state.headless = false;
@@ -161,6 +184,8 @@ export function createState(field, rng = createSeededRng(0)) {
       z: 0, vz: 0,
       frozen: false,
       inGoal: false,
+      crossedLineL: false,
+      crossedLineR: false,
     },
     p1: createPlayer('left', field),
     p2: createPlayer('right', field),
@@ -176,6 +201,7 @@ export function createState(field, rng = createSeededRng(0)) {
     goalScorer: null,
     matchOver: false,
     winner: null,
+    pairContactTicks: 0,
     events: [],
     recordEvents: false,
     headless: false,

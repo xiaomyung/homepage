@@ -58,7 +58,7 @@ export function tick(state, p1Act, p2Act) {
 
   clampAndCollide(state, state.p1);
   clampAndCollide(state, state.p2);
-  resolvePlayerPairCollision(state.p1, state.p2, pre1x, pre1y, pre2x, pre2y);
+  resolvePlayerPairCollision(state, state.p1, state.p2, pre1x, pre1y, pre2x, pre2y);
   // A wall-pinned pair collision can push one player outside the
   // field box; re-clamp so residual overlap converges in a few ticks.
   clampPlayerToField(state.p1, state.field);

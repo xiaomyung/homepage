@@ -4,7 +4,10 @@ import {
   tick,
   FIELD_HEIGHT,
   MAX_PLAYER_SPEED,
+  STICKMAN_HEAD_RADIUS,
   STICKMAN_TORSO_RADIUS,
+  PLAYER_PAIR_SEPARATION_GAP,
+  PLAYER_PAIR_STUCK_TICKS,
 } from '../../physics/index.js';
 import {
   freshState,
@@ -98,6 +101,53 @@ test('overlapping starting positions get separated to capsule-contact distance',
     dist >= contact - 0.05,
     `overlapping capsules must separate to ${contact.toFixed(2)}, got ${dist.toFixed(3)}`,
   );
+});
+
+test('post-collision pair distance includes the personal-space gap', () => {
+  // Regression for the steady-state lock: the old resolver settled
+  // pairs at exactly dist=r, so an AI inward press could re-overlap
+  // them every tick and lock them at the contact distance forever.
+  // After the gap fix, post-resolution distance must be at least
+  // r + PLAYER_PAIR_SEPARATION_GAP.
+  const state = freshState();
+  state.p1.x = 400; state.p1.y = 27;
+  state.p2.x = 400; state.p2.y = 27;
+  tick(state, NOOP, NOOP);
+  // capsuleDist returns surface-to-surface distance for the torso
+  // capsule (radius STICKMAN_TORSO_RADIUS). The pair-collision uses
+  // a wider radius (2 * STICKMAN_HEAD_RADIUS), so the centre-to-centre
+  // distance after resolution is r + GAP. Reconstruct centre distance:
+  const centreDist = capsuleDist(state.p1, state.p2) + 2 * STICKMAN_TORSO_RADIUS;
+  const targetCentre = 2 * STICKMAN_HEAD_RADIUS + PLAYER_PAIR_SEPARATION_GAP;
+  assert.ok(
+    centreDist >= targetCentre - 0.05,
+    `pair must separate to centre dist ≥ ${targetCentre}, got ${centreDist.toFixed(3)}`,
+  );
+});
+
+test('stuck pair escalator fires after PLAYER_PAIR_STUCK_TICKS in contact', () => {
+  // Drive both players inward toward each other for longer than the
+  // stuck threshold, with no AI movement. The escalator should add
+  // an outward velocity impulse and reset the counter.
+  const state = freshState();
+  state.headless = true;        // skip pause-state side effects
+  state.graceFrames = 99999;    // suppress scoring
+  state.p1.x = 400; state.p1.y = 27;
+  state.p2.x = 408; state.p2.y = 27; // already touching at r=8
+  state.p1.heading = 0;
+  state.p2.heading = Math.PI;
+  // Hold inward velocity each tick by feeding a converging move
+  // action — moveX +1 for p1 (rightward, into p2), -1 for p2.
+  let escalated = false;
+  for (let i = 0; i < PLAYER_PAIR_STUCK_TICKS + 5; i++) {
+    tick(state, moveAction(1), moveAction(-1));
+    // Counter resets to 0 the tick the escalator fires.
+    if (state.pairContactTicks === 0 && i >= PLAYER_PAIR_STUCK_TICKS - 1) {
+      escalated = true;
+      break;
+    }
+  }
+  assert.ok(escalated, 'stuck escalator must fire and reset the counter');
 });
 
 test('far-apart players with tiny perpendicular velocity do NOT stall on false-positive collision', () => {

@@ -58,8 +58,8 @@ Works as-is with any Node 22+ install (Homebrew, nvm, fnm, distro package).
 | `games/football/tests/` | Node test runner tests — physics (split into `tests/physics/<topic>.test.mjs`), ai/*, animation/*, frame-loop, stamina; shared `helpers/state.mjs` fixture |
 | `fonts/` | Vendored Iosevka Term woff2 (regular + medium) |
 
-Three.js is loaded from a pinned `unpkg` CDN URL in `renderer.js` —
-no vendored copy.
+Three.js is loaded from a pinned `unpkg` CDN URL by every
+`renderer/*.js` module and `debug/overlay.js` — no vendored copy.
 
 ## Football scrimmage
 
@@ -72,23 +72,20 @@ seeded from each match's seed.
 
 - **Controller pipeline** (under `games/football/ai/`):
   `perception.js` → `decision.js` → `action.js` → 9-float action
-  vector. `controller.js` exports the public `decide(state, side)`
-  seam; all constants live in `tuning.js`. Pure functions — the
-  only mutated state is `state.aiRoleState[side]` for role hysteresis.
+  vector. `controller.js` exports the public seam
+  `decide(state, side) → Float64Array(9)`; all constants live in
+  `ai/tuning.js`. Pure functions — the only mutated state is
+  `state.aiRoleState[side]` for role hysteresis.
 - **Inputs:** read directly off the public physics state (player
   positions/velocities, ball state, stamina, pause flags, field
-  geometry). No NN-style sensor encoder, no normalised feature
-  vector — situational facts are derived in `perception.js`.
+  geometry). Situational facts are derived in `perception.js` —
+  no encoder, no feature normalisation.
 - **Outputs:** movement (2D), kick toggle + direction (3D) + power,
-  push toggle + power. Same 9-slot vector the physics engine
-  consumed under the old NN pipeline.
+  push toggle + power, packed into a 9-slot `Float64Array` that
+  `physics/core.js::tick` consumes per side per tick.
 - **Animation:** purely derived — `animation/state.js` advances LPF
   factors + phase, `animation/poses.js` composes a layered pose;
   physics state is never written from the animation layer.
-- **Future learning:** the controller seam is a single function
-  signature. A future learned policy ships as another module that
-  exports the same `decide(state, side) → Float64Array(9)` and
-  swaps in via one import.
 
 ### Match flow
 
@@ -109,12 +106,10 @@ straight into the next match.
   push range + facing cone, foot sphere, goal box / posts /
   crossbar, field walls, ground / ceiling). All positions and
   dimensions are read live from `state.field` and the player
-  records — change a constant in `physics.js` and the overlay
-  reflects it on next reload. Implementation in `debug-overlay.js`;
-  renderer.js just instantiates the class and forwards the toggle.
-- The **[ start ] / [ stop ] / [ reset ]** buttons in the panel
-  are stubs — they sit in the DOM as layout placeholders for when
-  learning gets re-introduced; clicking does nothing today.
+  records — change a constant in `physics/tuning.js` and the
+  overlay reflects it on next reload. Implementation in
+  `debug/overlay.js`; the `Renderer` class in `renderer/index.js`
+  just instantiates it and forwards the toggle.
 
 ### Animation debug harness
 
@@ -160,5 +155,5 @@ This is only needed for development — production runs entirely on Node.
 ## Running tests
 
 ```sh
-node --test games/football/tests/*.test.mjs
+node --test games/football/tests/*.test.mjs games/football/tests/physics/*.test.mjs
 ```

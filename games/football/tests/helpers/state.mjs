@@ -24,9 +24,12 @@ import {
   ACTION_PUSH_GATE,
   ACTION_PUSH_POWER,
   ACTION_VEC_SIZE,
-} from '../../physics.js';
+  PLAYER_HEIGHT,
+  PLAYER_WIDTH,
+  Z_STRETCH,
+} from '../../physics/index.js';
 import { derivePersonality } from '../../ai/controller.js';
-import { RNG_SALT_PERSONALITY } from '../../rng-salts.js';
+import { RNG_SALT_PERSONALITY } from '../../util/rng-salts.js';
 
 export function freshState(seed = 42, { withAI = false, recordEvents = true, graceFrames = 0 } = {}) {
   const field = createField();
@@ -64,3 +67,60 @@ export const moveAction = (mx, my = 0) => action({ moveX: mx, moveY: my });
 export const pushAction = (power = 1) => action({ pushGate: 1, pushPower: power });
 export const kickAction = (dx = 1, dy = 0, dz = 0, power = 1) =>
   action({ kickGate: 1, kickDx: dx, kickDy: dy, kickDz: dz, kickPower: power });
+
+/* ── Shared physics-test helpers (formerly inline in physics.test.mjs) ── */
+
+/** World-space horizontal distance between two players' body capsule
+ *  centres — the single number that defines whether two players are in
+ *  contact. Mirrors the pair-collision math. */
+export function capsuleDist(p1, p2) {
+  const dx = (p1.x + PLAYER_WIDTH / 2) - (p2.x + PLAYER_WIDTH / 2);
+  const dz = ((p1.y + PLAYER_HEIGHT / 2) - (p2.y + PLAYER_HEIGHT / 2)) * Z_STRETCH;
+  return Math.hypot(dx, dz);
+}
+
+/** Body-trap scenario fixture. p1 mid-field, p2 parked far away,
+ *  pause state machine disabled. Used by every torso/head trap test. */
+export function trapState(seed = 7) {
+  const state = freshState(seed);
+  state.headless = true;
+  state.p1.x = 400;
+  state.p1.y = 24;
+  state.p1.vx = 0; state.p1.vy = 0;
+  state.p1.heading = 0;
+  state.p2.x = 800;
+  state.p2.y = 24;
+  state.p2.vx = 0; state.p2.vy = 0;
+  return state;
+}
+
+/** Project through the IK solver output and verify the foot ends at
+ *  the expected (fwd, up) position. Returns the absolute error. */
+export function footError(res, expectedFwd, expectedUp) {
+  return Math.hypot(res.footFwd - expectedFwd, res.footUp - expectedUp);
+}
+
+/** Reconstruct the foot position from the solver's joint angles +
+ *  bone lengths. Catches a sign error in the shin computation. */
+export function reconstructFoot(res, U, L) {
+  const kneeFwd  = U * Math.sin(res.upperAngle);
+  const kneeDown = U * Math.cos(res.upperAngle);
+  const footFwd  = kneeFwd + L * Math.sin(res.lowerAngle);
+  const footDown = kneeDown + L * Math.cos(res.lowerAngle);
+  return { fwd: footFwd, up: -footDown };
+}
+
+/** Clean kick-bench fixture: p1 facing +x with a ball just within reach
+ *  along the body axis. Used by every kick-gate / kick-FSM test. */
+export function kickBenchState() {
+  const state = freshState();
+  state.p1.x = 300;
+  state.p1.y = 20;
+  state.p1.heading = 0;
+  state.ball.x = state.p1.x + PLAYER_WIDTH / 2 + 5;
+  state.ball.y = state.p1.y;
+  state.ball.z = 0;
+  state.ball.vx = 0; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  return state;
+}

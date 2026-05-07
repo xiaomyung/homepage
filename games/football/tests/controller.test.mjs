@@ -16,7 +16,7 @@ import {
   ACTION_MOVE_Y,
   ACTION_KICK_GATE,
   ACTION_PUSH_GATE,
-} from '../physics.js';
+} from '../physics/index.js';
 import { decide, ACTION_VEC_SIZE } from '../ai/controller.js';
 import { freshState as baseFreshState } from './helpers/state.mjs';
 

@@ -18,7 +18,7 @@ import {
   PLAYER_HEIGHT,
   FIELD_HEIGHT,
   Z_STRETCH,
-} from '../physics.js';
+} from '../physics/index.js';
 
 import { INTENT_KINDS } from './decision.js';
 
@@ -114,16 +114,12 @@ function kickApproach(state, self, perception, personality) {
   // above it and the kick guarantees a no_contact. For grounded balls
   // we always pick the ground kick and let the ball deflect off the
   // opp body if it must.
-  let dz = 0;
   const ballAirborne = ball.z > LOB_MIN_BALL_Z;
-  if (ballAirborne && !urgent && perception.oppBlocksLane) {
-    const ocx = perception.oppCx;
-    const ocy = perception.oppCy;
-    const distOppToBall = Math.hypot(ocx - ball.x, ocy - ball.y);
-    if (distOppToBall < LOB_OPPONENT_BLOCK_DIST) {
-      dz = LOB_KICK_DZ;
-    }
-  }
+  const distOppToBall = Math.hypot(perception.oppCx - ball.x, perception.oppCy - ball.y);
+  const dz = (ballAirborne && !urgent && perception.oppBlocksLane
+    && distOppToBall < LOB_OPPONENT_BLOCK_DIST)
+    ? LOB_KICK_DZ
+    : 0;
 
   return { dx: dxN, dy: dyN, dz };
 }

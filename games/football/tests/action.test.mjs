@@ -15,7 +15,7 @@ import {
   ACTION_KICK_POWER,
   ACTION_PUSH_GATE,
   ACTION_PUSH_POWER,
-} from '../physics.js';
+} from '../physics/index.js';
 import { perceive } from '../ai/perception.js';
 import { encode, ACTION_VEC_SIZE } from '../ai/action.js';
 import { INTENT_KINDS } from '../ai/decision.js';
@@ -174,7 +174,7 @@ test('CONTENDER_RUN pursuit closes y proportionally to world distance, not physi
   // unit vector under-weights y (player closes x fast, y slow → arrives
   // y-mismatched). World-proportional moveToward closes y at a rate
   // proportional to the world depth offset.
-  const { Z_STRETCH } = await import('../physics.js');
+  const { Z_STRETCH } = await import('../physics/index.js');
   const state = freshState();
   state.p1.x = 50; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2 - 5;
   state.ball.x = 400; state.ball.y = FIELD_HEIGHT / 2 + 0;
@@ -183,7 +183,7 @@ test('CONTENDER_RUN pursuit closes y proportionally to world distance, not physi
   const v = encode(state, 'p1', perception, intent, personality);
 
   // The unit-vector ratio my/mx should match (dyWorld/dx), not (dyPhys/dx).
-  const dx = state.ball.x - (state.p1.x + 18 / 2);
+  const dx = state.ball.x - (state.p1.x + PLAYER_WIDTH / 2);
   const dyPhys = state.ball.y - (state.p1.y + PLAYER_HEIGHT / 2);
   const expectedRatio = (dyPhys * Z_STRETCH) / dx;
   const actualRatio = v[ACTION_MOVE_Y] / v[ACTION_MOVE_X];

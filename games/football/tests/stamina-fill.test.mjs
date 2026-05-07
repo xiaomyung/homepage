@@ -9,7 +9,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { updateStaminaClipPlane, staminaDiscRadius } from '../renderer-math.js';
+import { updateStaminaClipPlane, staminaDiscRadius } from '../util/renderer-math.js';
 
 function stubPlane() {
   return {

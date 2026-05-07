@@ -8,7 +8,7 @@ import {
   FIELD_HEIGHT,
   PLAYER_WIDTH,
   PLAYER_HEIGHT,
-} from '../physics.js';
+} from '../physics/index.js';
 import { perceive, interceptTicks } from '../ai/perception.js';
 import { freshState } from './helpers/state.mjs';
 
@@ -54,7 +54,7 @@ test('equal-distance produces equal intercept ticks', () => {
 });
 
 test('attackKickSpot lies on ball -> opp goal line for left side', async () => {
-  const { PLAYER_HEIGHT: PH } = await import('../physics.js');
+  const { PLAYER_HEIGHT: PH } = await import('../physics/index.js');
   const state = freshState();
   state.p1.x = 200; state.p1.y = FIELD_HEIGHT / 2;
   state.ball.x = 400; state.ball.y = FIELD_HEIGHT / 2;

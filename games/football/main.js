@@ -2,11 +2,9 @@
  * Football v2 — main entry point.
  *
  * Live showcase: deterministic controller-vs-controller, continuous play.
- * No broker, no replays, no training. Future learned controllers slot in
- * by exporting `decide(state, side) -> Float64Array(9)` like ai/controller.js.
  */
 
-import { Renderer } from './renderer.js';
+import { Renderer } from './renderer/index.js';
 import {
   createField,
   createState,
@@ -15,30 +13,27 @@ import {
   tick as physicsTick,
   endMatchByTime,
   TICK_MS,
-} from './physics.js';
+  MAX_TICKS_PER_FRAME,
+  TAB_STALL_THRESHOLD_MS,
+} from './physics/index.js';
 import { decide, derivePersonality } from './ai/controller.js';
 import { pickMatchNames } from './ai/names.js';
-import { computeTicks } from './frame-loop.js';
+import { computeTicks } from './util/frame-loop.js';
 import {
   createScoreboard,
   createOptionsToggle,
   createFreeCamToggle,
   createFollowCamToggle,
   createDebugToggle,
-} from './ui.js';
+} from './ui/index.js';
 import { MATCH_DURATION_MS, MAX_SHOWCASE_TICKS } from './ai/tuning.js';
-import { RNG_SALT_PERSONALITY, RNG_SALT_NAMES } from './rng-salts.js';
+import { RNG_SALT_PERSONALITY, RNG_SALT_NAMES, SEED_UPPER } from './util/rng-salts.js';
 
 let renderer = null;
 let scoreboard = null;
 let currentMatch = null;
 let lastFrameTime = 0;
 let tickAccumulator = 0;
-const MAX_TICKS_PER_FRAME = 5;
-// Visibility-stall recovery: if the tab is hidden long enough that
-// state.tick stops advancing, force a fresh match on resume.
-const TAB_STALL_THRESHOLD_MS = 2000;
-const SEED_UPPER = 2 ** 31;
 
 let showcaseRng = createSeededRng(1);
 const showcaseField = createField();

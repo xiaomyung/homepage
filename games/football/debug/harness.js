@@ -4,12 +4,8 @@
 // side. Each scenario defines its own slice of state and a per-tick
 // step; the harness composes them into a single renderState() call
 // via the N-player path (state.players[]).
-//
-// Not part of the shipped game — this whole directory is gitignored.
-// Import paths are relative; the file lives at games/football/debug/
-// so ../renderer.js and ../physics.js resolve to the shipped code.
 
-import { Renderer } from '../renderer.js';
+import { Renderer } from '../renderer/index.js';
 import {
   createField,
   createState,
@@ -17,7 +13,7 @@ import {
   FIELD_WIDTH_REF,
   PLAYER_WIDTH,
   Z_STRETCH,
-} from '../physics.js';
+} from '../physics/index.js';
 
 // ── Lazy mount / unmount registry ──────────────────────────────
 // Each canvas starts as a Renderer-shaped proxy; the real three.js
@@ -145,8 +141,6 @@ export function freshState(seed = 7) {
 }
 
 // ── The harness factory ────────────────────────────────────────
-//
-// A harness = one canvas + N scenarios ticking in parallel.
 //
 // Config:
 //   id         — canvas element id
@@ -287,7 +281,6 @@ export function makeHarness({ id, scenarios, camera, label }) {
   loop();
 
   // Expose scenario states on the canvas for Playwright probing.
-  // Dev-only; never called by production code.
   canvas._harnessProbe = () => ({
     id, scenarios: scenarioStates.map((st, i) => ({
       label: scenarios[i].label,
@@ -302,10 +295,7 @@ export function makeHarness({ id, scenarios, camera, label }) {
 }
 
 // ── Convenience: place a pair of players in a line ─────────────
-//
-// For harnesses that want "N scenarios in a line", use this to
-// compute the x-position for scenario i out of N so stickmen don't
-// overlap visually.
+// X-position for scenario i out of N so stickmen don't overlap.
 export function lineupX(i, n, worldWidth = FIELD_WIDTH_REF, margin = 180) {
   // Default margin keeps scenarios clear of the goal boxes (each
   // goal + its box extends ~100 units into the field). Margin 180

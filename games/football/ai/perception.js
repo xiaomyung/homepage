@@ -12,7 +12,7 @@ import {
   PUSH_RANGE_X,
   canKickReach,
   wrapAngle,
-} from '../physics.js';
+} from '../physics/index.js';
 
 import {
   PREDICTION_HORIZON_TICKS,

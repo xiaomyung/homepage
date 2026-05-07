@@ -1,9 +1,5 @@
 /**
  * Fixed-timestep accumulator math for the showcase game loop.
- *
- * Extracted so it can be unit-tested without mocking the browser's
- * requestAnimationFrame, renderer, or DOM. See main.js frame() for
- * the runtime consumer.
  */
 
 /**

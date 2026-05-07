@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAnimState, advanceAnimState } from '../animation/state.js';
 import { composeStickmanPose, createPoseScratch } from '../animation/poses.js';
-import { PLAYER_WIDTH, Z_STRETCH, STICKMAN_LIMB_FULL_H } from '../physics.js';
+import { PLAYER_WIDTH, Z_STRETCH, STICKMAN_LIMB_FULL_H } from '../physics/index.js';
 
 function makePlayer(overrides = {}) {
   return {

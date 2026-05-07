@@ -38,8 +38,14 @@ import {
   Z_STRETCH,
   kickLegPose,
   pushArmPose,
-} from '../physics.js';
-import { forearmAngleFor, shinAngleFor } from '../renderer-math.js';
+} from '../physics/index.js';
+import { forearmAngleFor, shinAngleFor } from '../util/renderer-math.js';
+import {
+  airkickTiltAt, airkickTuckAt, kickArmAngleAt, kickDipAt, kickTiltAt,
+  kickHipTwistAt, kickSupportCrouchAt,
+  pushBodyDipAt, pushBodyTiltAt, pushHopAt,
+  pushLegSquatAt, pushLegStanceAt,
+} from './curves.js';
 import {
   AIRKICK_ARM_ELBOW_FLEX, AIRKICK_ARM_SPLAY, AIRKICK_ARM_YAW,
   AIRKICK_HIP_TWIST_FRAC,
@@ -50,123 +56,24 @@ import {
   REST_SHIN_BACK, REST_THIGH_FORWARD, REST_UPPER_SWAY,
   WALK_ELBOW_BEND_MAX,
   WALK_STANCE_KNEE_BEND, WALK_SWING_KNEE_BEND,
-  airkickTiltAt, airkickTuckAt, kickArmAngleAt, kickDipAt, kickTiltAt,
-  kickHipTwistAt, kickSupportCrouchAt,
-  pushBodyDipAt, pushBodyTiltAt, pushHopAt,
-  pushLegSquatAt, pushLegStanceAt,
-} from './curves.js';
-
-// Hit-reaction maxes — what a full-force punch of each type does.
-// Scaled by sqrt(reactForce) × reactIntensity(t) at apply time. Each
-// variant's hero channel is amped so the three reactions read as
-// obviously different punches, not just "got nudged."
-//
-//   jab      — axial (forward/back) body snap + head whip on the same axis.
-//   hook     — LATERAL body roll + big lateral head whip, driven by the
-//              fist sweep direction (reactLatSign), not impulse direction.
-//   uppercut — VERTICAL — hip lurches up, head tilts way up and back.
-const REACT_JAB_BODY_TILT     = 0.70;   // rad — full-force jab tilt
-const REACT_JAB_HEAD_BACK     = 0.95;   // rad — head snaps back harder than body
-const REACT_HOOK_BODY_ROLL    = 0.80;   // rad — dominant lateral torso roll
-const REACT_HOOK_BODY_TILT    = 0.20;   // rad — small axial follow
-const REACT_HOOK_HEAD_SIDE    = 1.30;   // rad — head whips sideways, huge
-const REACT_UPPER_BODY_BACK   = 0.50;   // rad — body rocks back from chin hit
-const REACT_UPPER_HIP_LIFT    = 7.0;    // world units — hip lurches up
-const REACT_UPPER_HEAD_UP     = 1.10;   // rad — head jerks up + back hard
-// Arms fling forward from inertia when the body is jolted. Both arms
-// swing to roughly shoulder height at full force. Makes every
-// reaction read as a physical hit instead of the body rocking with
-// the arms pasted to the sides.
-const REACT_ARM_THROW         = Math.PI / 2.8;  // rad — ≈64° forward at peak
-
-// Celebration shape — proper jump cycle: crouch → push-off → apex
-// → landing crouch, with the hip tracking through the cycle and
-// knees bending during the ground phases. Arms pump above the head
-// with a subtle alternate oscillation so the celebrate reads as
-// jubilation instead of a rigid "hands up" pose.
-const CELEB_JUMP_PEAK   = 0.55 * STICKMAN_GLYPH_SIZE;   // peak hip lift at apex
-const CELEB_CROUCH_DEPTH = 0.32 * STICKMAN_GLYPH_SIZE;  // hip drop at deepest crouch
-const CELEB_LEG_SQUAT    = 0.60;                        // rad thigh-fwd / shin-back at crouch
-const CELEB_ARM_RAISE_MAX = 0.95;                       // × π — both arms at jump apex, near straight up
-const CELEB_ARM_RAISE_REST = 0.80;                      // × π — between jumps, fists still raised
-const CELEB_ARM_PUMP      = 0.14;                       // × π — SYMMETRIC fist-pump amplitude
-const CELEB_ARM_YAW       = 0.22;                       // rad — outward lateral spread so the raised arms make a V
-const CELEB_ARM_PUMP_RATE = 2;                          // fist-pumps per on-ground rest phase
-
-// STOP pose — subtle backward body lean when the player is
-// decelerating sharply (smoothed `stop` factor). Maxes out at this
-// many radians of back-tilt at full brake.
-const STOP_BACK_TILT_MAX = 0.22;
-// TURN pose — slight forward body dip while pivoting in place.
-// Reads like a quick plant / centre-of-mass shift.
-const TURN_BODY_DIP_MAX = 1.4;  // world units subtracted from upperHipY at full turn
-
-// MATCHEND poses — applied at match-over (pauseState='matchend'
-// with state.winner set). Winner reads upright + arms raised in
-// triumph; loser reads head down + shoulders slumped forward.
-// Static (no sway/phase animation) — the match is decided, there's
-// nothing more to do.
-const MATCH_WIN_ARM_UPPER  =  2.3;    // ~132° — arms raised up-and-out to the sides
-const MATCH_WIN_ARM_LOWER  =  2.3;    // forearms continue the upper direction (straight arms)
-const MATCH_WIN_ARM_YAW    =  0.25;   // rad — outward lateral spread so the V is wider than the shoulders
-const MATCH_LOSE_TILT      =  0.30;   // rad — moderate forward slump
-const MATCH_LOSE_ARM_UPPER = -0.25;   // arms slightly behind vertical — hanging limp
-
-// Walk-cycle base shape (pure-locomotion arms/legs).
-// armSwing/legSwing: shoulder and hip swing coefficients; the
-// elbow bend below adds further hand excursion on top.
-// armSwingBias: shifts the arm-swing centre BACKWARD so the back-
-// swing reaches further than the forward-swing, matching how
-// runners' arms sit slightly behind the torso line at neutral.
-// bobFrac: vertical bob magnitude as a fraction of GLYPH_SIZE.
-const WALK_ARM_SWING_COEF = 0.72;
-const WALK_LEG_SWING_COEF = 0.7;
-const WALK_ARM_SWING_BIAS = -0.18;
-const WALK_BOB_FRAC       = 0.08;
-
-// LPF dead-zone — below this threshold a smoothed factor (rest,
-// celeb, grieve, matchWin/Lose, etc.) is treated as inactive and
-// its pose-layer override is skipped. Avoids floating-point dust at
-// state-transition tails.
-export const LPF_DEAD_ZONE = 0.001;
-
-// Push split-stance + squat tuning. Module-level so they live alongside
-// the other PUSH_* constants; consumers are inside composeStickmanPose.
-const PUSH_FRONT_THIGH = 0.28;   // rad — lead leg forward angle at full stance
-const PUSH_REAR_THIGH  = 0.35;   // rad — rear leg back angle at full stance
-const PUSH_SQUAT_FLEX  = 0.35;   // rad — knee bend on top of stance during squat
-
-// Grieve (anti-celebration) shape — the loser falls to his knees,
-// hunches forward with both hands in front of his face, rocks
-// gently back and forth like he's crying.
-//
-// Kneel geometry: both shins lie FLAT on the ground pointing back
-// (parallel to ground), thighs lean forward 30° so the hip sits
-// over-and-ahead of the knees. That gives a 60° interior knee
-// bend while keeping the shins on the ground — so the figure
-// rests on both knees and shins, not teetering on the knee joint.
-//
-// Hip height above ground = U · cos(30°) ≈ 12.12.
-const GRIEVE_KNEEL_DROP = 7.88;     // standing hipBaseY=20 → kneeling hipBaseY≈12.12
-const GRIEVE_BASE_TILT  = 0.45;     // rad — forward body lean
-const GRIEVE_ROCK_AMP   = 0.10;     // rad — gentle sway back and forth
-// Leg angles (world-space in the forward-up plane):
-//   0 = straight down, +π/2 = forward, −π/2 = backward
-const GRIEVE_LEG_UPPER = Math.PI / 6;     // +30° — thigh tilted forward (hip forward of knee)
-const GRIEVE_LEG_LOWER = -Math.PI / 2;    // shin horizontal backward, parallel to ground
-
-// Arm angles for fists-on-face. Solved analytically so the hand
-// target lands at roughly (forward=+4, up=+5) from the shoulder —
-// the head's front surface sits at (forward≈0.44, up≈4.9) plus
-// HEAD_RADIUS forward. Upper arm angle 1.22 rad puts the elbow
-// forward-and-slightly-below shoulder; lower arm angle −2.57
-// folds the forearm back up to the face. Yaw rotates each arm's
-// plane inward so the elbows pinch together and the fists
-// converge on the centre of the face.
-const GRIEVE_ARM_UPPER     = 1.22;    // 70° — upper arm forward, slight down
-const GRIEVE_ARM_LOWER     = -2.57;   // −147° — forearm bent back-and-up to face
-const GRIEVE_ARM_UPPER_YAW = 0.05;    // inward tilt of the upper-arm plane — elbows closer
-const GRIEVE_ARM_LOWER_YAW = 1.0;    // strong inward yaw on the forearms → fists meet at the face centre
+  REACT_JAB_BODY_TILT, REACT_JAB_HEAD_BACK,
+  REACT_HOOK_BODY_ROLL, REACT_HOOK_BODY_TILT, REACT_HOOK_HEAD_SIDE,
+  REACT_UPPER_BODY_BACK, REACT_UPPER_HIP_LIFT, REACT_UPPER_HEAD_UP,
+  REACT_ARM_THROW,
+  CELEB_JUMP_PEAK, CELEB_CROUCH_DEPTH, CELEB_LEG_SQUAT,
+  CELEB_ARM_RAISE_MAX, CELEB_ARM_RAISE_REST, CELEB_ARM_PUMP,
+  CELEB_ARM_YAW, CELEB_ARM_PUMP_RATE,
+  STOP_BACK_TILT_MAX, TURN_BODY_DIP_MAX,
+  MATCH_WIN_ARM_UPPER, MATCH_WIN_ARM_LOWER, MATCH_WIN_ARM_YAW,
+  MATCH_LOSE_TILT, MATCH_LOSE_ARM_UPPER,
+  WALK_ARM_SWING_COEF, WALK_LEG_SWING_COEF,
+  WALK_ARM_SWING_BIAS, WALK_BOB_FRAC,
+  LPF_DEAD_ZONE,
+  PUSH_FRONT_THIGH, PUSH_REAR_THIGH, PUSH_SQUAT_FLEX,
+  GRIEVE_KNEEL_DROP, GRIEVE_BASE_TILT, GRIEVE_ROCK_AMP,
+  GRIEVE_LEG_UPPER, GRIEVE_LEG_LOWER,
+  GRIEVE_ARM_UPPER, GRIEVE_ARM_LOWER, GRIEVE_ARM_UPPER_YAW, GRIEVE_ARM_LOWER_YAW,
+} from './tuning.js';
 
 /** Allocate a reusable pose scratch object. Store one on each
  *  renderer and pass it to composeStickmanPose each frame. */
@@ -460,8 +367,8 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // drops to 0 at mid-stance via (1 ± cosPhase) / 2.
   //
   // Other states (kick / push / celebrate / matchend / grieve) keep
-  // the legacy `shinAngleFor` so their authored leg curves stay
-  // intact; those blocks override the walk base below.
+  // `shinAngleFor` so their authored leg curves stay intact; those
+  // blocks override the walk base below.
   let leftUpperAngle  = leftLegAngle;
   let rightUpperAngle = rightLegAngle;
   let leftLowerAngle;
@@ -487,10 +394,10 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // hip. Blended over whatever the walk base produced.
   if (celeb > LPF_DEAD_ZONE) {
     const legFlex = CELEB_LEG_SQUAT * celebCrouch * celeb;
-    leftUpperAngle  = leftUpperAngle  * celebInv + (+legFlex) * celeb;
-    leftLowerAngle  = leftLowerAngle  * celebInv + (-legFlex) * celeb;
-    rightUpperAngle = rightUpperAngle * celebInv + (+legFlex) * celeb;
-    rightLowerAngle = rightLowerAngle * celebInv + (-legFlex) * celeb;
+    leftUpperAngle  = leftUpperAngle  * celebInv +  legFlex * celeb;
+    leftLowerAngle  = leftLowerAngle  * celebInv + -legFlex * celeb;
+    rightUpperAngle = rightUpperAngle * celebInv +  legFlex * celeb;
+    rightLowerAngle = rightLowerAngle * celebInv + -legFlex * celeb;
   }
 
   // Rest legs — a tired bent-knee stance: thighs slightly forward,
@@ -592,7 +499,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // with speed (0° idle → ~90° sprint). Real humans keep the elbow
   // bent through the whole swing cycle instead of snapping straight
   // at mid-swing, and the bend deepens as speed rises. For kick /
-  // push / celebrate / matchend / grieve we fall back to the legacy
+  // push / celebrate / matchend / grieve we fall back to the
   // angle-proportional `forearmAngleFor` so those specialist poses
   // keep the elbow behaviour they were authored against.
   let leftUpperArmAngle  = leftArmAngle;
@@ -691,9 +598,8 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     leftLowerArmAngle  = leftLowerArmAngle  * (1 - w) + MATCH_WIN_ARM_LOWER * w;
     rightUpperArmAngle = rightUpperArmAngle * (1 - w) + MATCH_WIN_ARM_UPPER * w;
     rightLowerArmAngle = rightLowerArmAngle * (1 - w) + MATCH_WIN_ARM_LOWER * w;
-    // Arms spread outward: left yaws outward (negative), right yaws outward (positive).
-    // (Sign convention matches the grim fix — inward is + for left, − for right,
-    //  so outward is the mirror.)
+    // Arms spread outward: inward is + for left, − for right, so
+    // outward is the mirror.
     leftUpperYaw  = leftUpperYaw  * (1 - w) + (-MATCH_WIN_ARM_YAW) * w;
     rightUpperYaw = rightUpperYaw * (1 - w) + (+MATCH_WIN_ARM_YAW) * w;
   }
@@ -707,11 +613,9 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
 
   // ── Grieve (anti-celebration) override ──────────────────
   // Non-scorer during a goal celebration. Overrides walk/kick/push
-  // poses proportionally to the smoothed `grieve` factor so the
-  // switch fades in cleanly. Celebrate (`celeb`) still outranks
-  // grieve if both ever fire (they shouldn't — physics makes only
-  // the scorer celebrate — but the interp keeps the transition
-  // safe).
+  // proportionally to the smoothed `grieve` factor. Celebrate
+  // (`celeb`) outranks grieve as a defensive interp (physics only
+  // celebrates the scorer in practice).
   if (grieve > LPF_DEAD_ZONE && celeb < LPF_DEAD_ZONE) {
     // Rocking body lean: baseline forward tilt + small sinusoidal
     // sway. Multiplied by `grieve` so the lean eases in from the

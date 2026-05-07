@@ -23,20 +23,14 @@ import {
   PUSH_WINDUP_LEAD_DIST,
 } from './tuning.js';
 
-import { canKickReach } from '../physics.js';
-
-const INTENT_NEUTRAL = 'NEUTRAL';
-const INTENT_CONTENDER_KICK = 'CONTENDER_KICK';
-const INTENT_CONTENDER_RUN = 'CONTENDER_RUN';
-const INTENT_SUPPORT = 'SUPPORT';
-const INTENT_GOALIE = 'GOALIE';
+import { canKickReach } from '../physics/index.js';
 
 export const INTENT_KINDS = Object.freeze({
-  NEUTRAL: INTENT_NEUTRAL,
-  CONTENDER_KICK: INTENT_CONTENDER_KICK,
-  CONTENDER_RUN: INTENT_CONTENDER_RUN,
-  SUPPORT: INTENT_SUPPORT,
-  GOALIE: INTENT_GOALIE,
+  NEUTRAL: 'NEUTRAL',
+  CONTENDER_KICK: 'CONTENDER_KICK',
+  CONTENDER_RUN: 'CONTENDER_RUN',
+  SUPPORT: 'SUPPORT',
+  GOALIE: 'GOALIE',
 });
 
 const ROLE_CONTENDER = 'contender';
@@ -54,13 +48,15 @@ export const ROLES = Object.freeze({
 function rawContenderSide(perception) {
   const selfTicks = perception.selfInterceptTicks;
   const oppTicks = perception.oppInterceptTicks;
-  if (Number.isFinite(selfTicks) && Number.isFinite(oppTicks)) {
+  const selfFinite = Number.isFinite(selfTicks);
+  const oppFinite = Number.isFinite(oppTicks);
+  if (selfFinite && oppFinite) {
     if (selfTicks + CONTENDER_MARGIN_TICKS < oppTicks) return ROLE_CONTENDER;
     if (oppTicks + CONTENDER_MARGIN_TICKS < selfTicks) return ROLE_SUPPORT;
-  } else {
-    if (Number.isFinite(selfTicks) && !Number.isFinite(oppTicks)) return ROLE_CONTENDER;
-    if (!Number.isFinite(selfTicks) && Number.isFinite(oppTicks)) return ROLE_SUPPORT;
+    return null;
   }
+  if (selfFinite) return ROLE_CONTENDER;
+  if (oppFinite) return ROLE_SUPPORT;
   return null;
 }
 
@@ -115,14 +111,14 @@ export function decide(state, which, perception) {
   const opp = state[which === 'p1' ? 'p2' : 'p1'];
 
   if (perception.selfBlocked) {
-    return { kind: INTENT_NEUTRAL, role: null, push: false };
+    return { kind: INTENT_KINDS.NEUTRAL, role: null, push: false };
   }
 
   if (perception.threatensOwnGoal) {
     const yTarget = perception.ownGoalInterceptY;
     const goalX = self.side === 'left' ? state.field.goalLineL : state.field.goalLineR;
     return {
-      kind: INTENT_GOALIE,
+      kind: INTENT_KINDS.GOALIE,
       role: state.aiRoleState[self.side].role,
       target: { x: goalX, y: yTarget },
       push: false,
@@ -182,15 +178,15 @@ export function decide(state, which, perception) {
       const oppD = perception.oppDistToBall;
       const myD = perception.selfDistToBall;
       const yieldToOpp = oppCanReach && (oppD < myD || (oppD === myD && self.side === 'right'));
-      if (!yieldToOpp) return { kind: INTENT_CONTENDER_KICK, role, push: false };
+      if (!yieldToOpp) return { kind: INTENT_KINDS.CONTENDER_KICK, role, push: false };
     }
-    return { kind: INTENT_CONTENDER_RUN, role, target: ballTarget, push: pushAvailable };
+    return { kind: INTENT_KINDS.CONTENDER_RUN, role, target: ballTarget, push: pushAvailable };
   }
 
   // SUPPORT — pure-press: also chase the ball, just from farther away.
   if (perception.selfHasKickReach && !opp.kick.active) {
-    return { kind: INTENT_CONTENDER_KICK, role, push: false };
+    return { kind: INTENT_KINDS.CONTENDER_KICK, role, push: false };
   }
 
-  return { kind: INTENT_SUPPORT, role, target: ballTarget, push: pushAvailable };
+  return { kind: INTENT_KINDS.SUPPORT, role, target: ballTarget, push: pushAvailable };
 }

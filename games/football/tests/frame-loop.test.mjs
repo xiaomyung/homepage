@@ -6,10 +6,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeTicks } from '../frame-loop.js';
-
-const TICK_MS = 16;
-const MAX = 5;
+import { computeTicks } from '../util/frame-loop.js';
+import { TICK_MS, MAX_TICKS_PER_FRAME as MAX } from '../physics/index.js';
 
 test('60 Hz display produces 1 tick per frame on average', () => {
   // rAF fires every ~16.67 ms on a 60 Hz display.

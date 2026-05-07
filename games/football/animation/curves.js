@@ -18,12 +18,7 @@ import {
   KICK_ARM_SWING, KICK_BACK_TILT, KICK_FWD_TILT, KICK_CROUCH_DEPTH,
   KICK_HIP_TWIST_MAX, KICK_SUPPORT_CROUCH,
   AIRKICK_STRIKE_END_T, AIRKICK_BACK_TILT,
-  WALK_ELBOW_BEND_MAX, WALK_STANCE_KNEE_BEND, WALK_SWING_KNEE_BEND,
-  REST_UPPER_SWAY, REST_THIGH_FORWARD, REST_SHIN_BACK,
 } from './tuning.js';
-// Re-export the full tuning surface so any consumer that previously
-// imported these from curves.js keeps working.
-export * from './tuning.js';
 
 // ── Curve functions ──────────────────────────────────────────
 

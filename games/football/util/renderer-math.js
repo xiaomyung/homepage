@@ -1,8 +1,7 @@
 /**
- * Pure-math helpers used by the renderer's stamina visualisation.
- *
- * Extracted so unit tests can exercise them without importing three.js
- * (Node's ESM loader rejects the CDN https: URL).
+ * Pure-math helpers for the renderer's stamina visualisation. Kept
+ * three.js-free so Node's ESM loader (which rejects the CDN https:
+ * URL) can run the unit tests.
  */
 
 export const STAMINA_FLOOR = 0.04;
@@ -79,8 +78,7 @@ export function easeOut(p) {
 // Knee flex for cosmetic (non-IK) walk/celebrate/idle leg swings.
 // Straight-down thigh → straight-down shin. Larger swing magnitudes
 // bend the knee +forward regardless of swing sign (knees hinge one
-// way). Kicking leg bypasses this via real 2-bone IK in
-// physics.js::kickLegPose.
+// way).
 export const STICKMAN_KNEE_FLEX_MAX   = 0.5;
 export const STICKMAN_KNEE_FLEX_SLOPE = 0.4;
 export function shinAngleFor(thighAngle) {
@@ -90,12 +88,10 @@ export function shinAngleFor(thighAngle) {
 
 // Elbow flex for cosmetic (non-IK) arm swings. Peaks at |angle|=π/2
 // (arms horizontal) and tapers to 0 at both 0 (neutral) and ±π
-// (celebrate — arms straight overhead). Punch poses bypass via
-// physics.js::pushArmPose.
+// (celebrate — arms straight overhead).
 export const STICKMAN_ELBOW_FLEX_MAX = 0.45;
 export function forearmAngleFor(upperArmAngle) {
   const mag = Math.min(Math.abs(upperArmAngle), Math.PI);
   const flex = STICKMAN_ELBOW_FLEX_MAX * Math.sin(mag);
   return upperArmAngle * (1 - flex);
 }
-

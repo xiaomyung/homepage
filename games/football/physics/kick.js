@@ -3,11 +3,9 @@
  *
  * The kick state machine runs windup → strike → recovery, with foot
  * IK against the ball-prediction target. Owns the analytic 2-bone IK
- * solver `solve2BoneIK` (also imported by push.js for arm IK so it
- * lives here as the primary user). The kick reach gate
- * (`canKickReach`) is exported for the AI controller's perception
- * pipeline so the controller and the physics gate agree on every
- * frame about what's reachable.
+ * solver `solve2BoneIK`. The kick reach gate (`canKickReach`) is
+ * exported for the AI controller so the gate the controller checks
+ * is byte-identical to the physics gate that fires the kick.
  */
 
 import {
@@ -194,8 +192,9 @@ export function tryStartKick(state, p, dx, dy, dz, power) {
   }
   // Body-axis facing cone. `facingToward` is bubble-centric (off by
   // PLAYER_HEIGHT/2 on the depth axis) — fine for push geometry, but
-  // here the reach and the cone both originate from the same body-axis
-  // point or a ball aligned with the body reads as "off to the side".
+  // here the reach and the cone must originate from the same body-axis
+  // point, otherwise a ball aligned with the body reads as "off to the
+  // side".
   const facePivotZ = p.y * Z_STRETCH;
   const facePivotX = p.x + PLAYER_WIDTH / 2;
   const wantAngle = Math.atan2(predicted.z - facePivotZ, predicted.x - facePivotX);

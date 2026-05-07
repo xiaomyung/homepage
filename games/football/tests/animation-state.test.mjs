@@ -1,16 +1,6 @@
-// Unit tests for animation/state.js — covers every mechanic:
-//   * createAnimState default values
-//   * LPF smoothing convergence for tilt/amplitude/celebrate
-//   * walk-phase accumulation driven by position delta
-//   * pushProgress edge detection + accumulation
-//   * derived state label (IDLE/WALK/KICK_*/PUSH/CELEBRATE)
-
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  createAnimState, advanceAnimState,
-  STICKMAN_SMOOTH, STICKMAN_RUN_THRESHOLD,
-} from '../animation/state.js';
+import { createAnimState, advanceAnimState } from '../animation/state.js';
 
 function makePlayer(overrides = {}) {
   return {

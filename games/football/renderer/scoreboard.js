@@ -4,8 +4,7 @@
  * Billboarded sprites that float above each stickman's head with a
  * small Y offset, with overlap-fade so the two names don't smush
  * together at low camera angles. Texture is rebuilt only when the
- * label text changes. The HTML scoreboard (score + timer + role
- * dots) lives in ui.js — this module is just the in-world labels.
+ * label text changes.
  *
  * ctx-style: every function takes the Renderer instance.
  */

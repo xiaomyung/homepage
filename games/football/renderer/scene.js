@@ -53,25 +53,3 @@ export function disposeScene(ctx) {
   ctx.renderer.dispose();
 }
 
-/** Begin a ResizeObserver on the canvas. Calls resize() each time the
- *  canvas's pixel size changes; the renderer wires the actual resize
- *  callback. */
-export function autoResize(ctx) {
-  if (ctx._resizeObserver) return;
-  ctx._resizeObserver = new ResizeObserver(() => resize(ctx));
-  ctx._resizeObserver.observe(ctx.renderer.domElement);
-  resize(ctx);
-}
-
-/** Update the renderer + camera to match the canvas's current pixel
- *  size. Called from autoResize and on demand. */
-export function resize(ctx) {
-  const canvas = ctx.renderer.domElement;
-  const w = canvas.clientWidth || canvas.width;
-  const h = canvas.clientHeight || canvas.height;
-  ctx.renderer.setPixelRatio(window.devicePixelRatio || 1);
-  ctx.renderer.setSize(w, h, false);
-  ctx.camera.aspect = w / Math.max(1, h);
-  ctx.camera.updateProjectionMatrix();
-  placeCamera(ctx);
-}

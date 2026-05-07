@@ -1,13 +1,10 @@
 /**
- * Football v2 — push FSM + arm IK pose.
+ * Football v2 — push FSM + arm pose.
  *
- * Push mechanics: the per-tick advance (`advancePush` commits the
- * impulse on the strike tick), the gate check (`tryPush`), the
- * push-velocity damper (`applyPushPhysics`), the victim hit-reaction
- * timer, and the scripted three-keyframe arm pose (`pushArmPose`)
- * that the renderer reads each frame. solve2BoneIK lives in kick.js
- * (push imports it transitively via the renderer's pose-build path —
- * push doesn't IK its arm here, it interpolates keyframes instead).
+ * Per-tick advance (`advancePush` commits the impulse on the strike
+ * tick), gate check (`tryPush`), push-velocity damper
+ * (`applyPushPhysics`), victim hit-reaction timer, and the scripted
+ * three-keyframe arm pose (`pushArmPose`) the renderer reads.
  */
 
 import {
@@ -42,10 +39,8 @@ function pushStillInRange(state, pusher, victim) {
   return facingToward(pusher, victimCenterX, victimZ, PUSH_FACE_TOL);
 }
 
-/** Local copy of the heading-vs-target cone check. Identical to the
- *  one in player.js (also re-exported from physics.js). Duplicated so
- *  push.js stays a leaf of state.js + tuning.js without depending on
- *  player.js. */
+/** Local copy of `player.js::facingToward` so push.js stays a leaf
+ *  of state.js + tuning.js. */
 function facingToward(p, worldX, worldZ, tol) {
   const centerX = p.x + PLAYER_WIDTH / 2;
   const centerZ = (p.y + PLAYER_HEIGHT / 2) * Z_STRETCH;

@@ -1,60 +1,16 @@
-// Mirror of tests/physics.test.mjs — geometry group.
-// Auto-split; tweak imports here if you add tests that need new exports.
-
-
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createField,
-  createState,
-  createSeededRng,
-  resetStateInPlace,
   tick,
   FIELD_HEIGHT,
-  PLAYER_HEIGHT,
-  PLAYER_WIDTH,
   BALL_RADIUS,
   GOAL_POST_RADIUS,
-  MAX_PLAYER_SPEED,
-  Z_STRETCH,
-  TICK_MS,
-  GRAVITY,
-  KICK_WINDUP_MS,
-  KICK_DURATION_MS,
-  STICKMAN_TORSO_RADIUS,
-  STICKMAN_UPPER_LEG,
-  STICKMAN_LOWER_LEG,
-  solve2BoneIK,
-  KICK_STRIKE_WINDOW_MS,
-  kickLegExtension,
-  kickLegPose,
-  canKickReach,
-  AIRKICK_MS,
-  AIRKICK_PEAK_FRAC,
-  ACTION_MOVE_X,
-  ACTION_MOVE_Y,
-  ACTION_KICK_GATE,
-  ACTION_KICK_DX,
-  ACTION_KICK_DY,
-  ACTION_KICK_DZ,
-  ACTION_KICK_POWER,
-  ACTION_PUSH_GATE,
-  ACTION_PUSH_POWER,
-  ACTION_VEC_SIZE,
-  endMatchByTime,
 } from '../../physics/index.js';
 import {
   freshState,
-  action,
   NOOP,
   moveAction,
-  pushAction,
-  kickAction,
 } from '../helpers/state.mjs';
-import { capsuleDist, trapState, footError, reconstructFoot, kickBenchState } from '../helpers/state.mjs';
-
-/* ── Test 1: stamina charged from actual displacement ──────── */
-
 
 test('player cannot penetrate left goal frame', () => {
   const state = freshState();
@@ -428,4 +384,3 @@ test('ball hitting the inner back net comes to rest horizontally', () => {
   assert.equal(state.ball.vx, 0, 'inner back net absorbs vx');
   assert.equal(state.ball.vy, 0, 'inner back net absorbs vy');
 });
-

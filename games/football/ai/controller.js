@@ -4,9 +4,6 @@
  * Pipeline: perceive -> decide intent -> encode action. The only mutated
  * state is `state.aiRoleState[side]` (role hysteresis) which is reset by
  * `resetStateInPlace` via the showcase loop.
- *
- * Future learned controllers slot in here by exporting a function with
- * the same signature.
  */
 
 import { perceive } from './perception.js';

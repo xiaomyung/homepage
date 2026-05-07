@@ -14,7 +14,7 @@
  */
 
 import { STALL_TICKS } from './tuning.js';
-import { advancePush, advanceReactTimer, applyPushPhysics } from './push.js';
+import { advanceReactTimer, applyPushPhysics } from './push.js';
 import { applyAction, applyRegenAndExhaustion, chargeStaminaFromDisplacement } from './player.js';
 import { clampAndCollide, clampPlayerToField, resolvePlayerPairCollision } from './collisions.js';
 import { updateBall } from './ball.js';
@@ -60,17 +60,13 @@ export function tick(state, p1Act, p2Act) {
   clampAndCollide(state, state.p2);
   resolvePlayerPairCollision(state.p1, state.p2, pre1x, pre1y, pre2x, pre2y);
   // A wall-pinned pair collision can push one player outside the
-  // field box. Re-clamp to recover; any residual overlap converges
-  // over a few ticks as both sides pay half the gap each time.
+  // field box; re-clamp so residual overlap converges in a few ticks.
   clampPlayerToField(state.p1, state.field);
   clampPlayerToField(state.p2, state.field);
 
   chargeStaminaFromDisplacement(state.p1, pre1x, pre1y);
   chargeStaminaFromDisplacement(state.p2, pre2x, pre2y);
 
-  // Ball motion, scoring, and goal-surface collision are all resolved
-  // inside updateBall — substep integration when per-tick motion
-  // exceeds BALL_RADIUS so a hard shot can't tunnel.
   updateBall(state);
 
   if (state.tick - state.lastKickTick > STALL_TICKS) {

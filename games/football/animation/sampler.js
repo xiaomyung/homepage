@@ -23,8 +23,9 @@
 // calls this in the hot draw path.
 
 import { easeInOut, easeOut } from '../util/renderer-math.js';
+import { STEP_EASE_THRESHOLD } from './tuning.js';
 
-const EASE_STEP   = (u) => (u < 0.9999 ? 0 : 1);
+const EASE_STEP   = (u) => (u < STEP_EASE_THRESHOLD ? 0 : 1);
 const EASE_LINEAR = (u) => u;
 
 const EASE_FNS = {
@@ -48,8 +49,7 @@ export function sample(kf, t) {
   if (span <= 0) return b.v;
   const u = (t - a.t) / span;
   const easeFn = EASE_FNS[a.ease || 'inOut'] || EASE_FNS.inOut;
-  const w = easeFn(u);
-  return a.v + (b.v - a.v) * w;
+  return a.v + (b.v - a.v) * easeFn(u);
 }
 
 /** Assert that a keyframe array is well-formed. Dev-only; callers

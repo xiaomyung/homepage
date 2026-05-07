@@ -159,6 +159,18 @@ export const MATCH_LOSE_ARM_UPPER = -0.25;    // arms slightly behind vertical
 
 export const LPF_DEAD_ZONE = 0.001;
 
+/* ── Sampler (sampler.js) ────────────────────────────────────── */
+
+// Step-ease threshold: <1 lets `u===1` still hit the high branch
+// across float-rounding paths.
+export const STEP_EASE_THRESHOLD = 0.9999;
+
+/* ── REPOSITION heading LPF override (state.js) ──────────────── */
+
+// Multiplier on STICKMAN_SMOOTH for the animHeading LPF during
+// REPOSITION so the walk-back faces motion instead of edge-on.
+export const ANIM_HEADING_LPF_MULT = 2;
+
 /* ── Push split-stance + squat (poses.js) ────────────────────── */
 
 export const PUSH_FRONT_THIGH = 0.28;   // rad — lead leg forward at full stance

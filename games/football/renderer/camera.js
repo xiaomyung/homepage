@@ -14,6 +14,7 @@ import * as THREE from 'https://unpkg.com/three@0.164.0/build/three.module.js';
 import {
   CAMERA_FOV, CAMERA_TILT_DEG, HORIZONTAL_MARGIN,
   FOLLOW_ZOOM_LIVE, FOLLOW_ZOOM_DEAD, FOLLOW_LEAD_FRACTION,
+  FOLLOW_K_POS, FOLLOW_K_LOOK, FOLLOW_K_LEAD, FOLLOW_K_ZOOM,
   DEBUG_CAM_DRAG_SENS, DEBUG_CAM_PAN_FRAC, DEBUG_CAM_WHEEL_SENS,
   DEBUG_CAM_DIST_MIN, DEBUG_CAM_DIST_MAX,
 } from './tuning.js';
@@ -243,22 +244,16 @@ export function stepFollowCam(ctx, state) {
   // Matchend 'pose' phase tightens back to LIVE for a cinematic dolly-in.
   const matchendDollyIn = state.pauseState === 'matchend'
     && state.matchEndPhase === 'pose';
-  const zoomTarget   = matchendDollyIn ? FOLLOW_ZOOM_LIVE
-                     : deadBall        ? FOLLOW_ZOOM_DEAD
-                     :                   FOLLOW_ZOOM_LIVE;
+  const zoomTarget   = (deadBall && !matchendDollyIn) ? FOLLOW_ZOOM_DEAD : FOLLOW_ZOOM_LIVE;
   const posTarget    = deadBall ? midX : actionX;
   const lookTarget   = deadBall ? midX : actionX;
   const sideForLead  = deadBall ? 0 : ballSide;
 
-  // Critically-damped spring coefficients (per frame @ 60Hz).
-  const K_POS  = 0.012;
-  const C_POS  = 2 * Math.sqrt(K_POS);
-  const K_LOOK = 0.020;
-  const C_LOOK = 2 * Math.sqrt(K_LOOK);
-  const K_LEAD = 0.008;
-  const C_LEAD = 2 * Math.sqrt(K_LEAD);
-  const K_ZOOM = 0.004;
-  const C_ZOOM = 2 * Math.sqrt(K_ZOOM);
+  // Critically-damped spring damping derived from K (per frame @ 60 Hz).
+  const C_POS  = 2 * Math.sqrt(FOLLOW_K_POS);
+  const C_LOOK = 2 * Math.sqrt(FOLLOW_K_LOOK);
+  const C_LEAD = 2 * Math.sqrt(FOLLOW_K_LEAD);
+  const C_ZOOM = 2 * Math.sqrt(FOLLOW_K_ZOOM);
 
   if (!fc.initialized) {
     fc.posX = posTarget;
@@ -278,16 +273,16 @@ export function stepFollowCam(ctx, state) {
     const newVel = vel + accel;
     return [pos + newVel, newVel];
   };
-  [fc.zoom, fc.zoomV] = stepSpring(fc.zoom, fc.zoomV, zoomTarget, K_ZOOM, C_ZOOM);
+  [fc.zoom, fc.zoomV] = stepSpring(fc.zoom, fc.zoomV, zoomTarget, FOLLOW_K_ZOOM, C_ZOOM);
 
   // Compute distance from the *smoothed* zoom so the whole view pans
   // out together.
   const { distance, height, backOff } = computeDistance(ctx, fc.zoom);
   const leadTarget = sideForLead * distance * FOLLOW_LEAD_FRACTION;
 
-  [fc.posX,  fc.velX]  = stepSpring(fc.posX,  fc.velX,  posTarget,  K_POS,  C_POS);
-  [fc.lookX, fc.lookVX] = stepSpring(fc.lookX, fc.lookVX, lookTarget, K_LOOK, C_LOOK);
-  [fc.leadX, fc.leadVX] = stepSpring(fc.leadX, fc.leadVX, leadTarget, K_LEAD, C_LEAD);
+  [fc.posX,  fc.velX]  = stepSpring(fc.posX,  fc.velX,  posTarget,  FOLLOW_K_POS,  C_POS);
+  [fc.lookX, fc.lookVX] = stepSpring(fc.lookX, fc.lookVX, lookTarget, FOLLOW_K_LOOK, C_LOOK);
+  [fc.leadX, fc.leadVX] = stepSpring(fc.leadX, fc.leadVX, leadTarget, FOLLOW_K_LEAD, C_LEAD);
 
   const midZ = (FIELD_HEIGHT * Z_STRETCH) / 2;
   ctx.camera.position.set(fc.posX, height, midZ + backOff);

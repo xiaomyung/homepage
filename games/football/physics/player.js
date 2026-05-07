@@ -10,7 +10,7 @@
  */
 
 import {
-  TICK_MS, Z_STRETCH,
+  Z_STRETCH,
   PLAYER_HEIGHT, PLAYER_WIDTH, FIELD_HEIGHT,
   PLAYER_TURN_RATE, PLAYER_ACCEL, PLAYER_ACCEL_TICKS,
   MAX_PLAYER_SPEED, MIN_SPEED_STAMINA,
@@ -78,9 +78,8 @@ function turnToward(current, target) {
 }
 
 /** True iff `p`'s heading points at world-space (worldX, worldZ) within
- *  `tol` radians. Used by tryPush. (canKickReach inlines its own
- *  body-axis facing check because facingToward uses the bubble centre,
- *  which doesn't match the shoulder-line kick gate.) */
+ *  `tol` radians. Note: bubble-centric — kick reach uses its own
+ *  shoulder-line cone via `canKickReach`. */
 export function facingToward(p, worldX, worldZ, tol) {
   const centerX = p.x + PLAYER_WIDTH / 2;
   const centerZ = (p.y + PLAYER_HEIGHT / 2) * Z_STRETCH;

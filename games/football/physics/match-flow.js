@@ -4,8 +4,7 @@
  * Pause state machine (celebrate / reposition / waiting), matchend
  * cinematic (reposition / pose / neutral), scoring, ball-out, ball
  * reset, and finalization. No physics math here — every routine
- * mutates state and reads from the field/players. Imports kickoffSpawnX
- * from state.js so all the "back to kickoff" call sites agree on x.
+ * mutates state and reads from the field/players.
  */
 
 import {
@@ -38,17 +37,17 @@ export function resetToKickoff(state) {
   ball.inGoal = false;
 
   const cy = FIELD_HEIGHT / 2;
-  const tx1 = kickoffSpawnX(f, 'left');
-  const tx2 = kickoffSpawnX(f, 'right');
-  const sides = [[state.p1, tx1], [state.p2, tx2]];
-  for (let i = 0; i < sides.length; i++) {
-    const p = sides[i][0];
-    p.x = sides[i][1];
-    p.y = cy;
-    p.vx = 0; p.vy = 0;
-    p.pushVx = 0; p.pushVy = 0;
-    clearInProgressActions(p);
-  }
+  const { p1, p2 } = state;
+  p1.x = kickoffSpawnX(f, 'left');
+  p1.y = cy;
+  p1.vx = 0; p1.vy = 0;
+  p1.pushVx = 0; p1.pushVy = 0;
+  clearInProgressActions(p1);
+  p2.x = kickoffSpawnX(f, 'right');
+  p2.y = cy;
+  p2.vx = 0; p2.vy = 0;
+  p2.pushVx = 0; p2.pushVy = 0;
+  clearInProgressActions(p2);
 
   state.pauseState = null;
   state.pauseTimer = 0;
@@ -170,9 +169,8 @@ export function resetBall(state) {
   state.lastKickTick = state.tick;
 }
 
-/** Finalize the match after the matchend pause. Callers poll
- *  `state.matchOver` and start a new showcase, so we only flip the
- *  terminal flags — no reset work. */
+/** Finalize the match after the matchend pause. Flips the terminal
+ *  flags only — no reset work. */
 function finalizeMatch(state) {
   state.matchOver = true;
   state.pauseState = null;

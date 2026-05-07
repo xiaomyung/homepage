@@ -1,36 +1,8 @@
-// Mirror of tests/physics.test.mjs — player group.
-// Auto-split; tweak imports here if you add tests that need new exports.
-
-
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createField,
-  createState,
-  createSeededRng,
-  resetStateInPlace,
   tick,
-  FIELD_HEIGHT,
-  PLAYER_HEIGHT,
-  PLAYER_WIDTH,
-  BALL_RADIUS,
-  GOAL_POST_RADIUS,
-  MAX_PLAYER_SPEED,
   Z_STRETCH,
-  TICK_MS,
-  GRAVITY,
-  KICK_WINDUP_MS,
-  KICK_DURATION_MS,
-  STICKMAN_TORSO_RADIUS,
-  STICKMAN_UPPER_LEG,
-  STICKMAN_LOWER_LEG,
-  solve2BoneIK,
-  KICK_STRIKE_WINDOW_MS,
-  kickLegExtension,
-  kickLegPose,
-  canKickReach,
-  AIRKICK_MS,
-  AIRKICK_PEAK_FRAC,
   ACTION_MOVE_X,
   ACTION_MOVE_Y,
   ACTION_KICK_GATE,
@@ -41,20 +13,13 @@ import {
   ACTION_PUSH_GATE,
   ACTION_PUSH_POWER,
   ACTION_VEC_SIZE,
-  endMatchByTime,
 } from '../../physics/index.js';
 import {
   freshState,
   action,
   NOOP,
   moveAction,
-  pushAction,
-  kickAction,
 } from '../helpers/state.mjs';
-import { capsuleDist, trapState, footError, reconstructFoot, kickBenchState } from '../helpers/state.mjs';
-
-/* ── Test 1: stamina charged from actual displacement ──────── */
-
 
 test('stamina drains when player moves at full speed', () => {
   const state = freshState();
@@ -171,4 +136,3 @@ test('ACTION_* slot indices are stable and contiguous', () => {
   assert.equal(ACTION_PUSH_POWER, 8);
   assert.equal(ACTION_VEC_SIZE,    9);
 });
-

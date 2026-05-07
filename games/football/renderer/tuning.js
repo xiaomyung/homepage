@@ -95,6 +95,13 @@ export const FOLLOW_ZOOM_DEAD     = 1.00;
 // in the direction of play.
 export const FOLLOW_LEAD_FRACTION = 0.22;
 
+// Critically-damped spring constants for the follow-cam (per frame
+// @ 60 Hz). Damping is derived as `2 * sqrt(K)`.
+export const FOLLOW_K_POS  = 0.012;
+export const FOLLOW_K_LOOK = 0.020;
+export const FOLLOW_K_LEAD = 0.008;
+export const FOLLOW_K_ZOOM = 0.004;
+
 // Debug freecam input sensitivities.
 export const DEBUG_CAM_DRAG_SENS  = 0.005;   // rad / pixel
 export const DEBUG_CAM_PAN_FRAC   = 0.01;    // fraction of distance per frame

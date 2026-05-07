@@ -74,19 +74,6 @@ import {
   GRIEVE_LEG_UPPER, GRIEVE_LEG_LOWER,
   GRIEVE_ARM_UPPER, GRIEVE_ARM_LOWER, GRIEVE_ARM_UPPER_YAW, GRIEVE_ARM_LOWER_YAW,
 } from './tuning.js';
-// Re-export LPF_DEAD_ZONE so animation/state.js (which historically
-// imported it from here) keeps working.
-export { LPF_DEAD_ZONE } from './tuning.js';
-
-// Arm angles for fists-on-face. Solved analytically so the hand
-// target lands at roughly (forward=+4, up=+5) from the shoulder —
-// the head's front surface sits at (forward≈0.44, up≈4.9) plus
-// HEAD_RADIUS forward. Upper arm angle 1.22 rad puts the elbow
-// forward-and-slightly-below shoulder; lower arm angle −2.57
-// folds the forearm back up to the face. Yaw rotates each arm's
-// plane inward so the elbows pinch together and the fists
-// converge on the centre of the face. GRIEVE_ARM_* live in
-// animation/tuning.js.
 
 /** Allocate a reusable pose scratch object. Store one on each
  *  renderer and pass it to composeStickmanPose each frame. */
@@ -380,8 +367,8 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // drops to 0 at mid-stance via (1 ± cosPhase) / 2.
   //
   // Other states (kick / push / celebrate / matchend / grieve) keep
-  // the legacy `shinAngleFor` so their authored leg curves stay
-  // intact; those blocks override the walk base below.
+  // `shinAngleFor` so their authored leg curves stay intact; those
+  // blocks override the walk base below.
   let leftUpperAngle  = leftLegAngle;
   let rightUpperAngle = rightLegAngle;
   let leftLowerAngle;
@@ -407,10 +394,10 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // hip. Blended over whatever the walk base produced.
   if (celeb > LPF_DEAD_ZONE) {
     const legFlex = CELEB_LEG_SQUAT * celebCrouch * celeb;
-    leftUpperAngle  = leftUpperAngle  * celebInv + (+legFlex) * celeb;
-    leftLowerAngle  = leftLowerAngle  * celebInv + (-legFlex) * celeb;
-    rightUpperAngle = rightUpperAngle * celebInv + (+legFlex) * celeb;
-    rightLowerAngle = rightLowerAngle * celebInv + (-legFlex) * celeb;
+    leftUpperAngle  = leftUpperAngle  * celebInv +  legFlex * celeb;
+    leftLowerAngle  = leftLowerAngle  * celebInv + -legFlex * celeb;
+    rightUpperAngle = rightUpperAngle * celebInv +  legFlex * celeb;
+    rightLowerAngle = rightLowerAngle * celebInv + -legFlex * celeb;
   }
 
   // Rest legs — a tired bent-knee stance: thighs slightly forward,
@@ -512,7 +499,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // with speed (0° idle → ~90° sprint). Real humans keep the elbow
   // bent through the whole swing cycle instead of snapping straight
   // at mid-swing, and the bend deepens as speed rises. For kick /
-  // push / celebrate / matchend / grieve we fall back to the legacy
+  // push / celebrate / matchend / grieve we fall back to the
   // angle-proportional `forearmAngleFor` so those specialist poses
   // keep the elbow behaviour they were authored against.
   let leftUpperArmAngle  = leftArmAngle;
@@ -611,9 +598,8 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
     leftLowerArmAngle  = leftLowerArmAngle  * (1 - w) + MATCH_WIN_ARM_LOWER * w;
     rightUpperArmAngle = rightUpperArmAngle * (1 - w) + MATCH_WIN_ARM_UPPER * w;
     rightLowerArmAngle = rightLowerArmAngle * (1 - w) + MATCH_WIN_ARM_LOWER * w;
-    // Arms spread outward: left yaws outward (negative), right yaws outward (positive).
-    // (Sign convention matches the grim fix — inward is + for left, − for right,
-    //  so outward is the mirror.)
+    // Arms spread outward: inward is + for left, − for right, so
+    // outward is the mirror.
     leftUpperYaw  = leftUpperYaw  * (1 - w) + (-MATCH_WIN_ARM_YAW) * w;
     rightUpperYaw = rightUpperYaw * (1 - w) + (+MATCH_WIN_ARM_YAW) * w;
   }
@@ -627,11 +613,9 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
 
   // ── Grieve (anti-celebration) override ──────────────────
   // Non-scorer during a goal celebration. Overrides walk/kick/push
-  // poses proportionally to the smoothed `grieve` factor so the
-  // switch fades in cleanly. Celebrate (`celeb`) still outranks
-  // grieve if both ever fire (they shouldn't — physics makes only
-  // the scorer celebrate — but the interp keeps the transition
-  // safe).
+  // proportionally to the smoothed `grieve` factor. Celebrate
+  // (`celeb`) outranks grieve as a defensive interp (physics only
+  // celebrates the scorer in practice).
   if (grieve > LPF_DEAD_ZONE && celeb < LPF_DEAD_ZONE) {
     // Rocking body lean: baseline forward tilt + small sinusoidal
     // sway. Multiplied by `grieve` so the lean eases in from the

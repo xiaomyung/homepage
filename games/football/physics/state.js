@@ -61,8 +61,7 @@ export function createField(width = FIELD_WIDTH_REF) {
   return field;
 }
 
-// Kickoff spawn x for a given side. Used by initPlayer + the post-goal
-// reposition + resetToKickoff paths so all three return the same x.
+// Kickoff spawn x for a given side.
 export function kickoffSpawnX(field, side) {
   const sign = side === 'left' ? -1 : +1;
   return field.midX + sign * STARTING_GAP - field.playerWidth / 2;
@@ -208,8 +207,7 @@ export function clamp(v, lo, hi) {
 }
 
 /** Wrap an angle into (-π, π]. Apply after subtracting two angles to
- *  get the shortest-arc signed difference. Imported by animation/state.js
- *  and ai/perception.js (transitively via physics.js's re-export). */
+ *  get the shortest-arc signed difference. */
 export function wrapAngle(a) {
   while (a > Math.PI) a -= 2 * Math.PI;
   while (a <= -Math.PI) a += 2 * Math.PI;

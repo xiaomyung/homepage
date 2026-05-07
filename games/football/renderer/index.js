@@ -14,34 +14,20 @@
 
 import * as THREE from 'https://unpkg.com/three@0.164.0/build/three.module.js';
 import {
-  BALL_RADIUS,
-  FIELD_HEIGHT,
   FIELD_WIDTH_REF,
-  GOAL_POST_RADIUS,
-  MAX_PLAYER_SPEED,
-  PLAYER_WIDTH,
-  STICKMAN_HEAD_RADIUS,
   STICKMAN_LEG_RADIUS,
-  STICKMAN_LIMB_FULL_H,
   STICKMAN_LOWER_ARM,
   STICKMAN_LOWER_ARM_RADIUS,
-  STICKMAN_LOWER_LEG,
   STICKMAN_SHOULDER_OFY,
   STICKMAN_TORSO_RADIUS,
   STICKMAN_UPPER_ARM,
   STICKMAN_UPPER_ARM_RADIUS,
   STICKMAN_UPPER_LEG,
-  Z_STRETCH,
   createField,
 } from '../physics/index.js';
 import { DebugOverlay } from '../debug/overlay.js';
 import { advanceAnimState, createAnimState } from '../animation/state.js';
 import { composeStickmanPose, createPoseScratch } from '../animation/poses.js';
-import {
-  staminaDiscRadius,
-  updateStaminaClipPlane,
-} from '../util/renderer-math.js';
-import { rgb, staminaColorInto, buildBallTexture } from './materials.js';
 import {
   spawnBounceParticles, spawnFootstepParticles,
   spawnPushContactParticles, spawnGoalBurst,
@@ -64,39 +50,9 @@ import { renderState as renderStateImpl } from './update-loop.js';
 import { initScene, disposeScene } from './scene.js';
 import { initBallPool, initShadowFactory } from './ball.js';
 import {
-  HORIZONTAL_MARGIN,
   STICKMAN_TORSO_SHELL_THICKNESS, STICKMAN_TORSO_FILL_RADIUS,
-  STICKMAN_KNEE_RADIUS, STICKMAN_ELBOW_RADIUS, STICKMAN_SPH_POOL,
-  TWO_PI, BALL_VISUAL_RADIUS, STAMINA_OUTLINE_OPACITY,
-  PARTICLE_POOL, PARTICLE_BASE_COUNT, PARTICLE_FORCE_COUNT, PARTICLE_MAX_COUNT,
-  PARTICLE_BASE_SPEED, PARTICLE_SPREAD, PARTICLE_LIFE_BASE, PARTICLE_LIFE_VARIANCE,
-  PARTICLE_GRAVITY, PARTICLE_GROUND_DRAG, PARTICLE_VISUAL_RADIUS,
-  FOOTSTEP_MIN_SPEED, FOOTSTEP_BASE_COUNT, FOOTSTEP_FORCE_COUNT,
-  FOOTSTEP_MAX_COUNT, FOOTSTEP_SPEED, FOOTSTEP_BACK_OFFSET,
-  PUSH_CONTACT_BASE_COUNT, PUSH_CONTACT_FORCE_COUNT, PUSH_CONTACT_MAX_COUNT,
-  PUSH_CONTACT_SPEED, PUSH_CONTACT_LIFT_BIAS,
-  GOAL_BURST_COUNT, GOAL_BURST_SPEED, GOAL_BURST_LIFT,
-  GOAL_BURST_LIFE_BASE, GOAL_BURST_LIFE_VAR,
-  CAMERA_FOV, CAMERA_TILT_DEG,
-  FOLLOW_ZOOM_LIVE, FOLLOW_ZOOM_DEAD, FOLLOW_LEAD_FRACTION,
-  NAME_LABEL_HEAD_GAP, NAME_LABEL_CANVAS_W, NAME_LABEL_CANVAS_H,
-  NAME_LABEL_FONT, NAME_LABEL_TEXT_COLOR, NAME_LABEL_SHADOW_COLOR,
-  NAME_LABEL_SHADOW_BLUR, NAME_LABEL_SCALE_X, NAME_LABEL_SCALE_Y,
-  NAME_LABEL_FADE_BELOW, NAME_LABEL_FADE_FULL,
-  BALL_SHADOW_GROWTH_PER_Z, BALL_SHADOW_FADE_PER_Z,
-  DEBUG_CAM_DRAG_SENS, DEBUG_CAM_PAN_FRAC, DEBUG_CAM_WHEEL_SENS,
-  DEBUG_CAM_DIST_MIN, DEBUG_CAM_DIST_MAX,
-  REST_STAR_RADIUS_FRAC, REST_STAR_HEIGHT_FRAC, REST_STAR_SCALE_BASE,
-  REST_STAR_SCALE_OPACITY, REST_STAR_TUMBLE_FRAC, REST_STAR_COUNTER_SPIN,
-  SHADOW_VERTEX_SHADER, SHADOW_FRAGMENT_SHADER,
-  PLAYER_SHADOW_RADIUS, SHADOW_ALPHA_BASE, SHADOW_Y,
-  COLOR_TEXT, COLOR_STAM_LOW, COLOR_STAM_MID, COLOR_STAM_HIGH,
+  STICKMAN_SPH_POOL, STAMINA_OUTLINE_OPACITY, PARTICLE_POOL,
 } from './tuning.js';
-
-// Stamina gradient (COLOR_STAM_LOW/MID/HIGH) for the torso fill + disc —
-// red at empty, amber at half, green at full. Hex values mirror
-// style.css `--red`, `--amber`, `--green` exactly. Imported from
-// renderer/tuning.js as pre-converted [r,g,b] triples.
 
 /* ── Renderer ──────────────────────────────────────────────── */
 
@@ -145,38 +101,16 @@ export class Renderer {
     this._nameLabelTmpA = new THREE.Vector3();
     this._nameLabelTmpB = new THREE.Vector3();
 
-    // Stickman pipe parts — torsos, arms, and legs each use their own
-    // fixed-length CapsuleGeometry so the hemispherical caps stay
-    // perfectly round (no stretching). Joint-to-joint distances are
-    // constant per part type by construction, so meshes are placed
-    // at midpoints and rotated but never scaled along their length.
-    // Every stickman part uses the same monochrome color (COLOR_TEXT).
-    //
-    // The torso is drawn as THREE co-located meshes per stickman:
-    //   outline — semi-transparent shell at the outer radius, always
-    //             visible, DoubleSide so the inner capsule wall shows
-    //             through for a readable 3D "glass shell" depth cue.
-    //   fill    — opaque solid at a smaller radius (inset inward, so
-    //             the outline shell reads as having real wall
-    //             thickness), clipped above the stamina-height plane.
-    //             FrontSide so only the outer shell of the fill
-    //             capsule is lit, matching the head/limb lighting.
-    //   disc    — a flat horizontal disc at the fill cut, sized to the
-    //             fill capsule's internal cross-section radius so it
-    //             caps the hollow without ever poking outside the
-    //             hemispherical caps.
-    // All three materials are MeshLambertMaterial so every lit part of
-    // the stickman — head, arms, legs, torso shell, torso fill, disc —
-    // shares the same lighting response and reads as one monochrome
-    // figure.
+    // Torso is drawn as three co-located meshes (outline shell + opaque
+    // fill clipped at the stamina line + flat disc capping the fill).
+    // All three materials are MeshLambertMaterial so the figure reads
+    // as one monochrome unit under the same lighting.
     const torsoBodyLen = STICKMAN_SHOULDER_OFY - 2 * STICKMAN_TORSO_RADIUS;
-    // Fill capsule reuses the outline's body length exactly — only the
-    // radius shrinks. This produces a uniform shell of thickness
-    // `STICKMAN_TORSO_SHELL_THICKNESS` on every side: radially, AND on
-    // the top + bottom hemispherical caps. The fill's total end-to-end
-    // length is therefore `2 * STICKMAN_TORSO_SHELL_THICKNESS` shorter
-    // than the outline's, so `_placeTorso` insets the clipping range
-    // accordingly (otherwise stamina=0/1 would map outside the fill).
+    // Fill reuses the outline's body length so the shell thickness is
+    // uniform on every side (radially AND on the hemispherical caps).
+    // The fill's total end-to-end length is therefore
+    // `2 * STICKMAN_TORSO_SHELL_THICKNESS` shorter than the outline's,
+    // so `_placeTorso` insets the clipping range accordingly.
     const torsoFillBodyLen = torsoBodyLen;
     // Arms split at the elbow — upper arm is 15% thicker than the
     // forearm. Both halves have body_len = UPPER_ARM − 2·radius so
@@ -220,8 +154,8 @@ export class Renderer {
     discGeom.rotateX(-Math.PI / 2);
     this._staticGeometries.push(discGeom);
 
-    // Mesh factories stored on `this` so pools can grow on demand in
-    // the _place* helpers (harnesses/tests can drive N > 2 players).
+    // Mesh factories on `this` so pools can grow on demand from
+    // _place* helpers when harnesses drive N > 2 players.
     this._mkUpperArm = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
       const mesh = new THREE.Mesh(stickmanUpperArmGeom, mat);
@@ -297,8 +231,7 @@ export class Renderer {
       this.scene.add(mesh);
       this._stickmanTorsoDisc.push(mesh);
     };
-    // Initial pools — sized for the common 2-player match case so the
-    // first frame has no allocation. _place* helpers grow on demand.
+    // Initial pool sizes for the common 2-player match case.
     for (let i = 0; i < 4; i++) {
       this._mkTorsoOutline();
       this._mkTorsoFill();
@@ -534,7 +467,3 @@ export class Renderer {
   _stepParticles()                     { return stepParticles(this); }
   _drawParticles()                     { return drawParticles(this); }
 }
-
-/* ── Helpers ───────────────────────────────────────────────── */
-
-// Body-english curves (pushBodyDipAt, kickTiltAt, airkickTiltAt, …)

@@ -17,16 +17,7 @@ import {
   STATE_LABEL_STOP_GATE, STATE_LABEL_TURN_GATE, STATE_LABEL_WALK_GATE,
   TWO_PI,
   LPF_DEAD_ZONE,
-} from './tuning.js';
-// Re-export the previously-public surface (STICKMAN_SMOOTH,
-// STICKMAN_RUN_THRESHOLD, STICKMAN_TILT_*, *_PHASE_RATE,
-// TURN_ANGVEL_SCALE, STOP_DECEL_SCALE) so consumers that imported
-// from animation/state.js continue to work.
-export {
-  STICKMAN_SMOOTH,
-  STICKMAN_RUN_THRESHOLD, STICKMAN_TILT_PER_SPEED, STICKMAN_TILT_MAX,
-  CELEB_PHASE_RATE, GRIEVE_PHASE_RATE, REST_PHASE_RATE,
-  TURN_ANGVEL_SCALE, STOP_DECEL_SCALE,
+  ANIM_HEADING_LPF_MULT,
 } from './tuning.js';
 
 /** Allocate a fresh per-player animation state. Call once per
@@ -80,7 +71,7 @@ export function createAnimState(tick, player) {
 function lpfHeading(anim, seed, target) {
   if (anim.animHeading == null) anim.animHeading = seed;
   const delta = wrapAngle(target - anim.animHeading);
-  anim.animHeading = wrapAngle(anim.animHeading + delta * STICKMAN_SMOOTH * 2);
+  anim.animHeading = wrapAngle(anim.animHeading + delta * STICKMAN_SMOOTH * ANIM_HEADING_LPF_MULT);
   return anim.animHeading;
 }
 
@@ -137,7 +128,7 @@ export function advanceAnimState(
     //      translates, doesn't update heading. Face the motion
     //      direction so the stickman walks FACING kickoff instead of
     //      side-stepping.
-    //   2. faceCameraSmooth (matchend pose / legacy MATCHEND_WIN/LOSE):
+    //   2. faceCameraSmooth (matchend pose / MATCHEND_WIN/LOSE):
     //      rotate to FACE_CAMERA_HEADING so winner/loser read for
     //      the audience instead of edge-on.
     //   3. faceEachOtherSmooth (matchend neutral): rotate from

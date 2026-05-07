@@ -8,7 +8,7 @@ import {
   FIELD_HEIGHT,
   PLAYER_WIDTH,
   PLAYER_HEIGHT,
-} from '../physics.js';
+} from '../physics/index.js';
 import { perceive } from '../ai/perception.js';
 import { decide, INTENT_KINDS, ROLES } from '../ai/decision.js';
 import { ROLE_HYSTERESIS_TICKS } from '../ai/tuning.js';

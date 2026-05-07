@@ -3,7 +3,7 @@
  * Tests import from here so changes don't break tests.
  */
 
-import { TICK_MS, PLAYER_WIDTH, BALL_RADIUS } from '../physics.js';
+import { TICK_MS, PLAYER_WIDTH, BALL_RADIUS } from '../physics/index.js';
 
 export const ACTION_STRIDE_TICKS = 1;
 

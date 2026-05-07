@@ -23,7 +23,7 @@ import {
   PUSH_WINDUP_LEAD_DIST,
 } from './tuning.js';
 
-import { canKickReach } from '../physics.js';
+import { canKickReach } from '../physics/index.js';
 
 const INTENT_NEUTRAL = 'NEUTRAL';
 const INTENT_CONTENDER_KICK = 'CONTENDER_KICK';

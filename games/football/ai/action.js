@@ -18,7 +18,7 @@ import {
   PLAYER_HEIGHT,
   FIELD_HEIGHT,
   Z_STRETCH,
-} from '../physics.js';
+} from '../physics/index.js';
 
 import { INTENT_KINDS } from './decision.js';
 

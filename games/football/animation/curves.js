@@ -9,7 +9,7 @@
 // at that phase.
 
 import { easeInOut, easeOut } from '../util/renderer-math.js';
-import { AIRKICK_PEAK_FRAC } from '../physics.js';
+import { AIRKICK_PEAK_FRAC } from '../physics/index.js';
 import {
   PUSH_RAISE_T, PUSH_WINDUP_T, PUSH_STRIKE_T, PUSH_SETTLE_T,
   PUSH_CROUCH_DEPTH, PUSH_HOP_DIST,

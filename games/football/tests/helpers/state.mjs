@@ -27,7 +27,7 @@ import {
   PLAYER_HEIGHT,
   PLAYER_WIDTH,
   Z_STRETCH,
-} from '../../physics.js';
+} from '../../physics/index.js';
 import { derivePersonality } from '../../ai/controller.js';
 import { RNG_SALT_PERSONALITY } from '../../util/rng-salts.js';
 

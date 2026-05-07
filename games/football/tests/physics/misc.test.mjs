@@ -42,7 +42,7 @@ import {
   ACTION_PUSH_POWER,
   ACTION_VEC_SIZE,
   endMatchByTime,
-} from '../../physics.js';
+} from '../../physics/index.js';
 import {
   freshState,
   action,

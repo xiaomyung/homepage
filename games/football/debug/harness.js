@@ -17,7 +17,7 @@ import {
   FIELD_WIDTH_REF,
   PLAYER_WIDTH,
   Z_STRETCH,
-} from '../physics.js';
+} from '../physics/index.js';
 
 // ── Lazy mount / unmount registry ──────────────────────────────
 // Each canvas starts as a Renderer-shaped proxy; the real three.js

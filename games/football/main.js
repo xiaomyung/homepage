@@ -6,7 +6,7 @@
  * by exporting `decide(state, side) -> Float64Array(9)` like ai/controller.js.
  */
 
-import { Renderer } from './renderer.js';
+import { Renderer } from './renderer/index.js';
 import {
   createField,
   createState,
@@ -15,7 +15,7 @@ import {
   tick as physicsTick,
   endMatchByTime,
   TICK_MS,
-} from './physics.js';
+} from './physics/index.js';
 import { decide, derivePersonality } from './ai/controller.js';
 import { pickMatchNames } from './ai/names.js';
 import { computeTicks } from './util/frame-loop.js';
@@ -25,7 +25,7 @@ import {
   createFreeCamToggle,
   createFollowCamToggle,
   createDebugToggle,
-} from './ui.js';
+} from './ui/index.js';
 import { MATCH_DURATION_MS, MAX_SHOWCASE_TICKS } from './ai/tuning.js';
 import { RNG_SALT_PERSONALITY, RNG_SALT_NAMES } from './util/rng-salts.js';
 

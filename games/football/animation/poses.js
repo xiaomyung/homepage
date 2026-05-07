@@ -38,7 +38,7 @@ import {
   Z_STRETCH,
   kickLegPose,
   pushArmPose,
-} from '../physics.js';
+} from '../physics/index.js';
 import { forearmAngleFor, shinAngleFor } from '../util/renderer-math.js';
 import {
   airkickTiltAt, airkickTuckAt, kickArmAngleAt, kickDipAt, kickTiltAt,

@@ -4,7 +4,7 @@
 // the derived state label (is the player kicking? pushing?
 // celebrating?). Pure — no DOM, no three.js.
 
-import { REACT_ANIM_MS, Z_STRETCH, wrapAngle } from '../physics.js';
+import { REACT_ANIM_MS, Z_STRETCH, wrapAngle } from '../physics/index.js';
 import {
   STICKMAN_SMOOTH,
   STICKMAN_RUN_THRESHOLD, STICKMAN_TILT_PER_SPEED, STICKMAN_TILT_MAX,

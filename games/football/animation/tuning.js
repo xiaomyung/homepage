@@ -8,7 +8,7 @@ import {
   AIRKICK_PEAK_FRAC,
   KICK_DURATION_MS, KICK_WINDUP_MS,
   STICKMAN_GLYPH_SIZE,
-} from '../physics.js';
+} from '../physics/index.js';
 
 /* ── Smoothing + phase-rate tuning (state.js) ────────────────── */
 

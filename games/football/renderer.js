@@ -62,6 +62,7 @@ import {
 } from './renderer/scoreboard.js';
 import { renderState as renderStateImpl } from './renderer/update-loop.js';
 import { initScene, disposeScene } from './renderer/scene.js';
+import { initBallPool, initShadowFactory } from './renderer/ball.js';
 import {
   HORIZONTAL_MARGIN,
   STICKMAN_TORSO_SHELL_THICKNESS, STICKMAN_TORSO_FILL_RADIUS,
@@ -123,68 +124,13 @@ export class Renderer {
     // built lazily on first enable; renderer just forwards the toggle.
     this._debugOverlay = new DebugOverlay(this.scene);
 
-    // Dedicated ball mesh: a real 3D sphere in world space at
-    // (ball.x, ball.z, ball.y * Z_STRETCH). Visual radius equals
-    // BALL_RADIUS so the rendered sphere and the collision envelope
-    // can't drift apart. A procedurally-generated CanvasTexture
-    // paints ~12 dark panels at icosahedron-vertex positions so the
-    // rotation (applied from the ball's velocity each frame) is
-    // visible at a glance.
-    const ballGeom = new THREE.SphereGeometry(1, 24, 16);
-    const ballMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: 0.55,
-      metalness: 0.05,
-      map: buildBallTexture(),
-    });
-    this._staticGeometries.push(ballGeom);
-    this._staticMaterials.push(ballMat);
-    if (ballMat.map) this._staticMaterials.push(ballMat.map);
-    // Pooled ball meshes so harnesses can render N physics worlds.
-    // Each mesh's quaternion accumulates spin independently across
-    // frames — the caller must pass balls in stable order for
-    // rotation continuity.
-    this._ballGeom = ballGeom;
-    this._ballMat = ballMat;
-    this._ballMeshes = [];
-    this._ballCursor = 0;
-    this._mkBall = () => {
-      const mesh = new THREE.Mesh(this._ballGeom, this._ballMat);
-      mesh.frustumCulled = false;
-      mesh.visible = false;
-      this.scene.add(mesh);
-      this._ballMeshes.push(mesh);
-      return mesh;
-    };
-    this._mkBall();  // pre-create the common single-ball slot
-    // Ball-spin scratch objects (shared across pool — spin integration
-    // is applied to the currently-indexed mesh's quaternion).
-    this._ballSpinAxis = new THREE.Vector3();
-    this._ballSpinQuat = new THREE.Quaternion();
+    // Ball mesh pool + spin scratch + shadow factory all live in
+    // renderer/ball.js. initShadowFactory must come before the
+    // pre-created player-shadow pool below since `_makeShadow` is
+    // required to allocate them.
+    initBallPool(this);
+    initShadowFactory(this);
 
-    // Ground shadows — a soft dark disc per entity, laid flat on the
-    // xz-plane just above y=0 so it doesn't z-fight the field lines.
-    // One shared plane geometry, each mesh gets its own material so
-    // uAlpha can be animated per-entity (ball fades as it rises).
-    const shadowGeom = new THREE.PlaneGeometry(1, 1);
-    this._staticGeometries.push(shadowGeom);
-    this._shadowGeom = shadowGeom;
-    this._makeShadow = () => {
-      const mat = new THREE.ShaderMaterial({
-        uniforms: { uAlpha: { value: SHADOW_ALPHA_BASE } },
-        vertexShader: SHADOW_VERTEX_SHADER,
-        fragmentShader: SHADOW_FRAGMENT_SHADER,
-        transparent: true,
-        depthWrite: false,
-      });
-      const mesh = new THREE.Mesh(this._shadowGeom, mat);
-      mesh.rotation.x = -Math.PI / 2;  // lay flat on xz plane
-      mesh.frustumCulled = false;
-      mesh._uAlpha = mat.uniforms.uAlpha;
-      this._staticMaterials.push(mat);
-      this.scene.add(mesh);
-      return mesh;
-    };
     // Pool of player shadows, grown on demand via _placePlayerShadow.
     // Two pre-created for the common case of two players (zero extra
     // cost vs the original _p1Shadow / _p2Shadow).
@@ -198,9 +144,6 @@ export class Renderer {
     this._nameLabels.forEach((l) => l.mesh.visible = false);
     this._nameLabelTmpA = new THREE.Vector3();
     this._nameLabelTmpB = new THREE.Vector3();
-    // Pool of ball shadows — one per ball mesh (matched by index).
-    this._ballShadows = [this._makeShadow()];
-    this._ballShadowCursor = 0;
 
     // Stickman pipe parts — torsos, arms, and legs each use their own
     // fixed-length CapsuleGeometry so the hemispherical caps stay

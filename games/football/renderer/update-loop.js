@@ -16,7 +16,7 @@ import {
   BALL_SHADOW_GROWTH_PER_Z, BALL_SHADOW_FADE_PER_Z,
   SHADOW_ALPHA_BASE, SHADOW_Y, COLOR_TEXT,
 } from './tuning.js';
-import { Z_STRETCH } from '../physics.js';
+import { Z_STRETCH } from '../physics/index.js';
 import { addStickman, placePlayerShadow } from './player-rig.js';
 import { updateNameLabels } from './scoreboard.js';
 import {

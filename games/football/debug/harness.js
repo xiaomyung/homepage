@@ -9,7 +9,7 @@
 // Import paths are relative; the file lives at games/football/debug/
 // so ../renderer.js and ../physics.js resolve to the shipped code.
 
-import { Renderer } from '../renderer.js';
+import { Renderer } from '../renderer/index.js';
 import {
   createField,
   createState,

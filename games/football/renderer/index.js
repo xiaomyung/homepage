@@ -33,7 +33,7 @@ import {
   STICKMAN_UPPER_LEG,
   Z_STRETCH,
   createField,
-} from '../physics.js';
+} from '../physics/index.js';
 import { DebugOverlay } from '../debug/overlay.js';
 import { advanceAnimState, createAnimState } from '../animation/state.js';
 import { composeStickmanPose, createPoseScratch } from '../animation/poses.js';

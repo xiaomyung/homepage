@@ -17,7 +17,7 @@ import {
   DEBUG_CAM_DRAG_SENS, DEBUG_CAM_PAN_FRAC, DEBUG_CAM_WHEEL_SENS,
   DEBUG_CAM_DIST_MIN, DEBUG_CAM_DIST_MAX,
 } from './tuning.js';
-import { FIELD_HEIGHT, Z_STRETCH } from '../physics.js';
+import { FIELD_HEIGHT, Z_STRETCH } from '../physics/index.js';
 
 /** Compute the camera height / back-offset for a zoom multiplier
  *  `zoom` (1.0 = default showcase fit). Smaller zoom = closer. */

@@ -40,7 +40,7 @@ import {
   STICKMAN_TORSO_RADIUS,
   Z_STRETCH,
   ikFootWorld,
-} from './physics.js';
+} from '../physics/index.js';
 
 import {
   OVERLAY_RENDER_ORDER,
@@ -54,7 +54,7 @@ import {
   OPACITY_TOUCHLINE, OPACITY_GROUND, OPACITY_LATERAL,
   SLAB_LIFT_Y, PUSH_PLATE_LIFT_Y, PUSH_CONE_LIFT_Y,
   PAIR_DISC_LIFT_Y, KICK_CONE_LIFT_Y, GROUND_LIFT_Y,
-} from './debug/tuning.js';
+} from './tuning.js';
 
 function makeFillMat(color, opacity) {
   return new THREE.MeshBasicMaterial({

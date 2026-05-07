@@ -20,7 +20,7 @@ import {
 } from './tuning.js';
 import {
   PLAYER_WIDTH, STICKMAN_HEAD_RADIUS, STICKMAN_LIMB_FULL_H, Z_STRETCH,
-} from '../physics.js';
+} from '../physics/index.js';
 
 /** Position both name-label sprites at each player's head with a small
  *  Y offset, set the texture from `state.matchNames`, apply overlap

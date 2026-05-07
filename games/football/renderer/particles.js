@@ -24,7 +24,7 @@ import {
 } from './tuning.js';
 import {
   FIELD_HEIGHT, MAX_PLAYER_SPEED, PLAYER_WIDTH, Z_STRETCH,
-} from '../physics.js';
+} from '../physics/index.js';
 
 /** Spawn a burst of splash particles at the bounce location. Count and
  *  outward speed both scale with `ev.force`; `ev.axis` selects the

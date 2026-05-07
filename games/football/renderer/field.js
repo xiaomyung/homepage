@@ -11,7 +11,7 @@
 
 import * as THREE from 'https://unpkg.com/three@0.164.0/build/three.module.js';
 import { TWO_PI } from './tuning.js';
-import { FIELD_HEIGHT, GOAL_POST_RADIUS, ROOF_FRACTION, Z_STRETCH } from '../physics.js';
+import { FIELD_HEIGHT, GOAL_POST_RADIUS, ROOF_FRACTION, Z_STRETCH } from '../physics/index.js';
 
 export function buildFieldLines(ctx) {
   const w = ctx.fieldWidth;

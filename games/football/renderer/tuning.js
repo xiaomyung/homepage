@@ -13,7 +13,7 @@ import {
   STICKMAN_TORSO_RADIUS,
   STICKMAN_LEG_RADIUS,
   STICKMAN_LOWER_ARM_RADIUS,
-} from '../physics.js';
+} from '../physics/index.js';
 
 /* ── Layout ──────────────────────────────────────────────────── */
 

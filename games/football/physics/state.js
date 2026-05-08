@@ -12,7 +12,6 @@ import {
   PLAYER_WIDTH, PLAYER_HEIGHT, STARTING_GAP,
   GOAL_BACK_OFFSET, GOAL_DEPTH, GOAL_LINE_INSET,
   GOAL_MOUTH_Y_MIN, GOAL_MOUTH_Y_MAX, GOAL_MOUTH_Z, ROOF_FRACTION,
-  GOAL_SENSOR_DEPTH,
   RESPAWN_DROP_Z, RESPAWN_GRACE,
 } from './tuning.js';
 
@@ -59,22 +58,21 @@ export function createField(width = FIELD_WIDTH_REF) {
     minZ: 0, maxZ: GOAL_MOUTH_Z,
     roofBackX: goalLineR + (goalRRight - goalLineR) * ROOF_FRACTION,
   };
-  // Goal sensors — thin AABB slabs at each goal line spanning the full
-  // mouth aperture (post-to-post, floor-to-crossbar; no insets, since
-  // the post / crossbar cylinders physically deflect any contact-touching
-  // trajectory). The sensor's *front face* sits exactly on the goal
-  // line; the *back face* is GOAL_SENSOR_DEPTH units inside the goal.
-  // A goal scores when the ball's trailing edge has fully crossed the
-  // back face — see physics/ball.js::ballFullyCrossedSensor.
-  field.goalSensorLeft = {
-    minX: goalLineL - GOAL_SENSOR_DEPTH,
-    maxX: goalLineL,
+  // Goal-line gates — flat planes (in YZ) sitting exactly on each goal
+  // line, spanning the full mouth aperture (post-to-post, floor-to-
+  // crossbar). The post and crossbar cylinders physically deflect any
+  // contact-touching trajectory, so no aperture inset is needed. A goal
+  // scores when the ball's trailing edge fully crosses the line AND the
+  // matching ball.crossedLineL/R flag is set (per-substep inward
+  // crossing — anti-tunneling and false-fire guard). See
+  // physics/ball.js::ballFullyPastGoalLine.
+  field.goalLineGateLeft = {
+    x: goalLineL,
     minY: GOAL_MOUTH_Y_MIN, maxY: GOAL_MOUTH_Y_MAX,
     minZ: 0, maxZ: GOAL_MOUTH_Z,
   };
-  field.goalSensorRight = {
-    minX: goalLineR,
-    maxX: goalLineR + GOAL_SENSOR_DEPTH,
+  field.goalLineGateRight = {
+    x: goalLineR,
     minY: GOAL_MOUTH_Y_MIN, maxY: GOAL_MOUTH_Y_MAX,
     minZ: 0, maxZ: GOAL_MOUTH_Z,
   };

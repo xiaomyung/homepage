@@ -158,6 +158,24 @@ test('low-velocity shot rolling between the posts still scores', () => {
   assert.equal(state.scoreR, 1, 'low-velocity rolling shot must score');
 });
 
+test('slow shot crosses line and stops past it must score', () => {
+  // Repro for the user-reported "ball goes through the mouth but no
+  // goal" bug. With vx=-0.5 and ground friction (0.944) + cutoff (0.1)
+  // the ball settles at ~x=95.84 — past goalLineL (102), but NOT past
+  // the pre-fix slab back face at x=96. Goal-line gate fix scores the
+  // moment the ball's trailing edge clears the line.
+  const state = freshState();
+  const f = state.field;
+  state.ball.x = f.goalLineL + 1;
+  state.ball.y = (f.goalMouthYMin + f.goalMouthYMax) / 2;
+  state.ball.z = 0;
+  state.ball.vx = -0.5; state.ball.vy = 0; state.ball.vz = 0;
+  state.ball.frozen = false;
+  state.graceFrames = 0;
+  for (let i = 0; i < 80 && state.scoreR === 0; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.scoreR, 1, `slow shot must score, ball.x=${state.ball.x.toFixed(3)}`);
+});
+
 test('ball just below the crossbar scores', () => {
   const state = freshState();
   const f = state.field;

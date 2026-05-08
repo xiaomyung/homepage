@@ -27,7 +27,8 @@ async function run() {
 }
 
 run();
-setInterval(run, 30000);
+setInterval(() => { if (!document.hidden) run(); }, 30000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) run(); });
 
 /* ── Banner: live counts + clock ── */
 

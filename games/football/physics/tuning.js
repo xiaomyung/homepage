@@ -21,6 +21,10 @@ export const MAX_TICKS_PER_FRAME    = 5;
 // If state.tick stalls this long the page is treated as stalled and
 // the showcase forces a fresh match on resume.
 export const TAB_STALL_THRESHOLD_MS = 2000;
+// If the tab was hidden longer than this, the showcase reloads the
+// whole page on resume (clean slate for true-idle returns instead of
+// resuming with an arbitrarily-old scene graph + state).
+export const TAB_HIDDEN_RELOAD_MS = 600000;
 
 // Stale-segment detection: 10s of no-kick activity in headless training
 // triggers a kickoff reset (see core.js / match-flow.js). 1s before

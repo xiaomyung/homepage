@@ -104,7 +104,7 @@ straight into the next match.
   translucent coloured surface (body capsule, head sphere,
   pair-collision disc, kick reach + facing cone + lateral cap,
   push range + facing cone, foot sphere, goal box / posts /
-  crossbar, goal scoring sensor, field walls, ground / ceiling).
+  crossbar, goal-line gate, field walls, ground / ceiling).
   All positions and dimensions are read live from `state.field`
   and the player records — change a constant in `physics/tuning.js`
   and the overlay reflects it on next reload. Implementation in

@@ -18,9 +18,9 @@ export const COLOR_KICK       = 0x66dd88;   // green — kick reach + face cone 
 export const COLOR_FOOT       = 0xee66ff;   // magenta — foot sphere
 export const COLOR_PUSH       = 0x66bbff;   // blue — push range + face cone
 export const COLOR_GOAL_BOX    = 0xff77cc;   // pink — goal interior planes
-export const COLOR_GOAL_BAR    = 0xcc44dd;   // purple — posts + crossbar
-export const COLOR_GOAL_SENSOR = 0x33ff66;   // green — scoring slab at the goal line
-export const COLOR_TOUCHLINE  = 0x66eedd;   // cyan — field touchline walls
+export const COLOR_GOAL_BAR       = 0xcc44dd;   // purple — posts + crossbar
+export const COLOR_GOAL_LINE_GATE = 0x33ff66;   // green — flat scoring plane at the goal line
+export const COLOR_TOUCHLINE      = 0x66eedd;   // cyan — field touchline walls
 export const COLOR_GROUND_SKY = 0xcccccc;   // grey — ground + ceiling
 
 /* ── Opacities ───────────────────────────────────────────────── */
@@ -34,11 +34,18 @@ export const OPACITY_FOOT        = 0.55;
 export const OPACITY_PUSH_PLATE  = 0.14;
 export const OPACITY_PUSH_CONE   = 0.22;
 export const OPACITY_GOAL_BOX    = 0.18;
-export const OPACITY_GOAL_BAR    = 0.45;
-export const OPACITY_GOAL_SENSOR = 0.22;
-export const OPACITY_TOUCHLINE   = 0.04;    // environmental — barely there
+export const OPACITY_GOAL_BAR       = 0.45;
+export const OPACITY_GOAL_LINE_GATE = 0.22;
+export const OPACITY_TOUCHLINE      = 0.04;    // environmental — barely there
 export const OPACITY_GROUND      = 0.025;
 export const OPACITY_LATERAL     = 0.55;    // line slab
+
+/* ── Goal-line gate plate thickness ──────────────────────────── */
+
+// The goal-line gate is conceptually a flat plane (zero thickness in
+// world-x). The overlay draws it as a thin slab so it's visible from
+// any camera angle without z-fighting against the goal posts.
+export const GOAL_LINE_GATE_X_SPAN = 0.4;
 
 /* ── Z-fight avoidance lifts ─────────────────────────────────── */
 

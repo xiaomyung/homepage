@@ -21,6 +21,10 @@ export const MAX_TICKS_PER_FRAME    = 5;
 // If state.tick stalls this long the page is treated as stalled and
 // the showcase forces a fresh match on resume.
 export const TAB_STALL_THRESHOLD_MS = 2000;
+// If the tab was hidden longer than this, the showcase reloads the
+// whole page on resume (clean slate for true-idle returns instead of
+// resuming with an arbitrarily-old scene graph + state).
+export const TAB_HIDDEN_RELOAD_MS = 600000;
 
 // Stale-segment detection: 10s of no-kick activity in headless training
 // triggers a kickoff reset (see core.js / match-flow.js). 1s before
@@ -130,12 +134,6 @@ export const ROOF_FRACTION      = 0.35;  // flat roof spans [mouthX..roofBackX] 
 export const GOAL_MOUTH_WIDTH   = 28.6;  // y-span of the mouth
 export const GOAL_MOUTH_Y_MIN   = (FIELD_HEIGHT - GOAL_MOUTH_WIDTH) / 2;
 export const GOAL_MOUTH_Y_MAX   = (FIELD_HEIGHT + GOAL_MOUTH_WIDTH) / 2;
-
-// Goal-sensor slab depth — distance the ball's trailing edge must
-// travel past the goal line for the score to register. Sized
-// > BALL_RADIUS so the ball-substep loop (capped at BALL_RADIUS per
-// substep in physics/ball.js) cannot tunnel the slab undetected.
-export const GOAL_SENSOR_DEPTH  = 6;
 
 /* ── Match flow ───────────────────────────────────────────────── */
 

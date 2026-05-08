@@ -45,14 +45,15 @@ import {
 import {
   OVERLAY_RENDER_ORDER,
   COLOR_BODY, COLOR_HEAD, COLOR_PAIR, COLOR_KICK, COLOR_FOOT,
-  COLOR_PUSH, COLOR_GOAL_BOX, COLOR_GOAL_BAR, COLOR_GOAL_SENSOR,
+  COLOR_PUSH, COLOR_GOAL_BOX, COLOR_GOAL_BAR, COLOR_GOAL_LINE_GATE,
   COLOR_TOUCHLINE, COLOR_GROUND_SKY,
   OPACITY_BODY, OPACITY_HEAD, OPACITY_PAIR,
   OPACITY_KICK_BUDGET, OPACITY_KICK_CONE,
   OPACITY_FOOT,
   OPACITY_PUSH_PLATE, OPACITY_PUSH_CONE,
-  OPACITY_GOAL_BOX, OPACITY_GOAL_BAR, OPACITY_GOAL_SENSOR,
+  OPACITY_GOAL_BOX, OPACITY_GOAL_BAR, OPACITY_GOAL_LINE_GATE,
   OPACITY_TOUCHLINE, OPACITY_GROUND, OPACITY_LATERAL,
+  GOAL_LINE_GATE_X_SPAN,
   SLAB_LIFT_Y, PUSH_PLATE_LIFT_Y, PUSH_CONE_LIFT_Y,
   PAIR_DISC_LIFT_Y, KICK_CONE_LIFT_Y, GROUND_LIFT_Y,
 } from './tuning.js';
@@ -204,14 +205,16 @@ export class DebugOverlay {
     for (let i = 0; i < 2; i++) {
       m.crossbars.push(new THREE.Mesh(new THREE.CylinderGeometry(GOAL_POST_RADIUS, GOAL_POST_RADIUS, 1, 16), barMat));
     }
-    // Goal scoring sensor — translucent green slab anchored at the goal
-    // line, extending GOAL_SENSOR_DEPTH units into the goal. Geometry
-    // is unit-cube; per-frame scale + position writes the live sensor
-    // dimensions read straight from state.field.goalSensor*.
-    const sensorMat = makeFillMat(COLOR_GOAL_SENSOR, OPACITY_GOAL_SENSOR);
-    m.goalSensors = [
-      new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), sensorMat),
-      new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), sensorMat),
+    // Goal-line gate — translucent green plate sitting on the goal
+    // line, spanning the full mouth aperture. Geometry is unit-cube;
+    // per-frame scale + position writes the live gate dimensions
+    // read straight from state.field.goalLineGate*. Plate thickness
+    // (world-x) is GOAL_LINE_GATE_X_SPAN — the gate is conceptually
+    // a 2D plane, the slab is purely visual.
+    const gateMat = makeFillMat(COLOR_GOAL_LINE_GATE, OPACITY_GOAL_LINE_GATE);
+    m.goalLineGates = [
+      new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), gateMat),
+      new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), gateMat),
     ];
     const wallMat = makeFillMat(COLOR_TOUCHLINE, OPACITY_TOUCHLINE);
     m.touchlines = [
@@ -226,7 +229,7 @@ export class DebugOverlay {
       ...m.bodyCapsules, ...m.headSpheres, ...m.pairDiscs,
       ...m.kickReachSpheres, ...m.kickCones, ...m.lateralSlabs,
       ...m.footSpheres, ...m.pushPlates, ...m.pushCones,
-      ...m.goalPlanes, ...m.goalPosts, ...m.crossbars, ...m.goalSensors,
+      ...m.goalPlanes, ...m.goalPosts, ...m.crossbars, ...m.goalLineGates,
       ...m.touchlines, m.ground, m.ceiling,
     ];
     for (const mesh of m.allMeshes) {
@@ -438,22 +441,23 @@ export class DebugOverlay {
       crossbar.rotation.set(Math.PI / 2, 0, 0);
       crossbar.visible = true;
 
-      // Goal sensor — live AABB from state.field.goalSensor*. World
-      // axes: physics-x → three-x, physics-z → three-y, physics-y *
-      // Z_STRETCH → three-z (mirrors the box-plane mapping above).
-      const sensor = isLeft ? f.goalSensorLeft : f.goalSensorRight;
-      const sensorMesh = m.goalSensors[gi];
-      const sensorXSpan = sensor.maxX - sensor.minX;
-      const sensorYSpan = sensor.maxZ - sensor.minZ;
-      const sensorZSpan = (sensor.maxY - sensor.minY) * Z_STRETCH;
-      sensorMesh.scale.set(sensorXSpan, sensorYSpan, sensorZSpan);
-      sensorMesh.position.set(
-        (sensor.minX + sensor.maxX) / 2,
-        (sensor.minZ + sensor.maxZ) / 2,
-        ((sensor.minY + sensor.maxY) / 2) * Z_STRETCH,
+      // Goal-line gate — live plane geometry from state.field.goalLineGate*.
+      // World axes: physics-x → three-x, physics-z → three-y,
+      // physics-y * Z_STRETCH → three-z. Visualised as a thin slab
+      // (GOAL_LINE_GATE_X_SPAN wide on x) so the plane is visible
+      // from any angle without z-fighting against the goal posts.
+      const gate = isLeft ? f.goalLineGateLeft : f.goalLineGateRight;
+      const gateMesh = m.goalLineGates[gi];
+      const gateYSpan = gate.maxZ - gate.minZ;
+      const gateZSpan = (gate.maxY - gate.minY) * Z_STRETCH;
+      gateMesh.scale.set(GOAL_LINE_GATE_X_SPAN, gateYSpan, gateZSpan);
+      gateMesh.position.set(
+        gate.x,
+        (gate.minZ + gate.maxZ) / 2,
+        ((gate.minY + gate.maxY) / 2) * Z_STRETCH,
       );
-      sensorMesh.rotation.set(0, 0, 0);
-      sensorMesh.visible = true;
+      gateMesh.rotation.set(0, 0, 0);
+      gateMesh.visible = true;
     }
 
     // Field touchlines + ground / ceiling — environmental walls.

@@ -14,7 +14,7 @@ import {
   endMatchByTime,
   TICK_MS,
   MAX_TICKS_PER_FRAME,
-  TAB_STALL_THRESHOLD_MS,
+  TAB_HIDDEN_RELOAD_MS,
 } from './physics/index.js';
 import { decide, derivePersonality } from './ai/controller.js';
 import { pickMatchNames } from './ai/names.js';
@@ -34,6 +34,8 @@ let scoreboard = null;
 let currentMatch = null;
 let lastFrameTime = 0;
 let tickAccumulator = 0;
+let rafId = 0;
+let hiddenSinceMs = 0;
 
 let showcaseRng = createSeededRng(1);
 const showcaseField = createField();
@@ -59,36 +61,39 @@ async function main() {
   installRecovery(canvas);
 
   nextShowcase();
-  requestAnimationFrame(frame);
+  rafId = requestAnimationFrame(frame);
 }
 
 /**
  * Recovery hooks for the long-lived showcase:
- *   - visibilitychange: when tab returns to `visible` and state.tick
- *     hasn't advanced in 2s, force a fresh match + reset the rAF
- *     accumulator. Catches the case where rAF was throttled to zero
- *     while hidden and the tab thinks it's still in the middle of a
- *     stale match.
+ *   - visibilitychange→hidden: cancel the rAF chain, snapshot the
+ *     hide timestamp. With the loop fully halted nothing accumulates
+ *     (no physics, no render, no GC pressure).
+ *   - visibilitychange→visible: if hidden ≥ TAB_HIDDEN_RELOAD_MS,
+ *     reload the page for a clean slate; otherwise restart rAF and
+ *     force a fresh match.
  *   - webglcontextlost/restored: dispose + recreate. Browsers can
  *     evict the canvas's WebGL context under memory pressure or when
  *     another tab steals contexts, leaving the page permanently blank
  *     until the user closes and reopens.
  */
-let lastVisibleTick = 0;
-let lastVisibleAt = 0;
 function installRecovery(canvas) {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
-      if (showcaseState) lastVisibleTick = showcaseState.tick;
-      lastVisibleAt = performance.now();
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = 0;
+      hiddenSinceMs = performance.now();
+      return;
+    }
+    const hiddenMs = performance.now() - hiddenSinceMs;
+    if (hiddenMs >= TAB_HIDDEN_RELOAD_MS) {
+      location.reload();
       return;
     }
     lastFrameTime = 0;
     tickAccumulator = 0;
-    const stalledMs = performance.now() - lastVisibleAt;
-    if (showcaseState && stalledMs > TAB_STALL_THRESHOLD_MS && showcaseState.tick === lastVisibleTick) {
-      nextShowcase();
-    }
+    nextShowcase();
+    if (!rafId) rafId = requestAnimationFrame(frame);
   });
 
   canvas.addEventListener('webglcontextlost', (e) => {
@@ -109,6 +114,7 @@ function installRecovery(canvas) {
     nextShowcase();
     lastFrameTime = 0;
     tickAccumulator = 0;
+    if (!rafId) rafId = requestAnimationFrame(frame);
   }, false);
 }
 
@@ -133,7 +139,7 @@ function nextShowcase() {
 }
 
 function frame(now) {
-  requestAnimationFrame(frame);
+  rafId = requestAnimationFrame(frame);
   try {
     frameInner(now);
   } catch (err) {

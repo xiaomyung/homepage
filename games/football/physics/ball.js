@@ -141,28 +141,29 @@ function checkBallScoreOrOut(state, preX) {
 
   if (state.graceFrames > 0) return;
 
-  if (ball.crossedLineL && ballFullyCrossedSensor(ball, f.goalSensorLeft, 'left')) {
+  if (ball.crossedLineL && ballFullyPastGoalLine(ball, f.goalLineGateLeft, 'left')) {
     scoreGoal(state, 'left');
     return;
   }
-  if (ball.crossedLineR && ballFullyCrossedSensor(ball, f.goalSensorRight, 'right')) {
+  if (ball.crossedLineR && ballFullyPastGoalLine(ball, f.goalLineGateRight, 'right')) {
     scoreGoal(state, 'right');
   }
 }
 
-// Ball is fully past the slab's back face AND its y/z extents fit
-// through the mouth aperture. Posts and the crossbar are physical
+// Ball's trailing edge fully past the goal line AND its y/z extents
+// fit through the mouth aperture. Posts and the crossbar are physical
 // (sphere-cylinder collision in geometry.js::resolveBallVsGoalBars),
-// so any trajectory that would clip them is bounced before this
-// check sees it — the aperture spans post-to-post and floor-to-
-// crossbar with no inset.
-function ballFullyCrossedSensor(ball, s, side) {
+// so any trajectory that would clip them is bounced before this check
+// sees it — the aperture spans post-to-post and floor-to-crossbar
+// with no inset. Anti-tunneling and false-fire are handled upstream
+// by the per-substep ball.crossedLineL/R flag.
+function ballFullyPastGoalLine(ball, g, side) {
   const fullyPast = side === 'left'
-    ? ball.x + BALL_RADIUS <= s.minX
-    : ball.x - BALL_RADIUS >= s.maxX;
+    ? ball.x + BALL_RADIUS <= g.x
+    : ball.x - BALL_RADIUS >= g.x;
   if (!fullyPast) return false;
-  return ball.y >= s.minY
-      && ball.y <= s.maxY
-      && ball.z >= s.minZ
-      && ball.z + BALL_RADIUS <= s.maxZ;
+  return ball.y >= g.minY
+      && ball.y <= g.maxY
+      && ball.z >= g.minZ
+      && ball.z + BALL_RADIUS <= g.maxZ;
 }

@@ -287,7 +287,10 @@ function stepReposition(p, tx, ty) {
 
 /** Slow stamina regen + walk both players one step toward their
  *  kickoff spots. Returns the spot coordinates so the caller can
- *  pass them to bothPlayersAtKickoff without recomputing. */
+ *  pass them to bothPlayersAtKickoff without recomputing. Returns a
+ *  reused module-scope scratch object — both callers destructure the
+ *  result into scalars immediately, so no caller retains it. */
+const _scratchKickoffSpots = { tx1: 0, tx2: 0, cy: 0 };
 function stepBothPlayersToKickoff(state) {
   const f = state.field;
   const tx1 = kickoffSpawnX(f, 'left');
@@ -297,7 +300,10 @@ function stepBothPlayersToKickoff(state) {
   state.p2.stamina = Math.min(1, state.p2.stamina + STAMINA_REGEN);
   stepReposition(state.p1, tx1, cy);
   stepReposition(state.p2, tx2, cy);
-  return { tx1, tx2, cy };
+  _scratchKickoffSpots.tx1 = tx1;
+  _scratchKickoffSpots.tx2 = tx2;
+  _scratchKickoffSpots.cy = cy;
+  return _scratchKickoffSpots;
 }
 
 function bothPlayersAtKickoff(state, tx1, tx2, cy) {

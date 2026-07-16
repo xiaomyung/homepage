@@ -251,15 +251,18 @@ function testFootContact(state, p) {
 
 /** Stage-boundary timings for a kick: windup ends at `windupMs`,
  *  strike window closes at `strikeEndMs`, full kick ends at
- *  `durationMs`. Shared by `kickLegExtension` and `advanceKick`. */
+ *  `durationMs`. Shared by `kickLegExtension` and `advanceKick`.
+ *  Returns a reused module-scope scratch object — both callers
+ *  destructure the result into scalars immediately, so no caller
+ *  retains it across a subsequent call. */
+const _scratchPhaseTimes = { windupMs: 0, strikeEndMs: 0, durationMs: 0 };
 function kickPhaseTimes(kick) {
   const isAir = kick.kind === 'air';
   const windupMs = isAir ? AIRKICK_PEAK_FRAC * AIRKICK_MS : KICK_WINDUP_MS;
-  return {
-    windupMs,
-    strikeEndMs: windupMs + KICK_STRIKE_WINDOW_MS,
-    durationMs: isAir ? AIRKICK_MS : KICK_DURATION_MS,
-  };
+  _scratchPhaseTimes.windupMs = windupMs;
+  _scratchPhaseTimes.strikeEndMs = windupMs + KICK_STRIKE_WINDOW_MS;
+  _scratchPhaseTimes.durationMs = isAir ? AIRKICK_MS : KICK_DURATION_MS;
+  return _scratchPhaseTimes;
 }
 
 /**

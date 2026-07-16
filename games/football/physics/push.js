@@ -164,10 +164,20 @@ function blendPose(out, a, b, t, armSign) {
   out.lowerYaw   = _lerp(a[3], b[3], t) * armSign;
 }
 
+// Constant [rest, windup, strike] keyframe triples, hoisted to module
+// scope so pushArmPose (per render frame) returns an existing reference
+// instead of allocating a fresh 3-element array. Downstream is
+// read-only: pushArmPose destructures then feeds blendPose, which only
+// reads a[i]/b[i] and writes to `out` — never mutates these arrays or
+// their (tuning.js) elements.
+const JAB_KEYFRAMES      = [JAB_REST,      JAB_WINDUP,      JAB_STRIKE];
+const HOOK_KEYFRAMES     = [HOOK_REST,     HOOK_WINDUP,     HOOK_STRIKE];
+const UPPERCUT_KEYFRAMES = [UPPERCUT_REST, UPPERCUT_WINDUP, UPPERCUT_STRIKE];
+
 function resolvePoseKeyframes(pushType) {
-  if (pushType === 'hook')     return [HOOK_REST,     HOOK_WINDUP,     HOOK_STRIKE];
-  if (pushType === 'uppercut') return [UPPERCUT_REST, UPPERCUT_WINDUP, UPPERCUT_STRIKE];
-  return [JAB_REST, JAB_WINDUP, JAB_STRIKE];
+  if (pushType === 'hook')     return HOOK_KEYFRAMES;
+  if (pushType === 'uppercut') return UPPERCUT_KEYFRAMES;
+  return JAB_KEYFRAMES;
 }
 
 /**

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAnimState, advanceAnimState } from '../animation/state.js';
+import { WALK_AMP_PER_SPEED } from '../animation/tuning.js';
 import { makePlayer } from './helpers/state.mjs';
 
 describe('animation/state', () => {
@@ -92,8 +93,9 @@ describe('animation/state', () => {
         p.x = t * 5;
         snap = advanceAnimState(a, p, t, false, {});
       }
-      // target = min(speed*WALK_AMP_PER_SPEED, 1) = min(5*0.35, 1) = min(1.75, 1) = 1.0 (saturated)
-      assert.ok(snap.amplitude > 0.95, `amplitude=${snap.amplitude} should be near 1.0`);
+      const target = Math.min(5 * WALK_AMP_PER_SPEED, 1);
+      assert.ok(snap.amplitude > target - 0.05,
+        `amplitude=${snap.amplitude} should converge to target=${target}`);
     });
 
     it('phase accumulates based on speed-derived swingRate', () => {
@@ -101,8 +103,8 @@ describe('animation/state', () => {
       const a = createAnimState(0, p);
       for (let t = 1; t <= 10; t++) { p.x = t * 5; advanceAnimState(a, p, t, false, {}); }
       assert.ok(a.phase > 0);
-      // After 10 frames at speed=5, swingRate = 0.2 + 5*0.04 = 0.4
-      // phase ≈ 4.0, then mod 2π ≈ 4.0 - 2π*0 = 4.0 (no wrap yet)
+      // After 10 frames at speed=5, swingRate = SWING_RATE_BASE + 5*SWING_RATE_PER_SPEED,
+      // so phase accumulates well past 1 with no 2π wrap yet.
       assert.ok(a.phase > 1);
     });
 

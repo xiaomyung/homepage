@@ -61,8 +61,8 @@ function diskFor(metrics, mount) {
   }
   const used = size.value - avail.value;
   return {
-    used_gb: Math.round(used / 1e9 * 10) / 10,
-    total_gb: Math.round(size.value / 1e9 * 10) / 10,
+    used_gb: Math.round(used / 2 ** 30 * 10) / 10,
+    total_gb: Math.round(size.value / 2 ** 30 * 10) / 10,
     pct: Math.round(used / size.value * 100),
   };
 }
@@ -123,8 +123,9 @@ async function handleStats(req, res) {
   if ([memTotal, memFree, memBuffers, memCached, memSreclaim, memShmem].every(Boolean)) {
     const used = memTotal.value - memFree.value - memBuffers.value
       - memCached.value - memSreclaim.value + memShmem.value;
-    ramUsedGb = Math.round(used / 1e9 * 10) / 10;
-    ramTotalGb = Math.round(memTotal.value / 1e9 * 10) / 10;
+    // values are GiB (base-1024) despite the _gb key names, kept for frontend compat
+    ramUsedGb = Math.round(used / 2 ** 30 * 10) / 10;
+    ramTotalGb = Math.round(memTotal.value / 2 ** 30 * 10) / 10;
   }
 
   const drives = [];

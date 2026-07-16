@@ -58,7 +58,7 @@ function updateBanner() {
 
 /* ── Stats shim (live infra panel) ── */
 
-const fmtBytes = (gb) => gb == null ? '—' : (gb >= 1000 ? `${(gb / 1000).toFixed(1)}T` : `${gb.toFixed(1)}G`);
+const fmtBytes = (gb) => gb == null ? '—' : (gb >= 1024 ? `${(gb / 1024).toFixed(1)}T` : `${gb.toFixed(1)}G`);
 
 async function loadStats() {
   let s;

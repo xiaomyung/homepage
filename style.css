@@ -32,6 +32,7 @@
   --amber-glow:   rgba(224, 175, 104, 0.20);
   --mono: "Iosevka Term", ui-monospace, "Cascadia Code", "Fira Mono", monospace;
   --grid-gap: 0px;
+  --content-width: 900px;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -59,7 +60,7 @@ body {
 .banner {
   position: relative;
   width: 100%;
-  max-width: 900px;
+  max-width: var(--content-width);
   border: 1px solid var(--rule);
   padding: 0.7rem 0.9rem 0.6rem;
   margin-bottom: 2rem;
@@ -114,7 +115,7 @@ body {
 
 .sections {
   width: 100%;
-  max-width: 900px;
+  max-width: var(--content-width);
   display: flex;
   flex-wrap: wrap;
   column-gap: 1.25rem;
@@ -253,7 +254,7 @@ body {
 .game {
   position: relative;
   width: 100%;
-  max-width: 900px;
+  max-width: var(--content-width);
   border: 1px solid var(--rule);
   padding: 1.5rem 0.9rem 0.9rem;
   margin-top: 2.5rem;

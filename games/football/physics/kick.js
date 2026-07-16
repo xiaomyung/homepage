@@ -20,7 +20,7 @@ import {
   KICK_COCK_FWD_FRAC, KICK_COCK_UP_FRAC,
   MAX_KICK_POWER, MIN_KICK_POWER, MIN_KICK_STAMINA,
   STAMINA_KICK_DRAIN, STAMINA_AIRKICK_DRAIN,
-  FOOT_RADIUS, FOOT_LATERAL_REACH, LATERAL_FOOT_FLEX,
+  FOOT_BALL_CONTACT_R, FOOT_LATERAL_REACH, LATERAL_FOOT_FLEX,
   STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG,
 } from './tuning.js';
 import { clamp, wrapAngle, gaussRandom } from './state.js';
@@ -233,7 +233,7 @@ export function tryStartKick(state, p, dx, dy, dz, power) {
 /**
  * Sphere-vs-sphere foot-ball contact test. The foot is IK'd to the
  * (frozen) footTarget each strike tick; contact fires on first overlap
- * against (FOOT_RADIUS + BALL_RADIUS).
+ * against FOOT_BALL_CONTACT_R (= FOOT_RADIUS + BALL_RADIUS).
  */
 function testFootContact(state, p) {
   const ball = state.ball;
@@ -245,8 +245,7 @@ function testFootContact(state, p) {
   const dx = ballWX - foot.x;
   const dy = ballWY - foot.y;
   const dz = ballWZ - foot.z;
-  const r = FOOT_RADIUS + BALL_RADIUS;
-  return dx * dx + dy * dy + dz * dz <= r * r;
+  return dx * dx + dy * dy + dz * dz <= FOOT_BALL_CONTACT_R * FOOT_BALL_CONTACT_R;
 }
 
 /** Stage-boundary timings for a kick: windup ends at `windupMs`,
@@ -326,7 +325,7 @@ export function kickLegPose(kick, hipWX, hipWY, hipWZ, forwardX, forwardZ, out) 
   const up  = dy;
   const perp = local.perp;
   const legYaw = clamp(perp, -LATERAL_FOOT_FLEX, LATERAL_FOOT_FLEX);
-  const legLen = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG;
+  const legLen = KICK_REACH_MAX;
   const cockFwd = -KICK_COCK_FWD_FRAC * legLen;
   const cockUp  = -KICK_COCK_UP_FRAC  * legLen;
 

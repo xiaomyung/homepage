@@ -146,51 +146,32 @@ export class Renderer {
     // Mesh factories on `this` so pools can grow on demand from the
     // place* helpers (renderer/player-rig.js) when harnesses drive
     // N > 2 players.
-    this._mkUpperArm = () => {
-      const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-      const mesh = new THREE.Mesh(stickmanUpperArmGeom, mat);
-      mesh.visible = false;
-      mesh.frustumCulled = false;
-      this._staticMaterials.push(mat);
-      this.scene.add(mesh);
-      this._stickmanUpperArm.push(mesh);
-    };
-    this._mkLowerArm = () => {
-      const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-      const mesh = new THREE.Mesh(stickmanLowerArmGeom, mat);
-      mesh.visible = false;
-      mesh.frustumCulled = false;
-      this._staticMaterials.push(mat);
-      this.scene.add(mesh);
-      this._stickmanLowerArm.push(mesh);
-    };
-    this._mkLeg = () => {
-      const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-      const mesh = new THREE.Mesh(stickmanLegGeom, mat);
-      mesh.visible = false;
-      mesh.frustumCulled = false;
-      this._staticMaterials.push(mat);
-      this.scene.add(mesh);
-      this._stickmanLeg.push(mesh);
-    };
-    this._mkTorsoOutline = () => {
-      const mat = new THREE.MeshLambertMaterial({
+    this._mkUpperArm = () => this._mkPooledMesh(
+      stickmanUpperArmGeom, new THREE.MeshLambertMaterial({ color: 0xffffff }),
+      this._stickmanUpperArm,
+    );
+    this._mkLowerArm = () => this._mkPooledMesh(
+      stickmanLowerArmGeom, new THREE.MeshLambertMaterial({ color: 0xffffff }),
+      this._stickmanLowerArm,
+    );
+    this._mkLeg = () => this._mkPooledMesh(
+      stickmanLegGeom, new THREE.MeshLambertMaterial({ color: 0xffffff }),
+      this._stickmanLeg,
+    );
+    // Outline drawn AFTER fill (renderOrder 2) so the transparent shell
+    // alpha-blends over the opaque fill below the stamina line.
+    this._mkTorsoOutline = () => this._mkPooledMesh(
+      stickmanTorsoGeom,
+      new THREE.MeshLambertMaterial({
         color: 0xffffff,
         transparent: true,
         opacity: STAMINA_OUTLINE_OPACITY,
         side: THREE.DoubleSide,
         depthWrite: false,
-      });
-      const mesh = new THREE.Mesh(stickmanTorsoGeom, mat);
-      mesh.visible = false;
-      mesh.frustumCulled = false;
-      // Draw outline AFTER fill so the transparent shell alpha-blends
-      // over the opaque fill below the stamina line.
-      mesh.renderOrder = 2;
-      this._staticMaterials.push(mat);
-      this.scene.add(mesh);
-      this._stickmanTorsoOutline.push(mesh);
-    };
+      }),
+      this._stickmanTorsoOutline,
+      2,
+    );
     this._mkTorsoFill = () => {
       // Each fill mesh gets its own clipping plane instance so
       // pooled torsos have independent fill levels.
@@ -208,19 +189,12 @@ export class Renderer {
       this._stickmanTorsoFill.push(mesh);
       this._stickmanTorsoFillPlanes.push(plane);
     };
-    this._mkTorsoDisc = () => {
-      const mat = new THREE.MeshLambertMaterial({
-        color: 0xffffff,
-        side: THREE.DoubleSide,
-      });
-      const mesh = new THREE.Mesh(discGeom, mat);
-      mesh.visible = false;
-      mesh.frustumCulled = false;
-      mesh.renderOrder = 1;
-      this._staticMaterials.push(mat);
-      this.scene.add(mesh);
-      this._stickmanTorsoDisc.push(mesh);
-    };
+    this._mkTorsoDisc = () => this._mkPooledMesh(
+      discGeom,
+      new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide }),
+      this._stickmanTorsoDisc,
+      1,
+    );
     // Initial pool sizes for the common 2-player match case.
     for (let i = 0; i < 4; i++) {
       this._mkTorsoOutline();
@@ -239,15 +213,10 @@ export class Renderer {
     const stickmanSph = new THREE.SphereGeometry(1, 14, 10);
     this._staticGeometries.push(stickmanSph);
     this._stickmanSph = [];
-    this._mkSph = () => {
-      const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-      const mesh = new THREE.Mesh(stickmanSph, mat);
-      mesh.visible = false;
-      mesh.frustumCulled = false;
-      this._staticMaterials.push(mat);
-      this.scene.add(mesh);
-      this._stickmanSph.push(mesh);
-    };
+    this._mkSph = () => this._mkPooledMesh(
+      stickmanSph, new THREE.MeshLambertMaterial({ color: 0xffffff }),
+      this._stickmanSph,
+    );
     for (let i = 0; i < STICKMAN_SPH_POOL; i++) this._mkSph();
     this._stickmanSphCursor = 0;
 
@@ -277,17 +246,11 @@ export class Renderer {
     starGeom.translate(0, 0, -0.2); // centre on extrusion axis
     this._staticGeometries.push(starGeom);
     this._restStars = [];
-    this._mkRestStar = () => {
-      const mat = new THREE.MeshBasicMaterial({
-        color: 0xffffff, transparent: true, opacity: 1,
-      });
-      const mesh = new THREE.Mesh(starGeom, mat);
-      mesh.visible = false;
-      mesh.frustumCulled = false;
-      this._staticMaterials.push(mat);
-      this.scene.add(mesh);
-      this._restStars.push(mesh);
-    };
+    this._mkRestStar = () => this._mkPooledMesh(
+      starGeom,
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 }),
+      this._restStars,
+    );
     this._restStarCursor = 0;
 
     // Smoothed animation state per player (LPF factors, phase
@@ -372,6 +335,21 @@ export class Renderer {
     this._resizeObserver = null;
     this._lastW = 0;
     this._lastH = 0;
+  }
+
+  /** Build one pooled mesh from `geom` + `mat`: hidden, unculled,
+   *  tracked for disposal, added to the scene, and pushed into `pool`.
+   *  The caller supplies the exact material so each pool keeps its own
+   *  settings. Runs only at init / pool-grow — no per-frame cost. */
+  _mkPooledMesh(geom, mat, pool, renderOrder = 0) {
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.visible = false;
+    mesh.frustumCulled = false;
+    mesh.renderOrder = renderOrder;
+    this._staticMaterials.push(mat);
+    this.scene.add(mesh);
+    pool.push(mesh);
+    return mesh;
   }
 
   autoResize() {

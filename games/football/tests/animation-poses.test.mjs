@@ -7,18 +7,8 @@ import assert from 'node:assert/strict';
 import { createAnimState, advanceAnimState } from '../animation/state.js';
 import { composeStickmanPose, createPoseScratch } from '../animation/poses.js';
 import { PLAYER_WIDTH, Z_STRETCH, STICKMAN_LIMB_FULL_H } from '../physics/index.js';
-
-function makePlayer(overrides = {}) {
-  return {
-    x: 0, y: 0, heading: 0, vx: 0, vy: 0, airZ: 0, stamina: 1,
-    kick: { active: false, kind: 'ground', timer: 0, stage: 'windup' },
-    pushTimer: 0, pushArm: 'right', pushType: 'jab',
-    pushTargetX: 0, pushTargetY: 0, pushTargetZ: 0,
-    reactTimer: 0, reactForce: 0, reactDirX: 0, reactDirZ: 0,
-    reactType: 'jab', reactLatSign: 1,
-    ...overrides,
-  };
-}
+import { PUSH_WINDUP_T, PUSH_TOTAL_TICKS } from '../animation/tuning.js';
+import { makePlayer } from './helpers/state.mjs';
 
 function scratches() {
   return {
@@ -200,14 +190,7 @@ describe('animation/poses', () => {
       // Advance far enough that pushProgress hits the STRIKE hop window.
       // With PUSH_TOTAL_TICKS = 63 (1000 ms / 16 ms), STRIKE_T is at
       // 63 * 0.50 = 31 ticks, so run past that.
-      const anim = createAnimState(0, pusher);
-      const pose = createPoseScratch();
-      const s = scratches();
-      let snap;
-      for (let t = 1; t <= 35; t++) {
-        snap = advanceAnimState(anim, pusher, t, false, {});
-        composeStickmanPose(snap, pusher, pose, s.kick, s.push);
-      }
+      const { pose } = runFrame(pusher, { ticks: 35 });
       // Once the hop fires (pushProgress ~ STRIKE_T), baseX > idlePose.baseX.
       assert.ok(pose.baseX > idlePose.baseX,
         `push baseX=${pose.baseX} should hop forward of idle baseX=${idlePose.baseX}`);
@@ -255,7 +238,7 @@ describe('animation/poses', () => {
       // should be BEHIND its thigh by the full flex amount.
       const p = makePlayer({ pushTimer: 800, pushArm: 'right', pushType: 'jab' });
       p.pushTargetX = 30; p.pushTargetY = 30; p.pushTargetZ = 0;
-      const { pose } = runFrame(p, { ticks: 22 });
+      const { pose } = runFrame(p, { ticks: Math.floor(PUSH_WINDUP_T * PUSH_TOTAL_TICKS) });
       // Front leg: thigh = stance + flex, shin = stance - flex → diff = 2*flex.
       const frontDiff = pose.lLegUpper - pose.lLegLower;
       assert.ok(frontDiff > 0.4,
@@ -372,17 +355,10 @@ describe('animation/poses', () => {
   describe('celebrate pose', () => {
     it('celebrate raises both arms (forward-up, same sign)', () => {
       const p = makePlayer();
-      const anim = createAnimState(0, p);
-      const pose = createPoseScratch();
-      const s = scratches();
-      let snap;
       // 60 frames at STICKMAN_SMOOTH=0.15 + CELEB_PHASE_RATE=0.125
       // converges celebrate → ~1 and steps through at least one full
       // cycle so the arms settle into the raised pose.
-      for (let t = 1; t <= 60; t++) {
-        snap = advanceAnimState(anim, p, t, true, {});
-        composeStickmanPose(snap, p, pose, s.kick, s.push);
-      }
+      const { pose, snap } = runFrame(p, { isCelebrating: true, ticks: 60 });
       assert.ok(snap.celebrate > 0.95);
       // Both arms are raised forward-up (positive angle), NOT mirrored.
       // The old jumping-jack had one +π and one −π which described a
@@ -396,13 +372,7 @@ describe('animation/poses', () => {
 
     it('celebrate V-spreads the raised arms via yaw', () => {
       const p = makePlayer();
-      const anim = createAnimState(0, p);
-      const pose = createPoseScratch();
-      const s = scratches();
-      for (let t = 1; t <= 60; t++) {
-        const snap = advanceAnimState(anim, p, t, true, {});
-        composeStickmanPose(snap, p, pose, s.kick, s.push);
-      }
+      const { pose } = runFrame(p, { isCelebrating: true, ticks: 60 });
       // Left yaw outward = negative, right yaw outward = positive.
       assert.ok(pose.lArmUpperYaw < -0.1,
         `lArmUpperYaw=${pose.lArmUpperYaw} should be negative (outward)`);

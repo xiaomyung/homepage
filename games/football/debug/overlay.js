@@ -70,6 +70,12 @@ function makeLineMat(color, opacity) {
   return new THREE.LineBasicMaterial({ color, transparent: true, opacity });
 }
 
+/** Two meshes sharing one geometry + material — the left/right pair
+ *  every per-player collider overlay needs. */
+function meshPair(geom, mat) {
+  return [new THREE.Mesh(geom, mat), new THREE.Mesh(geom, mat)];
+}
+
 /** Rotate a flat geometry (default Y-up plane) to lie on the
  *  ground plane (X-Z). Mutates each mesh's rotation in place. */
 function layFlat(meshes) {
@@ -135,29 +141,29 @@ export class DebugOverlay {
     // exactly SHOULDER_Z.
     const bodyGeom = new THREE.CapsuleGeometry(STICKMAN_TORSO_RADIUS, SHOULDER_Z, 4, 16);
     const bodyMat = makeFillMat(COLOR_BODY, OPACITY_BODY);
-    m.bodyCapsules = [new THREE.Mesh(bodyGeom, bodyMat), new THREE.Mesh(bodyGeom, bodyMat)];
+    m.bodyCapsules = meshPair(bodyGeom, bodyMat);
 
     // Head sphere — separate sphere collider in resolveBallVsBodyCapsule.
     const headGeom = new THREE.SphereGeometry(STICKMAN_HEAD_RADIUS, 18, 12);
     const headMat = makeFillMat(COLOR_HEAD, OPACITY_HEAD);
-    m.headSpheres = [new THREE.Mesh(headGeom, headMat), new THREE.Mesh(headGeom, headMat)];
+    m.headSpheres = meshPair(headGeom, headMat);
 
     // Pair-collision filled disc. Resolver compares 2D X-Z distance
     // only; render as a flat circle on the ground plane.
     const pairGeom = new THREE.CircleGeometry(STICKMAN_HEAD_RADIUS * 2, 32);
     const pairMat = makeFillMat(COLOR_PAIR, OPACITY_PAIR);
-    m.pairDiscs = [new THREE.Mesh(pairGeom, pairMat), new THREE.Mesh(pairGeom, pairMat)];
+    m.pairDiscs = meshPair(pairGeom, pairMat);
     layFlat(m.pairDiscs);
 
     // Kick reach — bounding sphere @ live hipAnchor, radius KICK_REACH_MAX.
     const kickGeom = new THREE.SphereGeometry(KICK_REACH_MAX, 24, 16);
     const kickMat = makeFillMat(COLOR_KICK, OPACITY_KICK_BUDGET);
-    m.kickReachSpheres = [new THREE.Mesh(kickGeom, kickMat), new THREE.Mesh(kickGeom, kickMat)];
+    m.kickReachSpheres = meshPair(kickGeom, kickMat);
 
     // Kick facing cone — flat wedge, 2 * KICK_FACE_TOL angular span.
     const kickConeGeom = new THREE.CircleGeometry(KICK_REACH_MAX, 24, -KICK_FACE_TOL, 2 * KICK_FACE_TOL);
     const kickConeMat = makeFillMat(COLOR_KICK, OPACITY_KICK_CONE);
-    m.kickCones = [new THREE.Mesh(kickConeGeom, kickConeMat), new THREE.Mesh(kickConeGeom, kickConeMat)];
+    m.kickCones = meshPair(kickConeGeom, kickConeMat);
     layFlat(m.kickCones);
 
     // Lateral foot-reach slab — two parallel green lines on the
@@ -176,19 +182,19 @@ export class DebugOverlay {
     // actually compares the ball against.
     const footGeom = new THREE.SphereGeometry(FOOT_RADIUS, 12, 8);
     const footMat = makeFillMat(COLOR_FOOT, OPACITY_FOOT);
-    m.footSpheres = [new THREE.Mesh(footGeom, footMat), new THREE.Mesh(footGeom, footMat)];
+    m.footSpheres = meshPair(footGeom, footMat);
 
     // Push range — axis-aligned plate. Width = 2 * PUSH_RANGE_X,
     // depth = 2 * PUSH_RANGE_Y * Z_STRETCH (physics-y → world-z).
     const pushGeom = new THREE.PlaneGeometry(PUSH_RANGE_X * 2, PUSH_RANGE_Y * 2 * Z_STRETCH);
     const pushMat = makeFillMat(COLOR_PUSH, OPACITY_PUSH_PLATE);
-    m.pushPlates = [new THREE.Mesh(pushGeom, pushMat), new THREE.Mesh(pushGeom, pushMat)];
+    m.pushPlates = meshPair(pushGeom, pushMat);
     layFlat(m.pushPlates);
 
     // Push facing cone.
     const pushConeGeom = new THREE.CircleGeometry(PUSH_RANGE_X, 24, -PUSH_FACE_TOL, 2 * PUSH_FACE_TOL);
     const pushConeMat = makeFillMat(COLOR_PUSH, OPACITY_PUSH_CONE);
-    m.pushCones = [new THREE.Mesh(pushConeGeom, pushConeMat), new THREE.Mesh(pushConeGeom, pushConeMat)];
+    m.pushCones = meshPair(pushConeGeom, pushConeMat);
     layFlat(m.pushCones);
 
     // Field-driven geometry — rebuilt by _drawField when state.field changes.

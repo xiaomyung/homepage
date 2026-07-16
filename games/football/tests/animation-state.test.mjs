@@ -1,15 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAnimState, advanceAnimState } from '../animation/state.js';
-
-function makePlayer(overrides = {}) {
-  return {
-    x: 0, y: 0, heading: 0, vx: 0, vy: 0, airZ: 0, stamina: 1,
-    kick: { active: false, kind: 'ground', timer: 0, stage: 'windup' },
-    pushTimer: 0, pushArm: 'right', pushType: 'jab',
-    ...overrides,
-  };
-}
+import { makePlayer } from './helpers/state.mjs';
 
 describe('animation/state', () => {
   describe('createAnimState', () => {

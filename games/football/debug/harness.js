@@ -13,7 +13,10 @@ import {
   FIELD_WIDTH_REF,
   PLAYER_WIDTH,
   Z_STRETCH,
+  TICK_MS,
+  MAX_TICKS_PER_FRAME,
 } from '../physics/index.js';
+import { computeTicks } from '../util/frame-loop.js';
 
 // ── Lazy mount / unmount registry ──────────────────────────────
 // Each canvas starts as a Renderer-shaped proxy; the real three.js
@@ -199,22 +202,33 @@ export function makeHarness({ id, scenarios, camera, label }) {
     field: scenarioStates[0].field,
   };
 
-  // Animation loop. Global `window.__animSpeed` scales physics
-  // ticks per rAF:
-  //   0  — physics fully paused, scene still renders at last state
-  //   1  — one physics tick per frame (default)
-  //   2  — two physics ticks per frame (double speed)
-  // Fractional values accumulate so e.g. 0.5 runs one tick every 2
-  // frames. Capped at 4 ticks/frame to prevent runaway catch-up if
+  // Animation loop. Global `window.__animSpeed` scales elapsed
+  // wall-clock time, which feeds a fixed 16 ms (TICK_MS) physics
+  // timestep via computeTicks() — the same real-time accumulator
+  // main.js uses, NOT ticks-per-rendered-frame. This keeps physics
+  // speed independent of display refresh rate (60 Hz, 120 Hz, 240 Hz
+  // all advance the same amount of sim time per second):
+  //   0  — elapsed × 0 = 0 ticks; scene still renders at last state
+  //   1  — real-time, ~62.5 ticks/s regardless of monitor Hz
+  //   2  — double real-time
+  // Fractional values scale elapsed time proportionally, so e.g. 0.5
+  // runs ticks at half real-time rather than jittering. Capped at
+  // MAX_TICKS_PER_FRAME ticks/frame to prevent runaway catch-up if
   // the tab was throttled.
-  let stepAccum = 0;
-  function loop() {
+  let lastFrameTime = 0;
+  let tickAccumulator = 0;
+  function loop(now) {
     if (proxy._real) {
       const speed = (typeof globalThis !== 'undefined' && globalThis.__animSpeed != null)
         ? globalThis.__animSpeed : 1;
-      stepAccum += Math.max(0, speed);
-      const runs = Math.min(4, Math.floor(stepAccum));
-      stepAccum -= runs;
+      if (!lastFrameTime) lastFrameTime = now;
+      const result = computeTicks(
+        (now - lastFrameTime) * Math.max(0, speed),
+        tickAccumulator, TICK_MS, MAX_TICKS_PER_FRAME,
+      );
+      lastFrameTime = now;
+      tickAccumulator = result.accumulator;
+      const runs = result.ticks;
 
       for (let r = 0; r < runs; r++) {
         for (let i = 0; i < scenarios.length; i++) {
@@ -263,10 +277,14 @@ export function makeHarness({ id, scenarios, camera, label }) {
 
       try { proxy._real.renderState(composite); }
       catch (e) { console.error(`render error in ${id}:`, e); }
+    } else {
+      // Unmounted — reset so a remount doesn't see a huge elapsed
+      // gap and burn its catch-up budget replaying missed time.
+      lastFrameTime = 0;
     }
     requestAnimationFrame(loop);
   }
-  loop();
+  requestAnimationFrame(loop);
 
   // Expose scenario states on the canvas for Playwright probing.
   canvas._harnessProbe = () => ({

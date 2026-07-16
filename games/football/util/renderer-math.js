@@ -80,7 +80,7 @@ export function easeOut(p) {
 // bend the knee +forward regardless of swing sign (knees hinge one
 // way).
 const STICKMAN_KNEE_FLEX_MAX   = 0.5;
-export const STICKMAN_KNEE_FLEX_SLOPE = 0.4;
+const STICKMAN_KNEE_FLEX_SLOPE = 0.4;
 export function shinAngleFor(thighAngle) {
   const flex = Math.min(STICKMAN_KNEE_FLEX_MAX, STICKMAN_KNEE_FLEX_SLOPE * Math.abs(thighAngle));
   return thighAngle * (1 - flex);

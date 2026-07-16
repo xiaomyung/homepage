@@ -9,7 +9,6 @@ import {
 } from '../../physics/index.js';
 import {
   freshState,
-  action,
 } from '../helpers/state.mjs';
 
 test('1000-tick deterministic trajectory with seeded PRNG', () => {

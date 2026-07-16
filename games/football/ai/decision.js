@@ -39,7 +39,6 @@ const ROLE_SUPPORT = 'support';
 export const ROLES = Object.freeze({
   CONTENDER: ROLE_CONTENDER,
   SUPPORT: ROLE_SUPPORT,
-  NONE: null,
 });
 
 /** Decide which side is contender by raw intercept-tick comparison.

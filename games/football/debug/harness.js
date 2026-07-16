@@ -43,10 +43,6 @@ function _mountProxy(proxy) {
   real.setDebugCam(true);
   for (const [m, args] of proxy._setupQueue) real[m](...args);
   proxy._real = real;
-  Object.defineProperty(proxy, '_animByPlayer', {
-    get() { return real._animByPlayer; },
-    configurable: true,
-  });
   proxy._onLost = (e) => { e.preventDefault(); _unmountProxy(proxy); };
   proxy._onRestored = () => { _mountProxy(proxy); };
   proxy._canvas.addEventListener('webglcontextlost', proxy._onLost, false);
@@ -68,11 +64,6 @@ function _unmountProxy(proxy) {
   try { proxy._real.dispose(); }
   catch (err) { console.warn('renderer dispose failed', err); }
   proxy._real = null;
-  Object.defineProperty(proxy, '_animByPlayer', {
-    value: proxy._placeholderAnim,
-    configurable: true,
-    writable: true,
-  });
   const idx = activeQueue.indexOf(proxy._canvas);
   if (idx >= 0) activeQueue.splice(idx, 1);
   // Swap canvas so the next mount gets a fresh GL context.
@@ -92,14 +83,11 @@ function _unmountProxy(proxy) {
 }
 
 function makeProxy(canvas) {
-  const placeholderAnim = new WeakMap();
   const setupQueue = [];
   const proxy = {
     _canvas: canvas,
     _real: null,
     _setupQueue: setupQueue,
-    _animByPlayer: placeholderAnim,
-    _placeholderAnim: placeholderAnim,
     _onLost: null,
     _onRestored: null,
   };

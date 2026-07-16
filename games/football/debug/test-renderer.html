@@ -50,15 +50,6 @@
     margin: 1.4rem 0 0.4rem;
   }
   .harness-header h2 { margin: 0; }
-  .scenario-select {
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--rule);
-    padding: 0.15rem 0.4rem;
-    font: inherit;
-    font-family: var(--mono);
-    font-size: 0.72rem;
-  }
   /* Global animation-speed slider. Fixed to the right edge, always
      vertically centered in the viewport regardless of scroll. */
   .speed-slider {
@@ -157,7 +148,7 @@ import {
   CONTEXT_CAP,
   PLAYER_WIDTH,
   Z_STRETCH,
-  freshState, lineupX, makeHarness, startLazyMount,
+  lineupX, makeHarness, startLazyMount,
 } from './harness.js';
 import { BALL_RADIUS, tick } from '../physics/index.js';
 

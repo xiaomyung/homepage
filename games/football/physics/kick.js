@@ -307,6 +307,7 @@ export function kickLegPose(kick, hipWX, hipWY, hipWZ, forwardX, forwardZ, out) 
   if (!kick || !kick.active) {
     out.upperAngle = 0;
     out.lowerAngle = 0;
+    out.legYaw = 0;
     return out;
   }
   const tEff = kickLegExtension(kick);

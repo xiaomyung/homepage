@@ -349,13 +349,15 @@ export class Renderer {
     this._particleColorAttr.setUsage(THREE.DynamicDrawUsage);
     this._particleMesh.instanceColor = this._particleColorAttr;
 
-    buildFieldLines(this);
-
-    // Reusable scratch Vector3 objects for the stickman hot path so
-    // per-frame animation doesn't allocate.
+    // Reusable scratch Vector3s for orientBetween — used by the stickman
+    // hot path AND by buildFieldLines' goal bars (addBar orients through
+    // orientBetween), so they must exist BEFORE buildFieldLines runs.
     this._scratchDir = new THREE.Vector3();
     this._scratchAxis = new THREE.Vector3();
     this._scratchUp = new THREE.Vector3(0, 1, 0);
+
+    buildFieldLines(this);
+
     // Scratch [r,g,b] buffer for the per-frame stamina gradient. Reused
     // across both stickmen since each frame's writes are consumed
     // before the next placeTorso call overwrites it.

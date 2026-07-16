@@ -12,6 +12,7 @@
 import * as THREE from 'https://unpkg.com/three@0.164.0/build/three.module.js';
 import { TWO_PI } from './tuning.js';
 import { FIELD_HEIGHT, GOAL_POST_RADIUS, ROOF_FRACTION, Z_STRETCH } from '../physics/index.js';
+import { orientBetween } from './player-rig.js';
 
 export function buildFieldLines(ctx) {
   const w = ctx.fieldWidth;
@@ -125,21 +126,17 @@ function addStatic(ctx, obj, geometry) {
 }
 
 /** Add a thin cylinder spanning from point A to point B, used as a
- *  "thick line" for the goal frame bars. */
+ *  "thick line" for the goal frame bars. Orientation + midpoint
+ *  placement are delegated to player-rig's `orientBetween` (identical
+ *  up×dir quaternion; a uniform-radius cylinder is symmetric under its
+ *  vertical-down 180° flip, so the two agree even in the degenerate
+ *  case). No colour is passed — the bar keeps its own material colour. */
 function addBar(ctx, a, b, material) {
-  const dir = b.clone().sub(a);
-  const length = dir.length();
+  const length = a.distanceTo(b);
   if (length < 1e-6) return;
   const geom = new THREE.CylinderGeometry(GOAL_POST_RADIUS, GOAL_POST_RADIUS, length, 8, 1);
   const mesh = new THREE.Mesh(geom, material);
-  const up = new THREE.Vector3(0, 1, 0);
-  const dirUnit = dir.clone().normalize();
-  const axis = up.clone().cross(dirUnit);
-  const angle = Math.acos(Math.max(-1, Math.min(1, up.dot(dirUnit))));
-  if (axis.length() > 1e-6) {
-    mesh.setRotationFromAxisAngle(axis.normalize(), angle);
-  }
-  mesh.position.set((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+  orientBetween(ctx, mesh, a.x, a.y, a.z, b.x, b.y, b.z);
   addStatic(ctx, mesh, geom);
 }
 

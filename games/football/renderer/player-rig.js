@@ -74,8 +74,10 @@ export function addStickman(ctx, player, color, tick, isCelebrating, isGrieving 
 /** Orient `mesh` so its local +y axis points from A toward B. The mesh
  *  is assumed to be a fixed-length capsule whose geometric length
  *  equals |B - A|; no non-uniform scaling is applied so the
- *  hemispherical caps stay perfectly round. */
-export function orientBetween(ctx, mesh, ax, ay, az, bx, by, bz, color) {
+ *  hemispherical caps stay perfectly round. Optional `color` [r,g,b]
+ *  tints the material; omit it to keep the mesh's existing colour
+ *  (static goal bars pass no colour). */
+export function orientBetween(ctx, mesh, ax, ay, az, bx, by, bz, color = null) {
   mesh.visible = true;
   const dx = bx - ax, dy = by - ay, dz = bz - az;
   const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
@@ -96,7 +98,7 @@ export function orientBetween(ctx, mesh, ax, ay, az, bx, by, bz, color) {
   } else {
     mesh.quaternion.identity();
   }
-  mesh.material.color.setRGB(color[0], color[1], color[2]);
+  if (color) mesh.material.color.setRGB(color[0], color[1], color[2]);
 }
 
 /** Place the next shadow from the player-shadow pool under `player`.
@@ -184,15 +186,32 @@ export function placeTorso(ctx, ax, ay, az, bx, by, bz, color, staminaFrac) {
   }
 }
 
-/** Two-segment arm with an elbow. `upperAngle` is the shoulder swing
- *  angle (0 = straight down, +π/2 = forward, +π = straight up).
- *  `lowerAngle` is the forearm's world-space swing angle (not relative
- *  to the upper arm). Per-segment yaw rotates the forward axis
- *  independently, supporting both hooks (horizontal arc) and
- *  uppercuts (vertical arc) on the same rig. */
-export function placeArm(ctx, px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color, upperYaw = 0, lowerYaw = 0) {
-  const U = STICKMAN_UPPER_ARM;
-  const L = STICKMAN_LOWER_ARM;
+/* ── Pooled-mesh getters for the two 2-bone limbs. Arms draw the upper
+ * and lower segments from two separate pools; legs draw both bones from
+ * one shared pool. Passed by reference into place2Bone so the hot path
+ * never allocates a per-call closure. ── */
+function pullUpperArm(ctx) {
+  while (ctx._stickmanUpperArm.length <= ctx._stickmanUpperArmCursor) ctx._mkUpperArm();
+  return ctx._stickmanUpperArm[ctx._stickmanUpperArmCursor++];
+}
+function pullLowerArm(ctx) {
+  while (ctx._stickmanLowerArm.length <= ctx._stickmanLowerArmCursor) ctx._mkLowerArm();
+  return ctx._stickmanLowerArm[ctx._stickmanLowerArmCursor++];
+}
+function pullLeg(ctx) {
+  while (ctx._stickmanLeg.length <= ctx._stickmanLegCursor) ctx._mkLeg();
+  return ctx._stickmanLeg[ctx._stickmanLegCursor++];
+}
+
+/** Shared two-bone limb placement. Yaw-rotates the forward axis per
+ *  segment, swings the upper bone from the root (px,py,pz) to the mid
+ *  joint and the lower bone from the joint to the end point, orients
+ *  both capsules, and drops a joint sphere at the bend. `upperYaw` /
+ *  `lowerYaw` rotate the two segments' forward axes independently (arms
+ *  pass distinct yaws for hook vs uppercut arcs; legs pass one hip yaw
+ *  for both). `pullUpper` / `pullLower` fetch the next pooled capsule
+ *  for each segment (module-scope fns, so no per-frame allocation). */
+function place2Bone(ctx, px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, upperYaw, lowerYaw, U, L, jointRadius, color, pullUpper, pullLower) {
   const uyc = Math.cos(upperYaw), uys = Math.sin(upperYaw);
   const uFwdX = forwardX * uyc - forwardZ * uys;
   const uFwdZ = forwardX * uys + forwardZ * uyc;
@@ -201,58 +220,49 @@ export function placeArm(ctx, px, py, pz, upperAngle, lowerAngle, forwardX, forw
   const lFwdZ = forwardX * lys + forwardZ * lyc;
 
   const upperSin = Math.sin(upperAngle);
-  const elbowX = px + uFwdX * U * upperSin;
-  const elbowY = py - U * Math.cos(upperAngle);
-  const elbowZ = pz + uFwdZ * U * upperSin;
+  const jointX = px + uFwdX * U * upperSin;
+  const jointY = py - U * Math.cos(upperAngle);
+  const jointZ = pz + uFwdZ * U * upperSin;
   const lowerSin = Math.sin(lowerAngle);
-  const handX = elbowX + lFwdX * L * lowerSin;
-  const handY = elbowY - L * Math.cos(lowerAngle);
-  const handZ = elbowZ + lFwdZ * L * lowerSin;
+  const endX = jointX + lFwdX * L * lowerSin;
+  const endY = jointY - L * Math.cos(lowerAngle);
+  const endZ = jointZ + lFwdZ * L * lowerSin;
 
-  // Upper segment (thicker): shoulder → elbow.
-  while (ctx._stickmanUpperArm.length <= ctx._stickmanUpperArmCursor) ctx._mkUpperArm();
-  const upperMesh = ctx._stickmanUpperArm[ctx._stickmanUpperArmCursor++];
-  orientBetween(ctx, upperMesh, px, py, pz, elbowX, elbowY, elbowZ, color);
-  // Lower segment (thinner): elbow → hand.
-  while (ctx._stickmanLowerArm.length <= ctx._stickmanLowerArmCursor) ctx._mkLowerArm();
-  const lowerMesh = ctx._stickmanLowerArm[ctx._stickmanLowerArmCursor++];
-  orientBetween(ctx, lowerMesh, elbowX, elbowY, elbowZ, handX, handY, handZ, color);
-  // Elbow sphere — joint bump.
-  placeSph(ctx, elbowX, elbowY, elbowZ, STICKMAN_ELBOW_RADIUS, color);
+  // Upper segment: root → joint.
+  const upperMesh = pullUpper(ctx);
+  orientBetween(ctx, upperMesh, px, py, pz, jointX, jointY, jointZ, color);
+  // Lower segment: joint → end.
+  const lowerMesh = pullLower(ctx);
+  orientBetween(ctx, lowerMesh, jointX, jointY, jointZ, endX, endY, endZ, color);
+  // Joint sphere — elbow / kneecap bump.
+  placeSph(ctx, jointX, jointY, jointZ, jointRadius, color);
+}
+
+/** Two-segment arm with an elbow. `upperAngle` is the shoulder swing
+ *  angle (0 = straight down, +π/2 = forward, +π = straight up).
+ *  `lowerAngle` is the forearm's world-space swing angle (not relative
+ *  to the upper arm). Per-segment yaw rotates the forward axis
+ *  independently, supporting both hooks (horizontal arc) and
+ *  uppercuts (vertical arc) on the same rig. */
+export function placeArm(ctx, px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color, upperYaw = 0, lowerYaw = 0) {
+  place2Bone(
+    ctx, px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ,
+    upperYaw, lowerYaw, STICKMAN_UPPER_ARM, STICKMAN_LOWER_ARM,
+    STICKMAN_ELBOW_RADIUS, color, pullUpperArm, pullLowerArm,
+  );
 }
 
 /** Two-segment leg with a knee. `upperAngle` is the hip-swing angle.
  *  `lowerAngle` is the shin's world-space swing (not relative to the
  *  upper leg). `hipYaw` rotates the leg's forward axis around the
  *  vertical hip axis — used by the kick to hook the foot toward an
- *  off-axis ball. */
+ *  off-axis ball. Both bones share the single hip yaw. */
 export function placeLeg(ctx, px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ, color, hipYaw = 0) {
-  const U = STICKMAN_UPPER_LEG;
-  const L = STICKMAN_LOWER_LEG;
-  const yc = Math.cos(hipYaw), ys = Math.sin(hipYaw);
-  const fwdX = forwardX * yc - forwardZ * ys;
-  const fwdZ = forwardX * ys + forwardZ * yc;
-  const upperSin = Math.sin(upperAngle);
-  const kneeX = px + fwdX * U * upperSin;
-  const kneeY = py - U * Math.cos(upperAngle);
-  const kneeZ = pz + fwdZ * U * upperSin;
-  const lowerSin = Math.sin(lowerAngle);
-  const footX = kneeX + fwdX * L * lowerSin;
-  const footY = kneeY - L * Math.cos(lowerAngle);
-  const footZ = kneeZ + fwdZ * L * lowerSin;
-
-  // Upper segment: hip → knee.
-  while (ctx._stickmanLeg.length <= ctx._stickmanLegCursor) ctx._mkLeg();
-  const upperMesh = ctx._stickmanLeg[ctx._stickmanLegCursor++];
-  orientBetween(ctx, upperMesh, px, py, pz, kneeX, kneeY, kneeZ, color);
-
-  // Lower segment: knee → foot.
-  while (ctx._stickmanLeg.length <= ctx._stickmanLegCursor) ctx._mkLeg();
-  const lowerMesh = ctx._stickmanLeg[ctx._stickmanLegCursor++];
-  orientBetween(ctx, lowerMesh, kneeX, kneeY, kneeZ, footX, footY, footZ, color);
-
-  // Kneecap sphere — joint bump.
-  placeSph(ctx, kneeX, kneeY, kneeZ, STICKMAN_KNEE_RADIUS, color);
+  place2Bone(
+    ctx, px, py, pz, upperAngle, lowerAngle, forwardX, forwardZ,
+    hipYaw, hipYaw, STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG,
+    STICKMAN_KNEE_RADIUS, color, pullLeg, pullLeg,
+  );
 }
 
 /** Pull a sphere from the pool and place it at a world point with the

@@ -3,7 +3,7 @@
  *
  * Five spawn paths share a single 120-slot pool: ball-bounce,
  * footstep, push-contact, goal-burst (event-driven), plus the per-
- * frame `_stepParticles` ageing and `_drawParticles` write into the
+ * frame `stepParticles` ageing and `drawParticles` write into the
  * instanced mesh. ctx-style: every function takes the Renderer
  * instance as the first argument so the pool, scratch buffers, and
  * field reference stay on the class.

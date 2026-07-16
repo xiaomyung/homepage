@@ -12,7 +12,7 @@
  */
 
 import {
-  STICKMAN_HEAD_RADIUS, STICKMAN_LIMB_FULL_H,
+  STICKMAN_HEAD_RADIUS,
   STICKMAN_LOWER_ARM, STICKMAN_UPPER_ARM,
   STICKMAN_LOWER_LEG, STICKMAN_UPPER_LEG,
   PLAYER_WIDTH, Z_STRETCH,
@@ -264,18 +264,4 @@ export function placeSph(ctx, cx, cy, cz, radius, color) {
   mesh.position.set(cx, cy, cz);
   mesh.scale.set(radius, radius, radius);
   mesh.material.color.setRGB(color[0], color[1], color[2]);
-}
-
-/** Pull a limb capsule from the given pool and pivot it at (px, py, pz)
- *  with the given swing angle. Used by simpler limbs (legacy single-
- *  segment helpers); 2-bone arms/legs use placeArm/placeLeg above. */
-export function placeLimbFromPool(ctx, pool, cursorKey, px, py, pz, angle, forwardX, forwardZ, color) {
-  if (ctx[cursorKey] >= pool.length) return;
-  const mesh = pool[ctx[cursorKey]++];
-  const L = STICKMAN_LIMB_FULL_H;
-  const sinA = Math.sin(angle);
-  const ex = px + forwardX * L * sinA;
-  const ey = py - L * Math.cos(angle);
-  const ez = pz + forwardZ * L * sinA;
-  orientBetween(ctx, mesh, px, py, pz, ex, ey, ez, color);
 }

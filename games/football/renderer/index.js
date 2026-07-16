@@ -26,26 +26,14 @@ import {
   createField,
 } from '../physics/index.js';
 import { DebugOverlay } from '../debug/overlay.js';
-import { advanceAnimState, createAnimState } from '../animation/state.js';
-import { composeStickmanPose, createPoseScratch } from '../animation/poses.js';
+import { createPoseScratch } from '../animation/poses.js';
 import {
-  spawnBounceParticles, spawnFootstepParticles,
-  spawnPushContactParticles, spawnGoalBurst,
-  maybeFootstepBurst, stepParticles, drawParticles,
-} from './particles.js';
-import {
-  computeDistance, placeCamera, setCameraFocus,
-  initDebugCam, setDebugCam, isDebugCamActive, stepDebugCam,
-  initFollowCam, setFollowCam, isFollowCamActive, stepFollowCam,
+  placeCamera, setCameraFocus,
+  initDebugCam, setDebugCam, isDebugCamActive,
+  initFollowCam, setFollowCam, isFollowCamActive,
 } from './camera.js';
 import { buildFieldLines } from './field.js';
-import {
-  addStickman, orientBetween, placePlayerShadow, placeRestStars,
-  placeTorso, placeArm, placeLeg, placeSph, placeLimbFromPool,
-} from './player-rig.js';
-import {
-  updateNameLabels, makeNameLabel, setLabelText,
-} from './scoreboard.js';
+import { makeNameLabel } from './scoreboard.js';
 import { renderState as renderStateImpl } from './update-loop.js';
 import { initScene, disposeScene } from './scene.js';
 import { initBallPool, initShadowFactory } from './ball.js';
@@ -87,7 +75,8 @@ export class Renderer {
     initBallPool(this);
     initShadowFactory(this);
 
-    // Pool of player shadows, grown on demand via _placePlayerShadow.
+    // Pool of player shadows, grown on demand via placePlayerShadow
+    // (renderer/player-rig.js).
     // Two pre-created for the common case of two players (zero extra
     // cost vs the original _p1Shadow / _p2Shadow).
     this._playerShadows = [this._makeShadow(), this._makeShadow()];
@@ -110,7 +99,7 @@ export class Renderer {
     // uniform on every side (radially AND on the hemispherical caps).
     // The fill's total end-to-end length is therefore
     // `2 * STICKMAN_TORSO_SHELL_THICKNESS` shorter than the outline's,
-    // so `_placeTorso` insets the clipping range accordingly.
+    // so `placeTorso` insets the clipping range accordingly.
     const torsoFillBodyLen = torsoBodyLen;
     // Arms split at the elbow — upper arm is 15% thicker than the
     // forearm. Both halves have body_len = UPPER_ARM − 2·radius so
@@ -130,7 +119,7 @@ export class Renderer {
     const stickmanLegGeom        = new THREE.CapsuleGeometry(STICKMAN_LEG_RADIUS,        halfLegBodyLen,   4, 10);
     this._staticGeometries.push(stickmanTorsoGeom, stickmanTorsoFillGeom, stickmanUpperArmGeom, stickmanLowerArmGeom, stickmanLegGeom);
 
-    // Fill-capsule dimensions drive the disc scaling math in _placeTorso
+    // Fill-capsule dimensions drive the disc scaling math in placeTorso
     // (the disc caps the FILL, not the outline).
     this._fillBodyHalf  = torsoFillBodyLen / 2;
     this._fillCapRadius = STICKMAN_TORSO_FILL_RADIUS;
@@ -154,8 +143,9 @@ export class Renderer {
     discGeom.rotateX(-Math.PI / 2);
     this._staticGeometries.push(discGeom);
 
-    // Mesh factories on `this` so pools can grow on demand from
-    // _place* helpers when harnesses drive N > 2 players.
+    // Mesh factories on `this` so pools can grow on demand from the
+    // place* helpers (renderer/player-rig.js) when harnesses drive
+    // N > 2 players.
     this._mkUpperArm = () => {
       const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
       const mesh = new THREE.Mesh(stickmanUpperArmGeom, mat);
@@ -368,7 +358,7 @@ export class Renderer {
     this._scratchUp = new THREE.Vector3(0, 1, 0);
     // Scratch [r,g,b] buffer for the per-frame stamina gradient. Reused
     // across both stickmen since each frame's writes are consumed
-    // before the next _placeTorso call overwrites it.
+    // before the next placeTorso call overwrites it.
     this._staminaColorBuf = [0, 0, 0];
     // Scratch state for updateStaminaClipPlane + disc orientation. Each
     // call fills `_staminaClipOut` in place; _discLocalY is the static
@@ -412,58 +402,26 @@ export class Renderer {
 
   /* ── Camera (implementations live in renderer/camera.js) ── */
   _placeCamera()                                { return placeCamera(this); }
-  _computeDistance(zoom)                        { return computeDistance(this, zoom); }
   setCameraFocus(tx, ty, tz, dist, pitch, yaw)  { return setCameraFocus(this, tx, ty, tz, dist, pitch, yaw); }
   _initDebugCam()                               { return initDebugCam(this); }
   setDebugCam(on)                               { return setDebugCam(this, on); }
   isDebugCamActive()                            { return isDebugCamActive(this); }
-  _stepDebugCam()                               { return stepDebugCam(this); }
   _initFollowCam()                              { return initFollowCam(this); }
   setFollowCam(on)                              { return setFollowCam(this, on); }
   isFollowCamActive()                           { return isFollowCamActive(this); }
-  _stepFollowCam(state)                         { return stepFollowCam(this, state); }
   setDebugMode(on)                              { return this._debugOverlay.setEnabled(on); }
   isDebugModeActive()                           { return this._debugOverlay.isEnabled(); }
 
   /* ── Static world lives in renderer/field.js (constructor calls
    * buildFieldLines(this) directly — no public method needed). */
 
-  /* ── Stickman ────────────────────────────────────────────
-   *
-   * 3D capsule figure: torso + two arms + two legs as fixed-length
-   * CapsuleGeometry, head + elbows + knees as spheres, all
-   * positioned in world space. Per-frame state advances via
-   * advanceAnimState (animation/state.js); pose layout is built by
-   * composeStickmanPose (animation/poses.js); this method only
-   * places the meshes.
-   *
-   * Limbs swing in a (forward, up) plane where (forwardX, forwardZ)
-   * is the player's heading-derived world-xz unit vector supplied
-   * by the pose layer. Per-segment angle conventions: 0 hangs
-   * straight down, +π/2 points forward, +π points straight up
-   * (celebration).
-   *
-   * Implementations in renderer/player-rig.js + renderer/scoreboard.js.
-   */
-  _addStickman(...args)                       { return addStickman(this, ...args); }
-  _orientBetween(mesh, ax, ay, az, bx, by, bz, color) { return orientBetween(this, mesh, ax, ay, az, bx, by, bz, color); }
-  _placePlayerShadow(player)                  { return placePlayerShadow(this, player); }
-  _placeRestStars(pose, snap)                 { return placeRestStars(this, pose, snap); }
-  _placeTorso(ax, ay, az, bx, by, bz, c, sf)  { return placeTorso(this, ax, ay, az, bx, by, bz, c, sf); }
-  _placeArm(...args)                          { return placeArm(this, ...args); }
-  _placeLeg(...args)                          { return placeLeg(this, ...args); }
-  _placeSph(cx, cy, cz, r, color)             { return placeSph(this, cx, cy, cz, r, color); }
-  _placeLimbFromPool(...args)                 { return placeLimbFromPool(this, ...args); }
-  _updateNameLabels(state, players)           { return updateNameLabels(this, state, players); }
+  /* ── Name label (constructor calls this twice for p1/p2; the
+   * per-frame update path — updateNameLabels/setLabelText — is
+   * called directly from renderer/update-loop.js, not through this
+   * class). Implementation lives in renderer/scoreboard.js. */
   _makeNameLabel()                            { return makeNameLabel(this); }
-  _setLabelText(label, name)                  { return setLabelText(label, name); }
 
-  // Particle subsystem — implementations live in renderer/particles.js.
-  _spawnBounceParticles(ev)            { return spawnBounceParticles(this, ev); }
-  _maybeFootstepBurst(player, snap)    { return maybeFootstepBurst(this, player, snap); }
-  _spawnFootstepParticles(player, sp)  { return spawnFootstepParticles(this, player, sp); }
-  _spawnPushContactParticles(ev)       { return spawnPushContactParticles(this, ev); }
-  _spawnGoalBurst(scorer)              { return spawnGoalBurst(this, scorer); }
-  _stepParticles()                     { return stepParticles(this); }
-  _drawParticles()                     { return drawParticles(this); }
+  /* ── Stickman placement lives in renderer/player-rig.js and the
+   * particle subsystem in renderer/particles.js. Both are called
+   * directly from renderer/update-loop.js, not through this class. */
 }

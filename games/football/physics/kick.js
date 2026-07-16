@@ -36,7 +36,7 @@ import { hipAnchor, projectHipLocal } from './geometry.js';
  * `targetUp` is the vertical offset (− = below hip).
  *
  * Outputs `upperAngle` and `lowerAngle` in the same convention the
- * renderer's `_placeLeg` consumes: measured from straight-down,
+ * renderer's `placeLeg` consumes: measured from straight-down,
  * increasing toward the forward axis. The solver always picks the
  * "knee forward" branch (knee bends in front of the hip→foot line).
  *
@@ -293,7 +293,7 @@ export function kickLegExtension(kick) {
 
 /**
  * Two-bone IK pose for the kicking leg, as (upperAngle, lowerAngle)
- * joint angles the renderer's _placeLeg consumes directly. Three-key
+ * joint angles the renderer's placeLeg consumes directly. Three-key
  * cock-back foot path: rest → cock → target.
  *
  * Strike holds at target. Recovery does NOT pass through cock (that

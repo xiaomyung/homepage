@@ -95,8 +95,8 @@ export function createPoseScratch() {
     rArmUpper: 0, rArmLower: 0, rArmUpperYaw: 0, rArmLowerYaw: 0,
     lLegUpper: 0, lLegLower: 0,
     rLegUpper: 0, rLegLower: 0,
-    // Heading unit vector pass-through for the renderer's _placeArm
-    // / _placeLeg (they orient capsules along forward/up).
+    // Heading unit vector pass-through for the renderer's placeArm
+    // / placeLeg (they orient capsules along forward/up).
     forwardX: 0, forwardZ: 0,
   };
 }

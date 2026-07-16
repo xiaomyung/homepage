@@ -50,11 +50,11 @@ Works as-is with any Node 22+ install (Homebrew, nvm, fnm, distro package).
 | `games/football/main.js` | Football game entry point — only file at the root |
 | `games/football/physics/` | Headless physics engine split by concept: `tuning · state · core (tick) · player · push · kick · ball · collisions · geometry · match-flow · index` (public barrel) |
 | `games/football/renderer/` | Three.js 3D renderer split by concept: `tuning · materials · scene · field · player-rig · ball · scoreboard · particles · camera · update-loop · index` (Renderer class) |
-| `games/football/animation/` | Pure animation pipeline: `tuning · state · poses · curves · sampler · keyframes · channels` |
+| `games/football/animation/` | Pure animation pipeline: `tuning · state · poses · curves` |
 | `games/football/ai/` | Deterministic controller pipeline: `tuning · perception → decision → action → controller` (public seam: `decide(state, side) → Float64Array(9)`); `names` (seeded footballer picker) |
 | `games/football/ui/index.js` | Scoreboard (role dots, names, score, timer), camera + debug toggles |
 | `games/football/util/` | Shared utilities: `frame-loop · renderer-math · rng-salts` |
-| `games/football/debug/` | Translucent debug-collider overlay + tuning, test-renderer harness, Playwright screenshot scripts |
+| `games/football/debug/` | Translucent debug-collider overlay + tuning, test-renderer harness, Playwright screenshot script |
 | `games/football/tests/` | Node test runner tests — physics (split into `tests/physics/<topic>.test.mjs`), ai/*, animation/*, frame-loop, stamina; shared `helpers/state.mjs` fixture |
 | `fonts/` | Vendored Iosevka Term woff2 (regular + medium) |
 
@@ -132,7 +132,7 @@ Not every service deserves a card — the dashboard is a launcher, not a status 
 
 ## Deploying to a homelab
 
-On a fresh clone with Node 22+, Caddy, and systemd available:
+`stats/homepage-stats.service` hardcodes `/srv/services/web/homepage/stats` as its `WorkingDirectory`/`ExecStart` path, so the repo must be cloned to exactly `/srv/services/web/homepage`. With Node 22+, Caddy, and systemd available there:
 
 ```sh
 ./setup.sh

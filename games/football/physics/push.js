@@ -18,7 +18,6 @@ import {
   PUSH_VEL_THRESHOLD_SQ, MIN_PUSH_STAMINA,
   PUSH_ANIM_MS, PUSH_FACE_TOL,
   PUSH_WINDUP_FRAC, PUSH_STRIKE_FRAC,
-  PUSH_WINDUP_PEAK_TEFF, WINDUP_LOAD_FRAC,
   PUSH_STAMINA_COST, PUSH_VICTIM_STAMINA_MULT,
   PUSH_STRIKE_TIMER, PUSH_UPPERCUT_RANGE, PUSH_HOOK_RANGE,
   JAB_REST, JAB_WINDUP, JAB_STRIKE,
@@ -39,8 +38,10 @@ function pushStillInRange(state, pusher, victim) {
   return facingToward(pusher, victimCenterX, victimZ, PUSH_FACE_TOL);
 }
 
-/** Local copy of `player.js::facingToward` so push.js stays a leaf
- *  of state.js + tuning.js. */
+/** Private facing-cone check, kept local (not imported from player.js):
+ *  the physics DAG is player → push (player.js imports
+ *  advancePush/tryPush from here), so push.js importing from
+ *  player.js would create a cycle. */
 function facingToward(p, worldX, worldZ, tol) {
   const centerX = p.x + PLAYER_WIDTH / 2;
   const centerZ = (p.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
@@ -148,29 +149,6 @@ export function applyPushPhysics(p) {
   } else {
     p.pushVy = 0;
   }
-}
-
-/**
- * Stage-aware arm extension for a punch. Pure function of `pushTimer`
- * in ms. Windup is split into a load (0 → PUSH_WINDUP_PEAK_TEFF over
- * the first WINDUP_LOAD_FRAC of windup) and a rise (PEAK_TEFF → 1
- * over the rest), so the fist reaches full extension by the
- * windup→strike boundary instead of jumping there.
- */
-export function pushArmExtension(pushTimer) {
-  if (pushTimer <= 0) return 0;
-  const t = 1 - (pushTimer / PUSH_ANIM_MS);
-  const loadEndT = PUSH_WINDUP_FRAC * WINDUP_LOAD_FRAC;
-  if (t < loadEndT) {
-    return PUSH_WINDUP_PEAK_TEFF * (t / loadEndT);
-  }
-  if (t < PUSH_WINDUP_FRAC) {
-    const riseT = (t - loadEndT) / (PUSH_WINDUP_FRAC - loadEndT);
-    return PUSH_WINDUP_PEAK_TEFF + (1 - PUSH_WINDUP_PEAK_TEFF) * riseT;
-  }
-  if (t < PUSH_STRIKE_FRAC) return 1;
-  const recT = (t - PUSH_STRIKE_FRAC) / Math.max(1e-6, 1 - PUSH_STRIKE_FRAC);
-  return Math.max(0, 1 - recT);
 }
 
 const _lerp = (a, b, t) => a + (b - a) * t;

@@ -18,9 +18,6 @@ export const TICK_MS         = 16;
 // Cap per-frame tick replay so a paused-tab catch-up doesn't freeze
 // the game on resume.
 export const MAX_TICKS_PER_FRAME    = 5;
-// If state.tick stalls this long the page is treated as stalled and
-// the showcase forces a fresh match on resume.
-export const TAB_STALL_THRESHOLD_MS = 2000;
 // If the tab was hidden longer than this, the showcase reloads the
 // whole page on resume (clean slate for true-idle returns instead of
 // resuming with an arbitrarily-old scene graph + state).
@@ -40,7 +37,7 @@ export const BOUNCE_RETAIN      = 0.5;   // matches WALL_BOUNCE_DAMP so goal hit
 export const AIR_BOUNCE         = 0.6;
 export const WALL_BOUNCE_DAMP   = 0.5;
 export const BOUNCE_VZ_MIN      = 1.5;
-export const BALL_VEL_CUTOFF    = 0.1;
+const BALL_VEL_CUTOFF           = 0.1;
 export const BALL_VEL_CUTOFF_SQ = BALL_VEL_CUTOFF * BALL_VEL_CUTOFF;
 export const BALL_RADIUS        = 4.224;
 export const RESPAWN_DROP_Z     = 60;
@@ -51,7 +48,7 @@ export const BOUNCE_EVENT_MIN   = 0.3; // suppress particle events below this ma
 export const MAX_PLAYER_SPEED   = 10;
 export const PLAYER_ACCEL_TICKS = 20;
 export const PLAYER_ACCEL       = MAX_PLAYER_SPEED / PLAYER_ACCEL_TICKS;
-export const MOVE_THRESHOLD     = 0.1;
+const MOVE_THRESHOLD            = 0.1;
 export const MOVE_THRESHOLD_SQ  = MOVE_THRESHOLD * MOVE_THRESHOLD;
 export const STARTING_GAP       = 40;
 export const PLAYER_WIDTH       = 18;
@@ -184,14 +181,13 @@ export const PUSH_RANGE_Y            = PLAYER_HEIGHT + PUSH_RANGE_SLACK_Y;
 export const MAX_PUSH_FORCE          = 100;
 export const PUSH_DAMP               = 0.88;
 export const PUSH_APPLY              = 0.12;
-export const PUSH_VEL_THRESHOLD      = 0.5;
+const PUSH_VEL_THRESHOLD             = 0.5;
 export const PUSH_VEL_THRESHOLD_SQ   = PUSH_VEL_THRESHOLD * PUSH_VEL_THRESHOLD;
 export const MIN_PUSH_STAMINA        = 0.2;
 export const PUSH_ANIM_MS            = 1000;
 export const REACT_ANIM_MS           = 550;
 export const PUSH_WINDUP_FRAC        = 0.35; // windup → strike transition
 export const PUSH_STRIKE_FRAC        = 0.50; // strike → recover transition
-export const PUSH_WINDUP_PEAK_TEFF   = 0.7;
 export const PUSH_STAMINA_COST       = 0.15;
 export const PUSH_VICTIM_STAMINA_MULT = 3;
 export const PUSH_UPPERCUT_RANGE     = 14;

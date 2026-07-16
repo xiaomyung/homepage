@@ -26,7 +26,7 @@ const _scratchClosest = { x: 0, y: 0, z: 0 };
 
 /** Goal box AABB for one side, in physics units. Returns the
  *  precomputed object stored on the field at creation time. */
-export function goalBox(f, side) {
+function goalBox(f, side) {
   return side === 'left' ? f.goalBoxLeft : f.goalBoxRight;
 }
 

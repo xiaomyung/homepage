@@ -38,8 +38,6 @@ export function createField(width = FIELD_WIDTH_REF) {
     goalMouthYMax: GOAL_MOUTH_Y_MAX,
     goalMouthZMax: GOAL_MOUTH_Z,
     midX: width / 2,
-    aiLimitL: goalLLeft + GOAL_LINE_INSET,
-    aiLimitR: goalRRight - GOAL_LINE_INSET,
   };
   // Precomputed goal-box AABBs — read on every physics tick for
   // player + ball collisions. Freezing them here kills ~6 object

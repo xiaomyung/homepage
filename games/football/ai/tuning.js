@@ -4,8 +4,6 @@
 
 import { TICK_MS, PLAYER_WIDTH, BALL_RADIUS } from '../physics/index.js';
 
-export const ACTION_STRIDE_TICKS = 1;
-
 export const MATCH_DURATION_MS = 60000;
 export const MAX_SHOWCASE_TICKS = 8000;
 

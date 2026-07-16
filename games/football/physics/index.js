@@ -26,8 +26,5 @@ export {
 } from './kick.js';
 
 export {
-  pushArmExtension,
   pushArmPose,
 } from './push.js';
-
-export { facingToward } from './player.js';

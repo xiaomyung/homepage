@@ -20,11 +20,11 @@ import {
   KICK_COCK_FWD_FRAC, KICK_COCK_UP_FRAC,
   MAX_KICK_POWER, MIN_KICK_POWER, MIN_KICK_STAMINA,
   STAMINA_KICK_DRAIN, STAMINA_AIRKICK_DRAIN,
-  FOOT_RADIUS, FOOT_LATERAL_REACH, LATERAL_FOOT_FLEX,
+  FOOT_BALL_CONTACT_R, FOOT_LATERAL_REACH, LATERAL_FOOT_FLEX,
   STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG,
 } from './tuning.js';
 import { clamp, wrapAngle, gaussRandom } from './state.js';
-import { hipAnchor, projectHipLocal } from './geometry.js';
+import { hipAnchor, projectHipLocal, projectDeltaLocal } from './geometry.js';
 
 /* ── Two-bone IK (planar, hip → knee → foot) ────────────────── */
 
@@ -36,7 +36,7 @@ import { hipAnchor, projectHipLocal } from './geometry.js';
  * `targetUp` is the vertical offset (− = below hip).
  *
  * Outputs `upperAngle` and `lowerAngle` in the same convention the
- * renderer's `_placeLeg` consumes: measured from straight-down,
+ * renderer's `placeLeg` consumes: measured from straight-down,
  * increasing toward the forward axis. The solver always picks the
  * "knee forward" branch (knee bends in front of the hip→foot line).
  *
@@ -233,7 +233,7 @@ export function tryStartKick(state, p, dx, dy, dz, power) {
 /**
  * Sphere-vs-sphere foot-ball contact test. The foot is IK'd to the
  * (frozen) footTarget each strike tick; contact fires on first overlap
- * against (FOOT_RADIUS + BALL_RADIUS).
+ * against FOOT_BALL_CONTACT_R (= FOOT_RADIUS + BALL_RADIUS).
  */
 function testFootContact(state, p) {
   const ball = state.ball;
@@ -245,21 +245,23 @@ function testFootContact(state, p) {
   const dx = ballWX - foot.x;
   const dy = ballWY - foot.y;
   const dz = ballWZ - foot.z;
-  const r = FOOT_RADIUS + BALL_RADIUS;
-  return dx * dx + dy * dy + dz * dz <= r * r;
+  return dx * dx + dy * dy + dz * dz <= FOOT_BALL_CONTACT_R * FOOT_BALL_CONTACT_R;
 }
 
 /** Stage-boundary timings for a kick: windup ends at `windupMs`,
  *  strike window closes at `strikeEndMs`, full kick ends at
- *  `durationMs`. Shared by `kickLegExtension` and `advanceKick`. */
+ *  `durationMs`. Shared by `kickLegExtension` and `advanceKick`.
+ *  Returns a reused module-scope scratch object — both callers
+ *  destructure the result into scalars immediately, so no caller
+ *  retains it across a subsequent call. */
+const _scratchPhaseTimes = { windupMs: 0, strikeEndMs: 0, durationMs: 0 };
 function kickPhaseTimes(kick) {
   const isAir = kick.kind === 'air';
   const windupMs = isAir ? AIRKICK_PEAK_FRAC * AIRKICK_MS : KICK_WINDUP_MS;
-  return {
-    windupMs,
-    strikeEndMs: windupMs + KICK_STRIKE_WINDOW_MS,
-    durationMs: isAir ? AIRKICK_MS : KICK_DURATION_MS,
-  };
+  _scratchPhaseTimes.windupMs = windupMs;
+  _scratchPhaseTimes.strikeEndMs = windupMs + KICK_STRIKE_WINDOW_MS;
+  _scratchPhaseTimes.durationMs = isAir ? AIRKICK_MS : KICK_DURATION_MS;
+  return _scratchPhaseTimes;
 }
 
 /**
@@ -291,9 +293,12 @@ export function kickLegExtension(kick) {
   return Math.max(0, 1 - recT);
 }
 
+/** Scratch for kickLegPose's heading-local foot-delta projection. */
+const _scratchDelta = { fwd: 0, perp: 0 };
+
 /**
  * Two-bone IK pose for the kicking leg, as (upperAngle, lowerAngle)
- * joint angles the renderer's _placeLeg consumes directly. Three-key
+ * joint angles the renderer's placeLeg consumes directly. Three-key
  * cock-back foot path: rest → cock → target.
  *
  * Strike holds at target. Recovery does NOT pass through cock (that
@@ -304,17 +309,23 @@ export function kickLegPose(kick, hipWX, hipWY, hipWZ, forwardX, forwardZ, out) 
   if (!kick || !kick.active) {
     out.upperAngle = 0;
     out.lowerAngle = 0;
+    out.legYaw = 0;
     return out;
   }
   const tEff = kickLegExtension(kick);
   const dx = kick.footTargetX - hipWX;
   const dy = kick.footTargetY - hipWY;
   const dz = kick.footTargetZ - hipWZ;
-  const fwd = dx * forwardX + dz * forwardZ;
+  // forwardX/forwardZ are the caller's smoothed animHeading vector
+  // (from animation/poses.js), NOT p.heading — so this must project
+  // via the raw primitive, not projectHipLocal (which derives forward
+  // from a heading angle).
+  const local = projectDeltaLocal(dx, dz, forwardX, forwardZ, _scratchDelta);
+  const fwd = local.fwd;
   const up  = dy;
-  const perp = -dx * forwardZ + dz * forwardX;
+  const perp = local.perp;
   const legYaw = clamp(perp, -LATERAL_FOOT_FLEX, LATERAL_FOOT_FLEX);
-  const legLen = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG;
+  const legLen = KICK_REACH_MAX;
   const cockFwd = -KICK_COCK_FWD_FRAC * legLen;
   const cockUp  = -KICK_COCK_UP_FRAC  * legLen;
 

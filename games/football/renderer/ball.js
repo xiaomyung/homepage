@@ -36,7 +36,7 @@ export function initBallPool(ctx) {
   });
   ctx._staticGeometries.push(ballGeom);
   ctx._staticMaterials.push(ballMat);
-  if (ballMat.map) ctx._staticMaterials.push(ballMat.map);
+  ctx._staticMaterials.push(ballMat.map);
   // Pooled meshes so harnesses can render N physics worlds. Each mesh's
   // quaternion accumulates spin independently across frames — callers
   // must pass balls in stable order for rotation continuity.

@@ -39,7 +39,7 @@ async function proxy(req, res, target) {
   const url = target + req.url;
   const headers = { 'content-type': req.headers['content-type'] || 'application/json' };
   const body = ['POST', 'PUT', 'PATCH'].includes(req.method)
-    ? await new Promise((ok) => { const c = []; req.on('data', (d) => c.push(d)); req.on('end', () => ok(Buffer.concat(c))); })
+    ? await new Promise((resolve) => { const c = []; req.on('data', (d) => c.push(d)); req.on('end', () => resolve(Buffer.concat(c))); })
     : undefined;
   try {
     const r = await fetch(url, { method: req.method, headers, body });

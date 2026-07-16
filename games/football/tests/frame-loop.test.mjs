@@ -9,6 +9,11 @@ import assert from 'node:assert/strict';
 import { computeTicks } from '../util/frame-loop.js';
 import { TICK_MS, MAX_TICKS_PER_FRAME as MAX } from '../physics/index.js';
 
+// computeTicks returns a reused scratch object (valid only until the
+// next call) — tests that need two results alive at once must copy
+// the scalars out immediately rather than holding onto both objects,
+// since a later call mutates the earlier result in place.
+
 test('60 Hz display produces 1 tick per frame on average', () => {
   // rAF fires every ~16.67 ms on a 60 Hz display.
   const frameMs = 1000 / 60;
@@ -88,9 +93,11 @@ test('tab-switch regression: no speedup after resuming from a long pause', () =>
   let total = 0;
 
   const resume = computeTicks(60_000, acc, TICK_MS, MAX);
-  total += resume.ticks;
-  acc = resume.accumulator;
-  assert.equal(resume.ticks, MAX);
+  const resumeTicks = resume.ticks;
+  const resumeAccumulator = resume.accumulator;
+  total += resumeTicks;
+  acc = resumeAccumulator;
+  assert.equal(resumeTicks, MAX);
   assert.equal(acc, 0);
 
   for (let i = 0; i < 60; i++) {
@@ -106,10 +113,12 @@ test('tab-switch regression: no speedup after resuming from a long pause', () =>
 test('accumulator carries fractional time across frames', () => {
   // Single sub-tick frame → 0 ticks, full elapsed stays in accumulator.
   const r1 = computeTicks(10, 0, TICK_MS, MAX);
-  assert.equal(r1.ticks, 0);
-  assert.equal(r1.accumulator, 10);
+  const r1Ticks = r1.ticks;
+  const r1Accumulator = r1.accumulator;
+  assert.equal(r1Ticks, 0);
+  assert.equal(r1Accumulator, 10);
   // Next frame brings total to 20 → 1 tick, 4 ms carried.
-  const r2 = computeTicks(10, r1.accumulator, TICK_MS, MAX);
+  const r2 = computeTicks(10, r1Accumulator, TICK_MS, MAX);
   assert.equal(r2.ticks, 1);
   assert.equal(r2.accumulator, 4);
 });

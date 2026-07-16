@@ -8,11 +8,16 @@ import {
   BALL_RADIUS,
   Z_STRETCH,
   TICK_MS,
+  STALL_TICKS,
   GRAVITY,
   KICK_WINDUP_MS,
   KICK_DURATION_MS,
+  WINDUP_LOAD_FRAC,
+  KICK_COCK_FWD_FRAC,
+  KICK_COCK_UP_FRAC,
   STICKMAN_UPPER_LEG,
   STICKMAN_LOWER_LEG,
+  STICKMAN_HIP_OFX,
   solve2BoneIK,
   KICK_STRIKE_WINDOW_MS,
   kickLegExtension,
@@ -125,14 +130,10 @@ test('kick state machine fires impact at windup end and clears at duration end',
 });
 
 test('stall reset fires after 10 wall-clock seconds of no kicks (headless + visual)', () => {
-  // The stall timeout was unified at 10 s for both modes so showcase
-  // replays (which run with state.headless=true for scoreGoal
-  // determinism) reset on the same schedule as the worker that
-  // produced the recording. Before the visual never saw a reset
-  // before tick 625, the worker at tick 187 — the mismatch showed up
-  // as jarring mid-replay teleports every 3 s.
-  const stallTicks = Math.ceil(10000 / TICK_MS);
-
+  // Same STALL_TICKS threshold drives both branches of the tick() stall
+  // check: headless mode does a full kickoff reset, visual mode does a
+  // softer ball-only respawn (see core.js). Assert both fire on the
+  // same 10s schedule.
   for (const headless of [true, false]) {
     const state = freshState();
     state.headless = headless;
@@ -142,7 +143,7 @@ test('stall reset fires after 10 wall-clock seconds of no kicks (headless + visu
     state.p2.x = 700;
 
     // Just before the timeout: no reset yet.
-    for (let i = 0; i <= stallTicks - 2; i++) tick(state, NOOP, NOOP);
+    for (let i = 0; i <= STALL_TICKS - 2; i++) tick(state, NOOP, NOOP);
     assert.ok(
       Math.abs(state.ball.x - (f.midX + 200)) < 5,
       `${headless ? 'headless' : 'visual'}: stall fired too early; ball.x=${state.ball.x}`,
@@ -299,8 +300,9 @@ test('canKickReach matches tryStartKick commit exactly (no ghost outputs)', () =
   // Scan a grid of ball positions around a stationary player. For
   // each position, canKickReach(margin=0) must match whether
   // applyAction/tryStartKick actually commits a kick. If the two
-  // ever disagree the teacher emits kick actions the physics
-  // silently rejects (or vice versa) — kills imitation signal.
+  // ever disagree, the AI controller (which calls canKickReach in
+  // ai/perception.js to decide selfHasKickReach) thinks it can kick
+  // when physics silently rejects it, or vice versa.
   const disagreements = [];
   for (let dx = -25; dx <= 25; dx += 5) {
     for (let dy = -6; dy <= 6; dy += 2) {
@@ -440,7 +442,7 @@ test('kick foot-contact is symmetric on both hip sides', () => {
   // non-dominant side.
   for (const sign of [-1, +1]) {
     const state = kickBenchState();
-    state.ball.y = state.p1.y + sign * (2.64 / Z_STRETCH);
+    state.ball.y = state.p1.y + sign * (STICKMAN_HIP_OFX / Z_STRETCH);
     tick(state, kickAction(1, 0, 0, 1), NOOP);
     assert.ok(state.p1.kick.active, `ball on sign=${sign} side still reachable`);
     const strikeOnsetTicks = Math.ceil(KICK_WINDUP_MS / TICK_MS) + 1;
@@ -470,7 +472,7 @@ test('kickLegExtension walks 0 → 0.7 → 1 → 0 smoothly across stages (groun
   // then rise (0.7 → 1 of windup) ramps 0.7 → 1. Strike holds at 1,
   // recovery decays to 0. No discontinuity at the windup/strike boundary.
   const k = { active: true, kind: 'ground', timer: 0 };
-  const loadEnd = KICK_WINDUP_MS * 0.7;
+  const loadEnd = KICK_WINDUP_MS * WINDUP_LOAD_FRAC;
   assert.equal(kickLegExtension(k), 0, 'timer 0 → extension 0');
   k.timer = loadEnd / 2;
   assert.ok(Math.abs(kickLegExtension(k) - 0.35) < 1e-9, 'mid-load → 0.35');
@@ -495,7 +497,7 @@ test('kickLegExtension walks 0 → 0.7 → 1 → 0 smoothly across stages (groun
 test('kickLegExtension uses AIRKICK_PEAK_FRAC * AIRKICK_MS as windup for air', () => {
   const k = { active: true, kind: 'air', timer: 0 };
   const windupMs = AIRKICK_PEAK_FRAC * AIRKICK_MS;
-  const loadEnd  = windupMs * 0.7;
+  const loadEnd  = windupMs * WINDUP_LOAD_FRAC;
   k.timer = loadEnd / 2;
   assert.ok(Math.abs(kickLegExtension(k) - 0.35) < 1e-9, 'air mid-load → 0.35');
   k.timer = windupMs + KICK_STRIKE_WINDOW_MS / 2;
@@ -550,8 +552,8 @@ test('kickLegPose at windup load-end (tEff=0.7) reaches the cock-back keyframe',
   const kneeDown = U * Math.cos(out.upperAngle);
   const footFwd  = kneeFwd + L * Math.sin(out.lowerAngle);
   const footDown = kneeDown + L * Math.cos(out.lowerAngle);
-  const expectedFwd  = -0.20 * legLen;  // 20% behind hip
-  const expectedDown =  0.50 * legLen;  // 50% below hip
+  const expectedFwd  = -KICK_COCK_FWD_FRAC * legLen;  // 20% behind hip
+  const expectedDown =  KICK_COCK_UP_FRAC * legLen;  // 50% below hip
   assert.ok(Math.abs(footFwd - expectedFwd) < 1e-3, `foot fwd expected ${expectedFwd}, got ${footFwd}`);
   assert.ok(Math.abs(footDown - expectedDown) < 1e-3, `foot down expected ${expectedDown}, got ${footDown}`);
 });

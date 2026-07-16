@@ -6,7 +6,8 @@
  * together at low camera angles. Texture is rebuilt only when the
  * label text changes.
  *
- * ctx-style: every function takes the Renderer instance.
+ * ctx-style: updateNameLabels and makeNameLabel take the Renderer
+ * instance as ctx; setLabelText operates on a label object alone.
  */
 
 import * as THREE from 'https://unpkg.com/three@0.164.0/build/three.module.js';
@@ -62,8 +63,8 @@ export function updateNameLabels(ctx, state, players) {
 }
 
 /** Allocate one billboarded name-label sprite. Returns
- *  { mesh, canvas, ctx, texture, mat, name }. Texture is updated lazily
- *  via setLabelText. */
+ *  { mesh, canvas, canvasCtx, texture, mat, name }. Texture is updated
+ *  lazily via setLabelText. */
 export function makeNameLabel(ctx) {
   const canvas = document.createElement('canvas');
   canvas.width = NAME_LABEL_CANVAS_W;
@@ -84,21 +85,21 @@ export function makeNameLabel(ctx) {
   mesh.scale.set(NAME_LABEL_SCALE_X, NAME_LABEL_SCALE_Y, 1);
   mesh.renderOrder = 999;
   ctx.scene.add(mesh);
-  return { mesh, canvas, ctx: canvasCtx, texture, mat, name: '' };
+  return { mesh, canvas, canvasCtx, texture, mat, name: '' };
 }
 
 export function setLabelText(label, rawName) {
   const name = (rawName || '').toLowerCase();
   if (label.name === name) return;
   label.name = name;
-  const { ctx, canvas, texture } = label;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.font = NAME_LABEL_FONT;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = NAME_LABEL_TEXT_COLOR;
-  ctx.shadowColor = NAME_LABEL_SHADOW_COLOR;
-  ctx.shadowBlur = NAME_LABEL_SHADOW_BLUR;
-  ctx.fillText(name, canvas.width / 2, canvas.height / 2);
+  const { canvasCtx, canvas, texture } = label;
+  canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+  canvasCtx.font = NAME_LABEL_FONT;
+  canvasCtx.textAlign = 'center';
+  canvasCtx.textBaseline = 'middle';
+  canvasCtx.fillStyle = NAME_LABEL_TEXT_COLOR;
+  canvasCtx.shadowColor = NAME_LABEL_SHADOW_COLOR;
+  canvasCtx.shadowBlur = NAME_LABEL_SHADOW_BLUR;
+  canvasCtx.fillText(name, canvas.width / 2, canvas.height / 2);
   texture.needsUpdate = true;
 }

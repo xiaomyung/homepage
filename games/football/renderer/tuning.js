@@ -44,7 +44,7 @@ export const STAMINA_OUTLINE_OPACITY = 0.55;
 
 /* ── Math helpers ────────────────────────────────────────────── */
 
-export const TWO_PI = Math.PI * 2;
+export { TWO_PI } from '../animation/tuning.js';
 
 /* ── Particles ───────────────────────────────────────────────── */
 
@@ -176,16 +176,18 @@ export const REST_STAR_COUNTER_SPIN  = -1.6;  // counter-spin rad/sec
 // `parseInt(hh, 16) / 255` per channel — kept eager here so renderer
 // modules can import these as plain values without going through
 // rgb() at module-init time.
-const _hexToRgb = (hex) => {
+
+/** Convert '#rrggbb' to a normalized [r, g, b] triple. */
+export function rgb(hex) {
   const h = hex.replace('#', '');
   return [
     parseInt(h.slice(0, 2), 16) / 255,
     parseInt(h.slice(2, 4), 16) / 255,
     parseInt(h.slice(4, 6), 16) / 255,
   ];
-};
+}
 
-export const COLOR_TEXT     = _hexToRgb('#d0d0d0');
-export const COLOR_STAM_LOW = _hexToRgb('#f7768e');
-export const COLOR_STAM_MID = _hexToRgb('#e0af68');
-export const COLOR_STAM_HIGH = _hexToRgb('#9ece6a');
+export const COLOR_TEXT     = rgb('#d0d0d0');
+export const COLOR_STAM_LOW = rgb('#f7768e');
+export const COLOR_STAM_MID = rgb('#e0af68');
+export const COLOR_STAM_HIGH = rgb('#9ece6a');

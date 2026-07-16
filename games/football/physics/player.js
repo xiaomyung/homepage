@@ -11,8 +11,8 @@
 
 import {
   Z_STRETCH,
-  PLAYER_HEIGHT, PLAYER_WIDTH, FIELD_HEIGHT,
-  PLAYER_TURN_RATE, PLAYER_ACCEL, PLAYER_ACCEL_TICKS,
+  PLAYER_HEIGHT, FIELD_HEIGHT,
+  PLAYER_TURN_RATE, PLAYER_ACCEL,
   MAX_PLAYER_SPEED, MIN_SPEED_STAMINA,
   MOVE_INPUT_DEAD_ZONE, MOVE_THRESHOLD_SQ,
   STAMINA_REGEN, STAMINA_EXHAUSTION_THRESHOLD,
@@ -75,16 +75,6 @@ function turnToward(current, target) {
   if (diff >  PLAYER_TURN_RATE) return current + PLAYER_TURN_RATE;
   if (diff < -PLAYER_TURN_RATE) return current - PLAYER_TURN_RATE;
   return target;
-}
-
-/** True iff `p`'s heading points at world-space (worldX, worldZ) within
- *  `tol` radians. Note: bubble-centric — kick reach uses its own
- *  shoulder-line cone via `canKickReach`. */
-export function facingToward(p, worldX, worldZ, tol) {
-  const centerX = p.x + PLAYER_WIDTH / 2;
-  const centerZ = (p.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
-  const want = Math.atan2(worldZ - centerZ, worldX - centerX);
-  return Math.abs(wrapAngle(want - p.heading)) < tol;
 }
 
 /* ── Movement ─────────────────────────────────────────────────── */

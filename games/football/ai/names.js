@@ -1,6 +1,7 @@
 /**
- * Player name pool. Each match picks two distinct names from a seeded
- * shuffle; main.js consumes via state.matchNames.
+ * Player name pool. Each match picks two distinct names via a seeded
+ * draw (two independent seeded indices, not a shuffle); main.js
+ * consumes via state.matchNames.
  */
 
 export const SURNAMES = [

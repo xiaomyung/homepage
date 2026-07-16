@@ -18,15 +18,12 @@ export const TICK_MS         = 16;
 // Cap per-frame tick replay so a paused-tab catch-up doesn't freeze
 // the game on resume.
 export const MAX_TICKS_PER_FRAME    = 5;
-// If state.tick stalls this long the page is treated as stalled and
-// the showcase forces a fresh match on resume.
-export const TAB_STALL_THRESHOLD_MS = 2000;
 // If the tab was hidden longer than this, the showcase reloads the
 // whole page on resume (clean slate for true-idle returns instead of
 // resuming with an arbitrarily-old scene graph + state).
 export const TAB_HIDDEN_RELOAD_MS = 600000;
 
-// Stale-segment detection: 10s of no-kick activity in headless training
+// Stale-segment detection: 10s of no-kick activity in headless mode
 // triggers a kickoff reset (see core.js / match-flow.js). 1s before
 // reset, the user-visible game does a softer ball-only respawn.
 export const STALL_TICKS = Math.ceil(10000 / TICK_MS);
@@ -40,7 +37,7 @@ export const BOUNCE_RETAIN      = 0.5;   // matches WALL_BOUNCE_DAMP so goal hit
 export const AIR_BOUNCE         = 0.6;
 export const WALL_BOUNCE_DAMP   = 0.5;
 export const BOUNCE_VZ_MIN      = 1.5;
-export const BALL_VEL_CUTOFF    = 0.1;
+const BALL_VEL_CUTOFF           = 0.1;
 export const BALL_VEL_CUTOFF_SQ = BALL_VEL_CUTOFF * BALL_VEL_CUTOFF;
 export const BALL_RADIUS        = 4.224;
 export const RESPAWN_DROP_Z     = 60;
@@ -51,7 +48,7 @@ export const BOUNCE_EVENT_MIN   = 0.3; // suppress particle events below this ma
 export const MAX_PLAYER_SPEED   = 10;
 export const PLAYER_ACCEL_TICKS = 20;
 export const PLAYER_ACCEL       = MAX_PLAYER_SPEED / PLAYER_ACCEL_TICKS;
-export const MOVE_THRESHOLD     = 0.1;
+const MOVE_THRESHOLD            = 0.1;
 export const MOVE_THRESHOLD_SQ  = MOVE_THRESHOLD * MOVE_THRESHOLD;
 export const STARTING_GAP       = 40;
 export const PLAYER_WIDTH       = 18;
@@ -61,7 +58,7 @@ export const MOVE_INPUT_DEAD_ZONE = 0.02;
 
 // Vertical depth scaling: a player whose footprint advances 1 world unit
 // in y moves Z_STRETCH world units along the visible Z axis. Imported by
-// renderer.js — single source of truth.
+// renderer/ — single source of truth.
 export const Z_STRETCH = 4.7;
 
 export const PLAYER_TURN_TICKS = 20;            // ticks to complete a 180° turn
@@ -120,7 +117,7 @@ export const PLAYER_PAIR_STUCK_IMPULSE     = 1.5;
 // World-space anchors derived from the rig.
 export const HIP_BASE_Z      = STICKMAN_LIMB_FULL_H;                                // 20
 export const SHOULDER_Z      = HIP_BASE_Z + STICKMAN_SHOULDER_OFY;                   // 40.24
-export const HEAD_CENTER_Z   = SHOULDER_Z + STICKMAN_HEAD_GAP_Y + STICKMAN_HEAD_RADIUS; // 47.11
+export const HEAD_CENTER_Z   = SHOULDER_Z + STICKMAN_HEAD_GAP_Y + STICKMAN_HEAD_RADIUS; // 45.29
 export const KICK_REACH_MAX  = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG;              // 20
 
 /* ── Goal frame ───────────────────────────────────────────────── */
@@ -184,14 +181,13 @@ export const PUSH_RANGE_Y            = PLAYER_HEIGHT + PUSH_RANGE_SLACK_Y;
 export const MAX_PUSH_FORCE          = 100;
 export const PUSH_DAMP               = 0.88;
 export const PUSH_APPLY              = 0.12;
-export const PUSH_VEL_THRESHOLD      = 0.5;
+const PUSH_VEL_THRESHOLD             = 0.5;
 export const PUSH_VEL_THRESHOLD_SQ   = PUSH_VEL_THRESHOLD * PUSH_VEL_THRESHOLD;
 export const MIN_PUSH_STAMINA        = 0.2;
 export const PUSH_ANIM_MS            = 1000;
 export const REACT_ANIM_MS           = 550;
 export const PUSH_WINDUP_FRAC        = 0.35; // windup → strike transition
 export const PUSH_STRIKE_FRAC        = 0.50; // strike → recover transition
-export const PUSH_WINDUP_PEAK_TEFF   = 0.7;
 export const PUSH_STAMINA_COST       = 0.15;
 export const PUSH_VICTIM_STAMINA_MULT = 3;
 export const PUSH_UPPERCUT_RANGE     = 14;

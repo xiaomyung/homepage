@@ -131,11 +131,7 @@ function checkBallScoreOrOut(state, preX) {
     return;
   }
 
-  // Track inward goal-line crossings — set when the ball center
-  // transitions from the field side to the goal side this substep,
-  // cleared on resetBall. Goals only fire when the corresponding
-  // flag is set, so a ball that fell into a goal box from behind
-  // (past the back wall, never crossed the line) cannot score.
+  // Inward crossing detection (see docstring above).
   if (preX > f.goalLineL && ball.x <= f.goalLineL) ball.crossedLineL = true;
   if (preX < f.goalLineR && ball.x >= f.goalLineR) ball.crossedLineR = true;
 

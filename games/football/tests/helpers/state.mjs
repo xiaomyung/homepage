@@ -3,11 +3,13 @@
  *
  * `freshState(seed, opts)` builds a fresh game state with a seeded
  * RNG. Pass `withAI: true` to also initialise `aiRoleState` and
- * `aiPersonality` (matches the live nextShowcase() contract); decision
- * and controller tests use it, perception and action tests don't.
+ * `aiPersonality` (matches the live nextShowcase() contract);
+ * controller tests use it. decision tests build their own fixture
+ * with a fixed neutral personality instead (see decision.test.mjs);
+ * perception and action tests don't need either.
  *
  * `action({...})` builds a 9-slot action vector by name with the
- * neutral defaults that physics.js expects (gates at -1).
+ * neutral defaults that applyAction (physics/player.js) expects (gates at -1).
  */
 
 import {
@@ -67,6 +69,22 @@ export const moveAction = (mx, my = 0) => action({ moveX: mx, moveY: my });
 export const pushAction = (power = 1) => action({ pushGate: 1, pushPower: power });
 export const kickAction = (dx = 1, dy = 0, dz = 0, power = 1) =>
   action({ kickGate: 1, kickDx: dx, kickDy: dy, kickDz: dz, kickPower: power });
+
+/** Minimal player fixture for the animation pose/state suites. This is
+ *  the superset of the fields both suites read — the state suite only
+ *  touches the movement/kick/push fields, so the extra react/target
+ *  fields are inert there. */
+export function makePlayer(overrides = {}) {
+  return {
+    x: 0, y: 0, heading: 0, vx: 0, vy: 0, airZ: 0, stamina: 1,
+    kick: { active: false, kind: 'ground', timer: 0, stage: 'windup' },
+    pushTimer: 0, pushArm: 'right', pushType: 'jab',
+    pushTargetX: 0, pushTargetY: 0, pushTargetZ: 0,
+    reactTimer: 0, reactForce: 0, reactDirX: 0, reactDirZ: 0,
+    reactType: 'jab', reactLatSign: 1,
+    ...overrides,
+  };
+}
 
 /* ── Shared physics-test helpers (formerly inline in physics.test.mjs) ── */
 

@@ -1,8 +1,8 @@
 // Animation tuning constants. Single source of truth for every
 // numeric coefficient consumed by animation/state.js, animation/curves.js
-// and animation/poses.js — and through them, by renderer.js. Pure
+// and animation/poses.js — and through them, by renderer/. Pure
 // module — no DOM, no three.js. World-model constants come from
-// physics.js as needed.
+// physics/index.js as needed.
 
 import {
   AIRKICK_PEAK_FRAC,
@@ -158,12 +158,6 @@ export const MATCH_LOSE_ARM_UPPER = -0.25;    // arms slightly behind vertical
 /* ── LPF tail dead-zone (poses.js) ───────────────────────────── */
 
 export const LPF_DEAD_ZONE = 0.001;
-
-/* ── Sampler (sampler.js) ────────────────────────────────────── */
-
-// Step-ease threshold: <1 lets `u===1` still hit the high branch
-// across float-rounding paths.
-export const STEP_EASE_THRESHOLD = 0.9999;
 
 /* ── REPOSITION heading LPF override (state.js) ──────────────── */
 

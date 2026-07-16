@@ -20,8 +20,14 @@ import {
 } from './tuning.js';
 import { FIELD_HEIGHT, Z_STRETCH } from '../physics/index.js';
 
+// Field-centre world-z. Derived from physics tuning constants, so it lives
+// here as a module const rather than as a new tunable in tuning.js.
+const MID_Z = (FIELD_HEIGHT * Z_STRETCH) / 2;
+
 /** Compute the camera height / back-offset for a zoom multiplier
- *  `zoom` (1.0 = default showcase fit). Smaller zoom = closer. */
+ *  `zoom` (1.0 = default showcase fit). Smaller zoom = closer.
+ *  Returns a shared scratch object — valid only until the next call. */
+const _distScratch = { distance: 0, height: 0, backOff: 0 };
 export function computeDistance(ctx, zoom) {
   const aspect = ctx.camera.aspect || 4;
   const halfFovVert = (CAMERA_FOV / 2) * Math.PI / 180;
@@ -29,11 +35,10 @@ export function computeDistance(ctx, zoom) {
   const halfFieldWidth = (ctx.fieldWidth / 2) * HORIZONTAL_MARGIN;
   const distance = (halfFieldWidth / tanHalfHoriz) * zoom;
   const tiltRad = CAMERA_TILT_DEG * Math.PI / 180;
-  return {
-    distance,
-    height: distance * Math.cos(tiltRad),
-    backOff: distance * Math.sin(tiltRad),
-  };
+  _distScratch.distance = distance;
+  _distScratch.height = distance * Math.cos(tiltRad);
+  _distScratch.backOff = distance * Math.sin(tiltRad);
+  return _distScratch;
 }
 
 export function placeCamera(ctx) {
@@ -42,11 +47,10 @@ export function placeCamera(ctx) {
   if (ctx._debugCam && ctx._debugCam.active) return;
   if (ctx._followCam && ctx._followCam.active) return;
   const midX = ctx.fieldWidth / 2;
-  const midZ = (FIELD_HEIGHT * Z_STRETCH) / 2;
 
   const { height, backOff } = computeDistance(ctx, 1.0);
-  ctx.camera.position.set(midX, height, midZ + backOff);
-  ctx.camera.lookAt(midX, 0, midZ);
+  ctx.camera.position.set(midX, height, MID_Z + backOff);
+  ctx.camera.lookAt(midX, 0, MID_Z);
   ctx.camera.updateProjectionMatrix();
 }
 
@@ -71,17 +75,12 @@ export function setCameraFocus(ctx, targetX, targetY, targetZ, distance, pitchDe
  * R resets to default pose. */
 export function initDebugCam(ctx) {
   const midX = ctx.fieldWidth / 2;
-  const midZ = (FIELD_HEIGHT * Z_STRETCH) / 2;
-  const aspect = ctx.camera.aspect || 4;
-  const halfFovVert = (CAMERA_FOV / 2) * Math.PI / 180;
-  const tanHalfHoriz = Math.tan(halfFovVert) * aspect;
-  const halfFieldWidth = (ctx.fieldWidth / 2) * HORIZONTAL_MARGIN;
-  const distance = halfFieldWidth / tanHalfHoriz;
+  const { distance } = computeDistance(ctx, 1);
   const defaultPitch = (90 - CAMERA_TILT_DEG) * Math.PI / 180;
   ctx._debugCam = {
     active: false,
-    target: new THREE.Vector3(midX, 0, midZ),
-    defaultTarget: new THREE.Vector3(midX, 0, midZ),
+    target: new THREE.Vector3(midX, 0, MID_Z),
+    defaultTarget: new THREE.Vector3(midX, 0, MID_Z),
     distance, defaultDistance: distance,
     yaw: 0, defaultYaw: 0,
     pitch: defaultPitch, defaultPitch,
@@ -226,6 +225,18 @@ export function isFollowCamActive(ctx) {
   return !!(ctx._followCam && ctx._followCam.active);
 }
 
+/** One critically-damped spring step. Writes the new position/velocity into
+ *  `_springOut` (valid until the next call); math order is
+ *  accel → newVel → newPos. */
+const _springOut = { pos: 0, vel: 0 };
+function stepSpring(pos, vel, target, k, c) {
+  const accel = (target - pos) * k - vel * c;
+  const newVel = vel + accel;
+  const newPos = pos + newVel;
+  _springOut.pos = newPos;
+  _springOut.vel = newVel;
+}
+
 export function stepFollowCam(ctx, state) {
   const fc = ctx._followCam;
   const ballX = state.ball.x;
@@ -268,24 +279,22 @@ export function stepFollowCam(ctx, state) {
     fc.initialized = true;
   }
 
-  const stepSpring = (pos, vel, target, k, c) => {
-    const accel = (target - pos) * k - vel * c;
-    const newVel = vel + accel;
-    return [pos + newVel, newVel];
-  };
-  [fc.zoom, fc.zoomV] = stepSpring(fc.zoom, fc.zoomV, zoomTarget, FOLLOW_K_ZOOM, C_ZOOM);
+  stepSpring(fc.zoom, fc.zoomV, zoomTarget, FOLLOW_K_ZOOM, C_ZOOM);
+  fc.zoom = _springOut.pos; fc.zoomV = _springOut.vel;
 
   // Compute distance from the *smoothed* zoom so the whole view pans
   // out together.
   const { distance, height, backOff } = computeDistance(ctx, fc.zoom);
   const leadTarget = sideForLead * distance * FOLLOW_LEAD_FRACTION;
 
-  [fc.posX,  fc.velX]  = stepSpring(fc.posX,  fc.velX,  posTarget,  FOLLOW_K_POS,  C_POS);
-  [fc.lookX, fc.lookVX] = stepSpring(fc.lookX, fc.lookVX, lookTarget, FOLLOW_K_LOOK, C_LOOK);
-  [fc.leadX, fc.leadVX] = stepSpring(fc.leadX, fc.leadVX, leadTarget, FOLLOW_K_LEAD, C_LEAD);
+  stepSpring(fc.posX, fc.velX, posTarget, FOLLOW_K_POS, C_POS);
+  fc.posX = _springOut.pos; fc.velX = _springOut.vel;
+  stepSpring(fc.lookX, fc.lookVX, lookTarget, FOLLOW_K_LOOK, C_LOOK);
+  fc.lookX = _springOut.pos; fc.lookVX = _springOut.vel;
+  stepSpring(fc.leadX, fc.leadVX, leadTarget, FOLLOW_K_LEAD, C_LEAD);
+  fc.leadX = _springOut.pos; fc.leadVX = _springOut.vel;
 
-  const midZ = (FIELD_HEIGHT * Z_STRETCH) / 2;
-  ctx.camera.position.set(fc.posX, height, midZ + backOff);
-  ctx.camera.lookAt(fc.lookX + fc.leadX, 0, midZ);
+  ctx.camera.position.set(fc.posX, height, MID_Z + backOff);
+  ctx.camera.lookAt(fc.lookX + fc.leadX, 0, MID_Z);
   ctx.camera.updateProjectionMatrix();
 }

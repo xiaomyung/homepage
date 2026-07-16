@@ -34,23 +34,25 @@ function parseProm(text) {
   return out;
 }
 
+/** True when metric `m` has the given name and every requested label
+ *  matches. Shared predicate for findOne / findAll. */
+function matchMetric(m, name, labels) {
+  if (m.name !== name) return false;
+  if (labels && !Object.entries(labels).every(([k, v]) => m.labels[k] === v)) return false;
+  return true;
+}
+
 function findOne(metrics, name, labels) {
-  for (const m of metrics) {
-    if (m.name !== name) continue;
-    if (labels && !Object.entries(labels).every(([k, v]) => m.labels[k] === v)) continue;
-    return m;
-  }
-  return null;
+  return metrics.find((m) => matchMetric(m, name, labels)) ?? null;
 }
 
 function findAll(metrics, name, labels) {
-  const out = [];
-  for (const m of metrics) {
-    if (m.name !== name) continue;
-    if (labels && !Object.entries(labels).every(([k, v]) => m.labels[k] === v)) continue;
-    out.push(m);
-  }
-  return out;
+  return metrics.filter((m) => matchMetric(m, name, labels));
+}
+
+/** Bytes → GiB (base-1024), rounded to 1 decimal. */
+function gib(bytes) {
+  return Math.round(bytes / 2 ** 30 * 10) / 10;
 }
 
 function diskFor(metrics, mount) {
@@ -61,8 +63,8 @@ function diskFor(metrics, mount) {
   }
   const used = size.value - avail.value;
   return {
-    used_gb: Math.round(used / 1e9 * 10) / 10,
-    total_gb: Math.round(size.value / 1e9 * 10) / 10,
+    used_gb: gib(used),
+    total_gb: gib(size.value),
     pct: Math.round(used / size.value * 100),
   };
 }
@@ -72,15 +74,15 @@ function dockerCounts() {
     // execFile is used (not exec) — no shell interpolation, safe against injection.
     execFile('docker', ['ps', '-a', '--format', '{{.Status}}'], { timeout: 5000 }, (err, stdout) => {
       if (err) {
-        resolve({ total: null, running: null, unhealthy: null, stopped: null, other: null });
+        resolve({ running: null, unhealthy: null, stopped: null, other: null });
         return;
       }
       const statuses = stdout.split('\n').filter((s) => s.trim());
-      const running = statuses.filter((s) => s.startsWith('Up')).length;
       const unhealthy = statuses.filter((s) => s.includes('unhealthy')).length;
+      const running = statuses.filter((s) => s.startsWith('Up') && !s.includes('unhealthy')).length;
       const stopped = statuses.filter((s) => s.startsWith('Exited')).length;
-      const other = statuses.length - running - stopped;
-      resolve({ total: statuses.length, running, unhealthy, stopped, other });
+      const other = statuses.length - running - unhealthy - stopped;
+      resolve({ running, unhealthy, stopped, other });
     });
   });
 }
@@ -123,8 +125,9 @@ async function handleStats(req, res) {
   if ([memTotal, memFree, memBuffers, memCached, memSreclaim, memShmem].every(Boolean)) {
     const used = memTotal.value - memFree.value - memBuffers.value
       - memCached.value - memSreclaim.value + memShmem.value;
-    ramUsedGb = Math.round(used / 1e9 * 10) / 10;
-    ramTotalGb = Math.round(memTotal.value / 1e9 * 10) / 10;
+    // values are GiB (base-1024) despite the _gb key names, kept for frontend compat
+    ramUsedGb = gib(used);
+    ramTotalGb = gib(memTotal.value);
   }
 
   const drives = [];

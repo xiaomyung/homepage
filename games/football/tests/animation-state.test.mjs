@@ -1,15 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAnimState, advanceAnimState } from '../animation/state.js';
-
-function makePlayer(overrides = {}) {
-  return {
-    x: 0, y: 0, heading: 0, vx: 0, vy: 0, airZ: 0, stamina: 1,
-    kick: { active: false, kind: 'ground', timer: 0, stage: 'windup' },
-    pushTimer: 0, pushArm: 'right', pushType: 'jab',
-    ...overrides,
-  };
-}
+import { WALK_AMP_PER_SPEED } from '../animation/tuning.js';
+import { makePlayer } from './helpers/state.mjs';
 
 describe('animation/state', () => {
   describe('createAnimState', () => {
@@ -60,7 +53,7 @@ describe('animation/state', () => {
       assert.equal(snap.state, 'WALK');
     });
 
-    it('resyncs lastTick when tick rewinds (showcase replay / new match)', () => {
+    it('resyncs lastTick when tick rewinds (new match in the showcase loop)', () => {
       // Regression: in the showcase loop, players are reused across
       // matches via `resetStateInPlace`. Each new match restarts at
       // tick=0 while `anim.lastTick` still holds the previous match's
@@ -91,7 +84,7 @@ describe('animation/state', () => {
       assert.equal(snap.state, 'WALK');
     });
 
-    it('amplitude LPF converges toward speed*0.2', () => {
+    it('amplitude LPF converges toward speed*WALK_AMP_PER_SPEED', () => {
       const p = makePlayer({ x: 0 });
       const a = createAnimState(0, p);
       let snap;
@@ -100,8 +93,9 @@ describe('animation/state', () => {
         p.x = t * 5;
         snap = advanceAnimState(a, p, t, false, {});
       }
-      // target = min(speed*0.2, 1) = min(1.0, 1) = 1.0 (saturated)
-      assert.ok(snap.amplitude > 0.95, `amplitude=${snap.amplitude} should be near 1.0`);
+      const target = Math.min(5 * WALK_AMP_PER_SPEED, 1);
+      assert.ok(snap.amplitude > target - 0.05,
+        `amplitude=${snap.amplitude} should converge to target=${target}`);
     });
 
     it('phase accumulates based on speed-derived swingRate', () => {
@@ -109,8 +103,8 @@ describe('animation/state', () => {
       const a = createAnimState(0, p);
       for (let t = 1; t <= 10; t++) { p.x = t * 5; advanceAnimState(a, p, t, false, {}); }
       assert.ok(a.phase > 0);
-      // After 10 frames at speed=5, swingRate = 0.2 + 5*0.04 = 0.4
-      // phase ≈ 4.0, then mod 2π ≈ 4.0 - 2π*0 = 4.0 (no wrap yet)
+      // After 10 frames at speed=5, swingRate = SWING_RATE_BASE + 5*SWING_RATE_PER_SPEED,
+      // so phase accumulates well past 1 with no 2π wrap yet.
       assert.ok(a.phase > 1);
     });
 

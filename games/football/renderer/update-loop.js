@@ -25,11 +25,24 @@ import {
 } from './particles.js';
 import { stepDebugCam, stepFollowCam } from './camera.js';
 
+// Fallback arrays for the single-match live path (state.players /
+// state.balls are only set by the debug-harness composite). Reused
+// across frames instead of allocated fresh each call; refilled
+// unconditionally on every renderState() so a stale ref can never
+// leak through even if state.p1/p2/ball ever change identity
+// (resetStateInPlace mutates in place today, but this doesn't rely
+// on that). Contents are consumed synchronously within the call —
+// nothing retains the array itself past this function.
+const _fallbackPlayers = [null, null];
+const _fallbackBalls = [null];
+
 export function renderState(ctx, state) {
   const tick = state.tick || 0;
   // state.players is the N-player path (any array of player-shaped
   // objects). Falls back to [p1, p2] for the single-match case.
-  const players = state.players || [state.p1, state.p2];
+  _fallbackPlayers[0] = state.p1;
+  _fallbackPlayers[1] = state.p2;
+  const players = state.players || _fallbackPlayers;
   const prevTorsoCursor    = ctx._stickmanTorsoCursor;
   const prevUpperArmCursor = ctx._stickmanUpperArmCursor;
   const prevLowerArmCursor = ctx._stickmanLowerArmCursor;
@@ -50,9 +63,9 @@ export function renderState(ctx, state) {
   ctx._restStarCursor         = 0;
 
   // Per-player dead-ball flags. The harness may stamp each player with
-  // `_scenePauseState` + `_sceneGoalScorer` + `_sceneWinner` so multiple
-  // independent scenarios inside one composite render frame don't
-  // cross-contaminate. Live-match path falls back to global state.
+  // `_scenePauseState` + `_sceneGoalScorer` + `_sceneWinner` + `_sceneSide`
+  // so multiple independent scenarios inside one composite render frame
+  // don't cross-contaminate. Live-match path falls back to global state.
   for (let i = 0; i < players.length; i++) {
     const p = players[i];
     const pPause      = p._scenePauseState !== undefined ? p._scenePauseState : state.pauseState;
@@ -116,7 +129,8 @@ export function renderState(ctx, state) {
   // state.balls[] is the N-ball path for harnesses/testing.
   // Each ball mesh accumulates its own spin quaternion across frames,
   // so callers must pass balls in stable index order.
-  const balls = state.balls || [state.ball];
+  _fallbackBalls[0] = state.ball;
+  const balls = state.balls || _fallbackBalls;
   const R = BALL_VISUAL_RADIUS;
   for (let bi = 0; bi < balls.length; bi++) {
     const b = balls[bi];

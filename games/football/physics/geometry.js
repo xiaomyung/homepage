@@ -68,6 +68,23 @@ export function hipAnchor(p, out = _scratchHip) {
 }
 
 /**
+ * Project a floor-plane delta into a heading-local (fwd, perp) frame,
+ * given the heading's forward unit vector (fwdX, fwdZ). `fwd` is the
+ * component along the heading, `perp` the in-plane component to its
+ * left. Shared by projectHipLocal (heading = p.heading), kickLegPose
+ * (heading = smoothed animHeading, passed in), and tryPush.
+ *
+ * FP operation order is load-bearing — the game is bit-exact-diffed
+ * against a fixed-seed reference, so do NOT commute the operands.
+ */
+const _scratchDelta = { fwd: 0, perp: 0 };
+export function projectDeltaLocal(dx, dz, fwdX, fwdZ, out = _scratchDelta) {
+  out.fwd  = dx * fwdX + dz * fwdZ;
+  out.perp = -dx * fwdZ + dz * fwdX;
+  return out;
+}
+
+/**
  * Project a world-space point into the player's hip-local frame:
  * `fwd` along the heading, `up` vertical, `perp` perpendicular to
  * heading in the floor plane. The IK solver only uses (fwd, up);
@@ -81,9 +98,8 @@ export function projectHipLocal(hip, heading, wx, wy, wz, out = _scratchLocal) {
   const dz = wz - hip.z;
   const fwdX = Math.cos(heading);
   const fwdZ = Math.sin(heading);
-  out.fwd  = dx * fwdX + dz * fwdZ;
-  out.up   = dy;
-  out.perp = -dx * fwdZ + dz * fwdX;
+  projectDeltaLocal(dx, dz, fwdX, fwdZ, out);
+  out.up = dy;
   return out;
 }
 

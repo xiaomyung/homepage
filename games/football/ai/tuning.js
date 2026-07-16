@@ -4,8 +4,6 @@
 
 import { TICK_MS, PLAYER_WIDTH, BALL_RADIUS } from '../physics/index.js';
 
-export const ACTION_STRIDE_TICKS = 1;
-
 export const MATCH_DURATION_MS = 60000;
 export const MAX_SHOWCASE_TICKS = 8000;
 
@@ -39,9 +37,10 @@ export const APPROACH_MIN_MAGNITUDE = 0.15;
 export const SIDESTEP_TRIGGER_DIST = 10;
 export const SIDESTEP_OFFSET = 12;
 
-// Lead distance (physics units) — how much closer self has to be than
-// opp to commit to a disruptive push while opp is mid-windup. Lets self
-// reach opp before opp's kick fires.
+// Ball-distance race margin (physics units) — while opp is mid-windup,
+// self is allowed to be up to this much farther from the ball than opp
+// (selfDistToBall < oppDistToBall + margin) and still commit to a
+// disruptive push. Not a self-to-opp distance check.
 export const PUSH_WINDUP_LEAD_DIST = 30;
 
 export const KICK_AIM_OFFSET_RANGE = 0.03;
@@ -54,7 +53,7 @@ export const PUSH_RANGE_FRAC = 0.9;
 
 // Floating-point dead zone on the action MOVE vector — values below this
 // magnitude are treated as zero. Paired with `MOVE_INPUT_DEAD_ZONE` in
-// physics.js (same value, applied symmetrically on both sides of the seam).
+// physics/tuning.js (same value, applied symmetrically on both sides of the seam).
 export const FALLBACK_DEAD_ZONE = 0.02;
 export const FALLBACK_CAPTURE_RADIUS = PLAYER_WIDTH / 2;
 // canKickReach margin. Zero means the controller's reach gate matches

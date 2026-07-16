@@ -39,7 +39,6 @@ const ROLE_SUPPORT = 'support';
 export const ROLES = Object.freeze({
   CONTENDER: ROLE_CONTENDER,
   SUPPORT: ROLE_SUPPORT,
-  NONE: null,
 });
 
 /** Decide which side is contender by raw intercept-tick comparison.
@@ -101,28 +100,55 @@ function resolveRole(state, side, perception) {
   return roleState.role;
 }
 
+/** Per-side intent scratch. `decide` writes into `intentScratch[which].intent`
+ *  instead of allocating a literal each call. `.target` is a per-side owned
+ *  {x,y} object that the intent's `target` field points at when populated
+ *  (CONTENDER_RUN / SUPPORT / GOALIE); for CONTENDER_KICK and NEUTRAL the
+ *  intent's `target` is set to null. It is never aliased to perception's
+ *  nested objects — attackKickSpot values are *copied* in, so the sidestep
+ *  write below can't corrupt the facts scratch. */
+function makeIntentScratch() {
+  return {
+    intent: { kind: null, role: null, push: false, target: null },
+    target: { x: 0, y: 0 },
+  };
+}
+
+const intentScratch = { p1: makeIntentScratch(), p2: makeIntentScratch() };
+
 /**
- * Decide intent. Returns `{ kind, role, push, target? }` — `target` is
- * present for CONTENDER_RUN, SUPPORT, and GOALIE; absent for
- * CONTENDER_KICK and NEUTRAL.
+ * Decide intent. Returns the reused per-side scratch intent
+ * `{ kind, role, push, target }` — `target` is a populated {x,y} object for
+ * CONTENDER_RUN, SUPPORT, and GOALIE; `null` for CONTENDER_KICK and NEUTRAL.
+ * The caller consumes it synchronously (see `intentScratch` note); holding a
+ * result across a later same-side `decide` aliases it.
  */
 export function decide(state, which, perception) {
   const self = state[which];
   const opp = state[which === 'p1' ? 'p2' : 'p1'];
 
+  const scratch = intentScratch[which];
+  const intent = scratch.intent;
+  const ownedTarget = scratch.target;
+
   if (perception.selfBlocked) {
-    return { kind: INTENT_KINDS.NEUTRAL, role: null, push: false };
+    intent.kind = INTENT_KINDS.NEUTRAL;
+    intent.role = null;
+    intent.push = false;
+    intent.target = null;
+    return intent;
   }
 
   if (perception.threatensOwnGoal) {
     const yTarget = perception.ownGoalInterceptY;
     const goalX = self.side === 'left' ? state.field.goalLineL : state.field.goalLineR;
-    return {
-      kind: INTENT_KINDS.GOALIE,
-      role: state.aiRoleState[self.side].role,
-      target: { x: goalX, y: yTarget },
-      push: false,
-    };
+    ownedTarget.x = goalX;
+    ownedTarget.y = yTarget;
+    intent.kind = INTENT_KINDS.GOALIE;
+    intent.role = state.aiRoleState[self.side].role;
+    intent.target = ownedTarget;
+    intent.push = false;
+    return intent;
   }
 
   const role = resolveRole(state, self.side, perception);
@@ -142,7 +168,10 @@ export function decide(state, which, perception) {
   // kick fires same tick. Relies on world-proportional pursuit (closes y
   // proportionally to x) and physics' tryStartKick running before
   // applyMovement, so the controller and gate share the same player state.
-  let ballTarget = perception.attackKickSpot;
+  // Copy (never alias) the facts' attackKickSpot into the owned target so
+  // the sidestep write below stays local to this intent's scratch.
+  ownedTarget.x = perception.attackKickSpot.x;
+  ownedTarget.y = perception.attackKickSpot.y;
 
   // Sidestep when in true pair contact AND can't kick — bias the target
   // perpendicular to the self→opp axis, toward the side where the
@@ -154,18 +183,16 @@ export function decide(state, which, perception) {
     const oLen = Math.hypot(ox, oy) || 1;
     const ux = ox / oLen;
     const uy = oy / oLen;
-    const tx = ballTarget.x - perception.selfCx;
-    const ty = ballTarget.y - perception.selfCy;
+    const tx = ownedTarget.x - perception.selfCx;
+    const ty = ownedTarget.y - perception.selfCy;
     // Cross product picks which perpendicular side puts target ahead:
     // positive cross => target is left of self→opp axis, negative => right.
     const cross = ux * ty - uy * tx;
     const sign = cross >= 0 ? 1 : -1;
     const perpX = -uy * sign;
     const perpY = ux * sign;
-    ballTarget = {
-      x: ballTarget.x + perpX * SIDESTEP_OFFSET,
-      y: ballTarget.y + perpY * SIDESTEP_OFFSET,
-    };
+    ownedTarget.x = ownedTarget.x + perpX * SIDESTEP_OFFSET;
+    ownedTarget.y = ownedTarget.y + perpY * SIDESTEP_OFFSET;
   }
 
   // Push is suppressed when the player can also kick — pushing locks
@@ -178,15 +205,33 @@ export function decide(state, which, perception) {
       const oppD = perception.oppDistToBall;
       const myD = perception.selfDistToBall;
       const yieldToOpp = oppCanReach && (oppD < myD || (oppD === myD && self.side === 'right'));
-      if (!yieldToOpp) return { kind: INTENT_KINDS.CONTENDER_KICK, role, push: false };
+      if (!yieldToOpp) {
+        intent.kind = INTENT_KINDS.CONTENDER_KICK;
+        intent.role = role;
+        intent.push = false;
+        intent.target = null;
+        return intent;
+      }
     }
-    return { kind: INTENT_KINDS.CONTENDER_RUN, role, target: ballTarget, push: pushAvailable };
+    intent.kind = INTENT_KINDS.CONTENDER_RUN;
+    intent.role = role;
+    intent.target = ownedTarget;
+    intent.push = pushAvailable;
+    return intent;
   }
 
   // SUPPORT — pure-press: also chase the ball, just from farther away.
   if (perception.selfHasKickReach && !opp.kick.active) {
-    return { kind: INTENT_KINDS.CONTENDER_KICK, role, push: false };
+    intent.kind = INTENT_KINDS.CONTENDER_KICK;
+    intent.role = role;
+    intent.push = false;
+    intent.target = null;
+    return intent;
   }
 
-  return { kind: INTENT_KINDS.SUPPORT, role, target: ballTarget, push: pushAvailable };
+  intent.kind = INTENT_KINDS.SUPPORT;
+  intent.role = role;
+  intent.target = ownedTarget;
+  intent.push = pushAvailable;
+  return intent;
 }

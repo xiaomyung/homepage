@@ -18,7 +18,6 @@ import {
   PUSH_VEL_THRESHOLD_SQ, MIN_PUSH_STAMINA,
   PUSH_ANIM_MS, PUSH_FACE_TOL,
   PUSH_WINDUP_FRAC, PUSH_STRIKE_FRAC,
-  PUSH_WINDUP_PEAK_TEFF, WINDUP_LOAD_FRAC,
   PUSH_STAMINA_COST, PUSH_VICTIM_STAMINA_MULT,
   PUSH_STRIKE_TIMER, PUSH_UPPERCUT_RANGE, PUSH_HOOK_RANGE,
   JAB_REST, JAB_WINDUP, JAB_STRIKE,
@@ -26,6 +25,10 @@ import {
   UPPERCUT_REST, UPPERCUT_WINDUP, UPPERCUT_STRIKE,
 } from './tuning.js';
 import { clamp, wrapAngle } from './state.js';
+import { projectDeltaLocal } from './geometry.js';
+
+/** Scratch for tryPush's heading-local pusher→victim projection. */
+const _scratchDelta = { fwd: 0, perp: 0 };
 
 /** Same gates as tryPush, used at the strike-commit tick to verify
  *  the victim hasn't escaped the range/facing cone during the windup. */
@@ -39,8 +42,10 @@ function pushStillInRange(state, pusher, victim) {
   return facingToward(pusher, victimCenterX, victimZ, PUSH_FACE_TOL);
 }
 
-/** Local copy of `player.js::facingToward` so push.js stays a leaf
- *  of state.js + tuning.js. */
+/** Private facing-cone check, kept local (not imported from player.js):
+ *  the physics DAG is player → push (player.js imports
+ *  advancePush/tryPush from here), so push.js importing from
+ *  player.js would create a cycle. */
 function facingToward(p, worldX, worldZ, tol) {
   const centerX = p.x + PLAYER_WIDTH / 2;
   const centerZ = (p.y + PLAYER_HEIGHT / 2) * Z_STRETCH;
@@ -150,29 +155,6 @@ export function applyPushPhysics(p) {
   }
 }
 
-/**
- * Stage-aware arm extension for a punch. Pure function of `pushTimer`
- * in ms. Windup is split into a load (0 → PUSH_WINDUP_PEAK_TEFF over
- * the first WINDUP_LOAD_FRAC of windup) and a rise (PEAK_TEFF → 1
- * over the rest), so the fist reaches full extension by the
- * windup→strike boundary instead of jumping there.
- */
-export function pushArmExtension(pushTimer) {
-  if (pushTimer <= 0) return 0;
-  const t = 1 - (pushTimer / PUSH_ANIM_MS);
-  const loadEndT = PUSH_WINDUP_FRAC * WINDUP_LOAD_FRAC;
-  if (t < loadEndT) {
-    return PUSH_WINDUP_PEAK_TEFF * (t / loadEndT);
-  }
-  if (t < PUSH_WINDUP_FRAC) {
-    const riseT = (t - loadEndT) / (PUSH_WINDUP_FRAC - loadEndT);
-    return PUSH_WINDUP_PEAK_TEFF + (1 - PUSH_WINDUP_PEAK_TEFF) * riseT;
-  }
-  if (t < PUSH_STRIKE_FRAC) return 1;
-  const recT = (t - PUSH_STRIKE_FRAC) / Math.max(1e-6, 1 - PUSH_STRIKE_FRAC);
-  return Math.max(0, 1 - recT);
-}
-
 const _lerp = (a, b, t) => a + (b - a) * t;
 
 function blendPose(out, a, b, t, armSign) {
@@ -182,10 +164,20 @@ function blendPose(out, a, b, t, armSign) {
   out.lowerYaw   = _lerp(a[3], b[3], t) * armSign;
 }
 
+// Constant [rest, windup, strike] keyframe triples, hoisted to module
+// scope so pushArmPose (per render frame) returns an existing reference
+// instead of allocating a fresh 3-element array. Downstream is
+// read-only: pushArmPose destructures then feeds blendPose, which only
+// reads a[i]/b[i] and writes to `out` — never mutates these arrays or
+// their (tuning.js) elements.
+const JAB_KEYFRAMES      = [JAB_REST,      JAB_WINDUP,      JAB_STRIKE];
+const HOOK_KEYFRAMES     = [HOOK_REST,     HOOK_WINDUP,     HOOK_STRIKE];
+const UPPERCUT_KEYFRAMES = [UPPERCUT_REST, UPPERCUT_WINDUP, UPPERCUT_STRIKE];
+
 function resolvePoseKeyframes(pushType) {
-  if (pushType === 'hook')     return [HOOK_REST,     HOOK_WINDUP,     HOOK_STRIKE];
-  if (pushType === 'uppercut') return [UPPERCUT_REST, UPPERCUT_WINDUP, UPPERCUT_STRIKE];
-  return [JAB_REST, JAB_WINDUP, JAB_STRIKE];
+  if (pushType === 'hook')     return HOOK_KEYFRAMES;
+  if (pushType === 'uppercut') return UPPERCUT_KEYFRAMES;
+  return JAB_KEYFRAMES;
 }
 
 /**
@@ -194,8 +186,10 @@ function resolvePoseKeyframes(pushType) {
  * strike — interpolated by the progress scalar derived from pushTimer.
  *
  * Output is four angles: upperAngle, lowerAngle, upperYaw, lowerYaw.
- * Hook uses upperYaw to carry the arm laterally; jab and uppercut
- * stay in the sagittal plane. The pushArm sign flips hook polarity.
+ * Hook uses upperYaw/lowerYaw throughout to carry the arm laterally;
+ * jab stays in the sagittal plane at every keyframe. Uppercut is
+ * sagittal at rest/windup but picks up yaw at the strike keyframe.
+ * The pushArm sign flips hook/uppercut polarity.
  */
 export function pushArmPose(player, out) {
   if (!player || player.pushTimer <= 0) {
@@ -255,8 +249,9 @@ export function tryPush(state, pusher, victim, powerNorm) {
   const pusherCenterWZ = pusher.y * Z_STRETCH;
   const dx = victimCenterWX - pusherCenterX;
   const dz = victimCenterWZ - pusherCenterWZ;
-  const fwdDist = dx * fxWorld + dz * fzWorld;
-  const perp    = -dx * fzWorld + dz * fxWorld;
+  const local = projectDeltaLocal(dx, dz, fxWorld, fzWorld, _scratchDelta);
+  const fwdDist = local.fwd;
+  const perp    = local.perp;
   pusher.pushArm = perp >= 0 ? 'right' : 'left';
   if (fwdDist < PUSH_UPPERCUT_RANGE) pusher.pushType = 'uppercut';
   else if (fwdDist < PUSH_HOOK_RANGE) pusher.pushType = 'hook';

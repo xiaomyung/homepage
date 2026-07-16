@@ -73,7 +73,7 @@ test('push contact tick is per-type: uppercut earliest, jab latest', () => {
   // Each punch type commits its impulse at a different strike tick
   // because the fist engages the target at a different moment of
   // the arm's windup→strike blend. Uppercut connects at t≈0.42,
-  // hook at ≈0.46, jab at ≈0.50 — longer throws land later.
+  // hook at ≈0.46, jab at ≈0.47 — longer throws land later.
   const measure = (p2X) => {
     const s = freshState();
     s.p1.x = s.field.midX - 10;
@@ -119,9 +119,10 @@ test('push impulse is deferred to the strike tick, not applied on windup', () =>
     `victim must not move on tick 1, moved to ${state.p2.x}`,
   );
 
-  // Strike fires when pushTimer first drops <= PUSH_STRIKE_TIMER
-  // (1000 * (1 - PUSH_CONTACT_FRAC) = 580 ms). pushTimer starts at
-  // 1000 ms and decrements 16 ms/tick, so strike ≈ tick 27–28.
+  // Strike fires when pushTimer first drops <= PUSH_STRIKE_TIMER. At
+  // this p1/p2 spacing (20 units apart) fwdDist selects 'hook', so
+  // threshold = 1000 * (1 - PUSH_CONTACT_FRAC.hook) = 540 ms. pushTimer
+  // starts at 1000 ms and decrements 16 ms/tick, so strike ≈ tick 30.
   let strikeTick = -1;
   for (let i = 0; i < 40; i++) {
     tick(state, NOOP, NOOP);

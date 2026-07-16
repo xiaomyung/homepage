@@ -10,7 +10,7 @@ export * from './tuning.js';
 export {
   createField, createState, resetStateInPlace,
   createSeededRng,
-  clamp, wrapAngle, gaussRandom,
+  wrapAngle,
 } from './state.js';
 
 export { tick } from './core.js';
@@ -26,8 +26,5 @@ export {
 } from './kick.js';
 
 export {
-  pushArmExtension,
   pushArmPose,
 } from './push.js';
-
-export { facingToward } from './player.js';

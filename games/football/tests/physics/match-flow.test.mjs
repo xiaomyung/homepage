@@ -4,6 +4,7 @@ import {
   tick,
   FIELD_HEIGHT,
   BALL_RADIUS,
+  WIN_SCORE,
   endMatchByTime,
 } from '../../physics/index.js';
 import {
@@ -72,7 +73,7 @@ test('ball crossing left field edge triggers OOB', () => {
   state.ball.vy = 0;
   state.ball.frozen = false;
   for (let i = 0; i < 10 && state.pauseState === null; i++) tick(state, NOOP, NOOP);
-  // Out triggers reposition pause (ballOut() in physics.js)
+  // Out triggers reposition pause (ballOut() in physics/match-flow.js)
   assert.ok(
     state.pauseState !== null,
     'ball going off left edge should trigger OOB / ball reposition',
@@ -233,7 +234,7 @@ test('headless scoreGoal resets pitch instantly, no pause', () => {
 test('headless ends match at WIN_SCORE (capped like visual)', () => {
   const state = freshState();
   state.headless = true;
-  state.scoreL = 2; // one goal short of WIN_SCORE=3
+  state.scoreL = WIN_SCORE - 1; // one goal short of WIN_SCORE
   const f = state.field;
 
   state.ball.x = f.width - 120;
@@ -242,8 +243,8 @@ test('headless ends match at WIN_SCORE (capped like visual)', () => {
   state.ball.vx = 5; state.ball.vy = 0; state.ball.vz = 0;
   state.ball.frozen = false;
 
-  for (let i = 0; i < 40 && state.scoreL < 3; i++) tick(state, NOOP, NOOP);
-  assert.equal(state.scoreL, 3, 'third goal should have scored');
+  for (let i = 0; i < 40 && state.scoreL < WIN_SCORE; i++) tick(state, NOOP, NOOP);
+  assert.equal(state.scoreL, WIN_SCORE, 'third goal should have scored');
   assert.equal(state.matchOver, true, 'headless should set matchOver at WIN_SCORE');
   // Winner recorded but no pause-state (headless skips the celebrate).
   assert.equal(state.pauseState, null);
@@ -384,8 +385,8 @@ test('winning goal goes straight to matchend reposition (no at-spot celebrate)',
   state.recordEvents = false;
   // Ball crossing goalLineR (into the right goal) credits scoreL.
   // See project_football_scoring_sides memory: side arg names the
-  // goal that conceded. Pre-seed scoreL=2 so the next score is 3 = win.
-  state.scoreL = 2;
+  // goal that conceded. Pre-seed one goal short so the next score wins.
+  state.scoreL = WIN_SCORE - 1;
   state.ball.x = state.field.goalLineR - 1;   // field side, just outside line
   state.ball.y = FIELD_HEIGHT / 2;
   state.ball.z = 0;
@@ -396,7 +397,7 @@ test('winning goal goes straight to matchend reposition (no at-spot celebrate)',
 
   tick(state, null, null);
 
-  assert.equal(state.scoreL, 3, 'left-side scored the winning goal');
+  assert.equal(state.scoreL, WIN_SCORE, 'left-side scored the winning goal');
   assert.equal(state.pauseState, 'matchend', 'winning goal skips celebrate and enters matchend immediately');
   assert.equal(state.matchEndPhase, 'reposition', 'matchend opens on the reposition (walk-back) phase');
   assert.equal(state.winner, 'left', 'winner must be flagged at the scoring tick');
@@ -437,7 +438,7 @@ test('matchend phase machine: reposition → pose → neutral → finalize', () 
   const state = freshState();
   state.headless = false;
   state.recordEvents = false;
-  state.scoreL = 2;
+  state.scoreL = WIN_SCORE - 1;
   state.ball.x = state.field.goalLineR - 1;
   state.ball.y = FIELD_HEIGHT / 2;
   state.ball.z = 0;

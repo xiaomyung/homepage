@@ -1,9 +1,9 @@
 /**
  * Football v2 — particle bursts.
  *
- * Five spawn paths share a single 120-slot pool: ball-bounce,
+ * Four spawn paths share a single 120-slot pool: ball-bounce,
  * footstep, push-contact, goal-burst (event-driven), plus the per-
- * frame `_stepParticles` ageing and `_drawParticles` write into the
+ * frame `stepParticles` ageing and `drawParticles` write into the
  * instanced mesh. ctx-style: every function takes the Renderer
  * instance as the first argument so the pool, scratch buffers, and
  * field reference stay on the class.
@@ -26,6 +26,14 @@ import {
   FIELD_HEIGHT, MAX_PLAYER_SPEED, PLAYER_WIDTH, Z_STRETCH,
 } from '../physics/index.js';
 
+/** Advance the rolling pool cursor and return the next recyclable
+ *  particle slot. Shared by all four spawn paths. */
+function nextParticle(ctx) {
+  const p = ctx._particles[ctx._particleNext];
+  ctx._particleNext = (ctx._particleNext + 1) % ctx._particles.length;
+  return p;
+}
+
 /** Spawn a burst of splash particles at the bounce location. Count and
  *  outward speed both scale with `ev.force`; `ev.axis` selects the
  *  surface-normal axis (z = ground/ceiling, y = field walls, x = goal posts). */
@@ -37,8 +45,7 @@ export function spawnBounceParticles(ctx, ev) {
   const speed = ev.force * PARTICLE_BASE_SPEED;
   const spread = speed * PARTICLE_SPREAD;
   for (let i = 0; i < count; i++) {
-    const p = ctx._particles[ctx._particleNext];
-    ctx._particleNext = (ctx._particleNext + 1) % ctx._particles.length;
+    const p = nextParticle(ctx);
 
     p.x = ev.x;
     p.y = ev.y;
@@ -106,8 +113,7 @@ export function spawnFootstepParticles(ctx, player, speed) {
   const spawnY = player.y - (dirZ / Z_STRETCH) * FOOTSTEP_BACK_OFFSET;
 
   for (let i = 0; i < count; i++) {
-    const p = ctx._particles[ctx._particleNext];
-    ctx._particleNext = (ctx._particleNext + 1) % ctx._particles.length;
+    const p = nextParticle(ctx);
 
     p.x = spawnX;
     p.y = spawnY;
@@ -136,8 +142,7 @@ export function spawnPushContactParticles(ctx, ev) {
   );
   const speed = force * PUSH_CONTACT_SPEED;
   for (let i = 0; i < count; i++) {
-    const p = ctx._particles[ctx._particleNext];
-    ctx._particleNext = (ctx._particleNext + 1) % ctx._particles.length;
+    const p = nextParticle(ctx);
 
     p.x = ev.x;
     p.y = ev.y;
@@ -179,8 +184,7 @@ export function spawnGoalBurst(ctx, scorer) {
   const mouthZMax = f.goalMouthZMax;
 
   for (let i = 0; i < GOAL_BURST_COUNT; i++) {
-    const p = ctx._particles[ctx._particleNext];
-    ctx._particleNext = (ctx._particleNext + 1) % ctx._particles.length;
+    const p = nextParticle(ctx);
 
     p.x = mouthX;
     p.y = mouthYMin + Math.random() * mouthYSpan;
@@ -220,8 +224,8 @@ export function stepParticles(ctx) {
 
 /** Write live particles into the InstancedMesh. Position maps physics
  *  (x, y, z) → world (x, z, y*Z_STRETCH); per-instance color fades the
- *  rgb channels from full to black as the particle ages. Dead particles
- *  are packed to the front so `.count` skips the tail. */
+ *  rgb channels from full to black as the particle ages. Live particles
+ *  are packed to the front so `.count` can skip the dead tail. */
 export function drawParticles(ctx) {
   const q = ctx._scratchZeroQ;
   const pos = ctx._scratchPos;

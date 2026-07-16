@@ -16,15 +16,24 @@ async function checkService(card) {
   }
 }
 
+let running = false;
+
 async function run() {
-  const cards = [...document.querySelectorAll('.card')];
-  cards.forEach((card, i) => card.style.setProperty('--i', i));
-  await Promise.all([
-    ...cards.filter(c => c.dataset.check).map(checkService),
-    loadStats(),
-  ]);
-  updateBanner();
+  if (running) return;
+  running = true;
+  try {
+    const cards = [...document.querySelectorAll('.card')];
+    await Promise.all([
+      ...cards.filter(c => c.dataset.check).map(checkService),
+      loadStats(),
+    ]);
+    updateBanner();
+  } finally {
+    running = false;
+  }
 }
+
+[...document.querySelectorAll('.card')].forEach((card, i) => card.style.setProperty('--i', i));
 
 run();
 setInterval(() => { if (!document.hidden) run(); }, 30000);
@@ -58,7 +67,7 @@ function updateBanner() {
 
 /* ── Stats shim (live infra panel) ── */
 
-const fmtBytes = (gb) => gb == null ? '—' : (gb >= 1000 ? `${(gb / 1000).toFixed(1)}T` : `${gb.toFixed(1)}G`);
+const fmtBytes = (gb) => gb == null ? '—' : (gb >= 1024 ? `${(gb / 1024).toFixed(1)}T` : `${gb.toFixed(1)}G`);
 
 async function loadStats() {
   let s;

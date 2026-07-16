@@ -24,7 +24,7 @@ import {
   STICKMAN_UPPER_LEG, STICKMAN_LOWER_LEG,
 } from './tuning.js';
 import { clamp, wrapAngle, gaussRandom } from './state.js';
-import { hipAnchor, projectHipLocal } from './geometry.js';
+import { hipAnchor, projectHipLocal, projectDeltaLocal } from './geometry.js';
 
 /* ── Two-bone IK (planar, hip → knee → foot) ────────────────── */
 
@@ -291,6 +291,9 @@ export function kickLegExtension(kick) {
   return Math.max(0, 1 - recT);
 }
 
+/** Scratch for kickLegPose's heading-local foot-delta projection. */
+const _scratchDelta = { fwd: 0, perp: 0 };
+
 /**
  * Two-bone IK pose for the kicking leg, as (upperAngle, lowerAngle)
  * joint angles the renderer's placeLeg consumes directly. Three-key
@@ -310,9 +313,14 @@ export function kickLegPose(kick, hipWX, hipWY, hipWZ, forwardX, forwardZ, out) 
   const dx = kick.footTargetX - hipWX;
   const dy = kick.footTargetY - hipWY;
   const dz = kick.footTargetZ - hipWZ;
-  const fwd = dx * forwardX + dz * forwardZ;
+  // forwardX/forwardZ are the caller's smoothed animHeading vector
+  // (from animation/poses.js), NOT p.heading — so this must project
+  // via the raw primitive, not projectHipLocal (which derives forward
+  // from a heading angle).
+  const local = projectDeltaLocal(dx, dz, forwardX, forwardZ, _scratchDelta);
+  const fwd = local.fwd;
   const up  = dy;
-  const perp = -dx * forwardZ + dz * forwardX;
+  const perp = local.perp;
   const legYaw = clamp(perp, -LATERAL_FOOT_FLEX, LATERAL_FOOT_FLEX);
   const legLen = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG;
   const cockFwd = -KICK_COCK_FWD_FRAC * legLen;

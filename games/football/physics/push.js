@@ -25,6 +25,10 @@ import {
   UPPERCUT_REST, UPPERCUT_WINDUP, UPPERCUT_STRIKE,
 } from './tuning.js';
 import { clamp, wrapAngle } from './state.js';
+import { projectDeltaLocal } from './geometry.js';
+
+/** Scratch for tryPush's heading-local pusher→victim projection. */
+const _scratchDelta = { fwd: 0, perp: 0 };
 
 /** Same gates as tryPush, used at the strike-commit tick to verify
  *  the victim hasn't escaped the range/facing cone during the windup. */
@@ -233,8 +237,9 @@ export function tryPush(state, pusher, victim, powerNorm) {
   const pusherCenterWZ = pusher.y * Z_STRETCH;
   const dx = victimCenterWX - pusherCenterX;
   const dz = victimCenterWZ - pusherCenterWZ;
-  const fwdDist = dx * fxWorld + dz * fzWorld;
-  const perp    = -dx * fzWorld + dz * fxWorld;
+  const local = projectDeltaLocal(dx, dz, fxWorld, fzWorld, _scratchDelta);
+  const fwdDist = local.fwd;
+  const perp    = local.perp;
   pusher.pushArm = perp >= 0 ? 'right' : 'left';
   if (fwdDist < PUSH_UPPERCUT_RANGE) pusher.pushType = 'uppercut';
   else if (fwdDist < PUSH_HOOK_RANGE) pusher.pushType = 'hook';

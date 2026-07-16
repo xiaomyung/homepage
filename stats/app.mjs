@@ -72,15 +72,15 @@ function dockerCounts() {
     // execFile is used (not exec) — no shell interpolation, safe against injection.
     execFile('docker', ['ps', '-a', '--format', '{{.Status}}'], { timeout: 5000 }, (err, stdout) => {
       if (err) {
-        resolve({ total: null, running: null, unhealthy: null, stopped: null, other: null });
+        resolve({ running: null, unhealthy: null, stopped: null, other: null });
         return;
       }
       const statuses = stdout.split('\n').filter((s) => s.trim());
-      const running = statuses.filter((s) => s.startsWith('Up')).length;
       const unhealthy = statuses.filter((s) => s.includes('unhealthy')).length;
+      const running = statuses.filter((s) => s.startsWith('Up') && !s.includes('unhealthy')).length;
       const stopped = statuses.filter((s) => s.startsWith('Exited')).length;
-      const other = statuses.length - running - stopped;
-      resolve({ total: statuses.length, running, unhealthy, stopped, other });
+      const other = statuses.length - running - unhealthy - stopped;
+      resolve({ running, unhealthy, stopped, other });
     });
   });
 }

@@ -35,7 +35,10 @@ test('Pure determinism: two consecutive calls with same state -> same output', (
   state.p1.x = 200; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
   state.ball.x = 400; state.ball.y = FIELD_HEIGHT / 2;
 
-  const v1 = decide(state, 'p1');
+  // decide returns a reused per-side buffer, so the second call aliases the
+  // first — snapshot v1's values before recomputing or the comparison is
+  // vacuous (buffer vs itself).
+  const v1 = Array.from(decide(state, 'p1'));
   const v2 = decide(state, 'p1');
   for (let i = 0; i < v1.length; i++) {
     assert.equal(v1[i], v2[i], `slot ${i} differs across calls`);

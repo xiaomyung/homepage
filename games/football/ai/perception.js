@@ -1,6 +1,10 @@
 /**
- * Pure: state -> situational facts. No state mutation, no allocation
- * caching. Decision and action layers consume the returned object.
+ * Pure (no state mutation): state -> situational facts. Returns a per-side
+ * scratch object (keyed by `which`, reused across ticks) so the hot path
+ * allocates nothing. Decision and action layers consume the returned object
+ * synchronously; a caller must not hold a `perceive` result across a later
+ * *same-side* `perceive` call (they alias). The two sides ('p1'/'p2') own
+ * independent scratch, so holding both at once (as tests do) stays valid.
  */
 
 import {
@@ -24,10 +28,6 @@ import {
   PUSH_RANGE_FRAC,
 } from './tuning.js';
 
-function playerCenter(p) {
-  return { x: p.x + PLAYER_WIDTH / 2, y: p.y + PLAYER_HEIGHT / 2 };
-}
-
 function dist(ax, ay, bx, by) {
   return Math.hypot(ax - bx, ay - by);
 }
@@ -46,22 +46,22 @@ export function interceptTicks(ball, p, horizon = PREDICTION_HORIZON_TICKS) {
   return Infinity;
 }
 
-/** Point just behind the ball on the line ball -> opp goal centre.
+/** Point just behind the ball on the line ball -> opp goal centre. Writes
+ *  into `out` (caller-owned) to avoid per-tick allocation.
  *  The y offset shifts by +PLAYER_HEIGHT/2 because moveToward targets the
  *  player CENTER (`p.y + PLAYER_HEIGHT/2`) while canKickReach checks the
  *  HIP at `p.y`. Without the shift, center-targeting parks the hip ~3
  *  physics-y units short of the ball — and via Z_STRETCH that becomes
  *  ~14 world units of perp offset, well past the foot/ball contact gap. */
-function attackKickSpot(field, ball, side) {
+function attackKickSpot(field, ball, side, out) {
   const tgx = side === 'left' ? field.goalLineR : field.goalLineL;
   const tgy = FIELD_HEIGHT / 2;
   const dx = tgx - ball.x;
   const dy = tgy - ball.y;
   const len = Math.hypot(dx, dy) || 1;
-  return {
-    x: ball.x - (dx / len) * ATTACK_OFFSET,
-    y: ball.y - (dy / len) * ATTACK_OFFSET + PLAYER_HEIGHT / 2,
-  };
+  out.x = ball.x - (dx / len) * ATTACK_OFFSET;
+  out.y = ball.y - (dy / len) * ATTACK_OFFSET + PLAYER_HEIGHT / 2;
+  return out;
 }
 
 /** Is opp directly on the ball -> direction ray from ball, in close range? */
@@ -94,25 +94,54 @@ function ballYAtOwnGoalLine(field, ball, side) {
 /** Push opportunity: opp between self and ball, within range and facing
  *  aligned to opp's bearing. */
 function pushOpportunity(self, opp, ball) {
-  const sc = playerCenter(self);
-  const oc = playerCenter(opp);
+  const scx = self.x + PLAYER_WIDTH / 2;
+  const scy = self.y + PLAYER_HEIGHT / 2;
+  const ocx = opp.x + PLAYER_WIDTH / 2;
+  const ocy = opp.y + PLAYER_HEIGHT / 2;
   const bx = ball.x;
   const by = ball.y;
-  const selfToOpp = Math.hypot(oc.x - sc.x, oc.y - sc.y);
+  const selfToOpp = Math.hypot(ocx - scx, ocy - scy);
   if (selfToOpp > PUSH_RANGE_X * PUSH_RANGE_FRAC) return false;
-  const sx = oc.x - sc.x;
-  const sy = oc.y - sc.y;
-  const bxr = bx - sc.x;
-  const byr = by - sc.y;
+  const sx = ocx - scx;
+  const sy = ocy - scy;
+  const bxr = bx - scx;
+  const byr = by - scy;
   const dot = sx * bxr + sy * byr;
   if (dot <= 0) return false;
-  const wantAngle = Math.atan2(oc.y - sc.y, oc.x - sc.x);
+  const wantAngle = Math.atan2(ocy - scy, ocx - scx);
   return Math.abs(wrapAngle(wantAngle - self.heading)) < PUSH_FACE_TOL;
 }
 
+/** Per-side facts scratch. `perceive` writes into `factsScratch[which]`
+ *  instead of allocating a literal each call. The nested `attackKickSpot`
+ *  is owned here (never aliased out), so a later intent-layer write to its
+ *  copy of the target can't corrupt these facts mid-decide. */
+function makeFactsScratch() {
+  return {
+    selfCx: 0, selfCy: 0,
+    oppCx: 0, oppCy: 0,
+    selfDistToBall: 0, oppDistToBall: 0, selfDistToOpp: 0,
+    selfInterceptTicks: 0, oppInterceptTicks: 0,
+    attackKickSpot: { x: 0, y: 0 },
+    selfHasKickReach: false, oppHasKickReach: false,
+    oppBlocksLane: false,
+    threatensOwnGoal: false,
+    ownGoalInterceptY: null,
+    selfBlocked: false,
+    selfKicking: false,
+    ballSpeedXY: 0,
+    pushOpportunity: false,
+    oppWindingUp: false,
+    oppExhausted: false,
+    selfSide: null,
+  };
+}
+
+const factsScratch = { p1: makeFactsScratch(), p2: makeFactsScratch() };
+
 /**
- * Build perception facts for `self` against `opp`. Pure; returns a fresh
- * object (no caching, no state mutation).
+ * Build perception facts for `self` against `opp`. Pure (no state mutation);
+ * returns the reused per-side scratch object (see module header).
  */
 export function perceive(state, which) {
   const self = state[which];
@@ -120,54 +149,49 @@ export function perceive(state, which) {
   const ball = state.ball;
   const field = state.field;
 
-  const sc = playerCenter(self);
-  const oc = playerCenter(opp);
+  const facts = factsScratch[which];
 
-  const selfDistToBall = dist(sc.x, sc.y, ball.x, ball.y);
-  const oppDistToBall = dist(oc.x, oc.y, ball.x, ball.y);
-  const selfDistToOpp = dist(sc.x, sc.y, oc.x, oc.y);
+  const scx = self.x + PLAYER_WIDTH / 2;
+  const scy = self.y + PLAYER_HEIGHT / 2;
+  const ocx = opp.x + PLAYER_WIDTH / 2;
+  const ocy = opp.y + PLAYER_HEIGHT / 2;
 
-  const selfInterceptTicks = interceptTicks(ball, self);
-  const oppInterceptTicks = interceptTicks(ball, opp);
+  facts.selfCx = scx;
+  facts.selfCy = scy;
+  facts.oppCx = ocx;
+  facts.oppCy = ocy;
 
-  const kickSpot = attackKickSpot(field, ball, self.side);
+  facts.selfDistToBall = dist(scx, scy, ball.x, ball.y);
+  facts.oppDistToBall = dist(ocx, ocy, ball.x, ball.y);
+  facts.selfDistToOpp = dist(scx, scy, ocx, ocy);
 
-  const selfHasKickReach = canKickReach(state, self, FALLBACK_SAFETY_MARGIN);
-  const oppHasKickReach = canKickReach(state, opp, FALLBACK_SAFETY_MARGIN);
+  facts.selfInterceptTicks = interceptTicks(ball, self);
+  facts.oppInterceptTicks = interceptTicks(ball, opp);
+
+  attackKickSpot(field, ball, self.side, facts.attackKickSpot);
+
+  facts.selfHasKickReach = canKickReach(state, self, FALLBACK_SAFETY_MARGIN);
+  facts.oppHasKickReach = canKickReach(state, opp, FALLBACK_SAFETY_MARGIN);
 
   const kickDirX = self.side === 'left' ? 1 : -1;
-  const oppBlocksLane = opponentBlocksLane(ball.x, ball.y, kickDirX, 0, oc.x, oc.y);
+  facts.oppBlocksLane = opponentBlocksLane(ball.x, ball.y, kickDirX, 0, ocx, ocy);
 
   const threatensOwnGoal = ballThreatensOwnGoal(field, ball, self.side);
-  const ownGoalInterceptY = threatensOwnGoal ? ballYAtOwnGoalLine(field, ball, self.side) : null;
+  facts.threatensOwnGoal = threatensOwnGoal;
+  facts.ownGoalInterceptY = threatensOwnGoal ? ballYAtOwnGoalLine(field, ball, self.side) : null;
 
-  const selfBlocked = state.pauseState !== null
+  facts.selfBlocked = state.pauseState !== null
     || self.exhausted
     || self.pushTimer > 0
     || self.reactTimer > 0;
-  const selfKicking = self.kick.active;
+  facts.selfKicking = self.kick.active;
 
-  const ballSpeedXY = Math.hypot(ball.vx, ball.vy);
+  facts.ballSpeedXY = Math.hypot(ball.vx, ball.vy);
 
-  const push = pushOpportunity(self, opp, ball);
-  const oppWindingUp = opp.kick.active;
+  facts.pushOpportunity = pushOpportunity(self, opp, ball);
+  facts.oppWindingUp = opp.kick.active;
+  facts.oppExhausted = opp.exhausted;
+  facts.selfSide = self.side;
 
-  return {
-    selfCx: sc.x, selfCy: sc.y,
-    oppCx: oc.x, oppCy: oc.y,
-    selfDistToBall, oppDistToBall, selfDistToOpp,
-    selfInterceptTicks, oppInterceptTicks,
-    attackKickSpot: kickSpot,
-    selfHasKickReach, oppHasKickReach,
-    oppBlocksLane,
-    threatensOwnGoal,
-    ownGoalInterceptY,
-    selfBlocked,
-    selfKicking,
-    ballSpeedXY,
-    pushOpportunity: push,
-    oppWindingUp,
-    oppExhausted: opp.exhausted,
-    selfSide: self.side,
-  };
+  return facts;
 }

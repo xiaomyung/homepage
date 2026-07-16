@@ -1,6 +1,9 @@
 /**
  * Pure: tactical intent + perception + personality -> 9-float action vector.
- * Caller owns no buffers; we allocate a fresh Float64Array per call.
+ * Returns a reused per-side scratch Float64Array (keyed by `which`) — the
+ * caller must consume it before the next same-side `encode`. main.js
+ * evaluates `decide(state,'p1')` and `decide(state,'p2')` as sibling
+ * physicsTick args, so the two sides need independent buffers.
  */
 
 import {
@@ -40,13 +43,26 @@ import {
 
 export const ACTION_VEC_SIZE = PHYSICS_ACTION_VEC_SIZE;
 
+// Per-side action buffer. `encode` writes into `actionScratch[which]` and
+// zeroes it (fill(0)) each call — see the fill() note in encode().
+const actionScratch = {
+  p1: new Float64Array(ACTION_VEC_SIZE),
+  p2: new Float64Array(ACTION_VEC_SIZE),
+};
+
+// Transient scratch for the two direction helpers below. Each is consumed
+// (destructured / read) synchronously within the same encode() call before
+// the next helper runs, so a single shared instance is safe.
+const moveScratch = { mx: 0, my: 0 };
+const kickApproachScratch = { dx: 0, dy: 0, dz: 0 };
+
 /**
  * Unit-vector pursuit toward a physics-space target, normalised in WORLD
  * coords. Physics depth is compressed by Z_STRETCH (4.7), so normalising
  * in physics coords would under-weight dy and the player would close x
  * faster than y. The returned (mx, my) is the world-direction unit
  * vector; physics' applyMovement divides targetVy by Z_STRETCH to
- * produce visually-symmetric motion.
+ * produce visually-symmetric motion. Writes into the shared moveScratch.
  */
 function moveToward(self, tx, ty, captureRadius = 0) {
   const cx = self.x + PLAYER_WIDTH / 2;
@@ -54,13 +70,15 @@ function moveToward(self, tx, ty, captureRadius = 0) {
   const dx = tx - cx;
   const dyWorld = (ty - cy) * Z_STRETCH;
   const d = Math.hypot(dx, dyWorld);
-  if (captureRadius > 0 && d <= captureRadius) return { mx: 0, my: 0 };
-  if (d < 1e-6) return { mx: 0, my: 0 };
+  if (captureRadius > 0 && d <= captureRadius) { moveScratch.mx = 0; moveScratch.my = 0; return moveScratch; }
+  if (d < 1e-6) { moveScratch.mx = 0; moveScratch.my = 0; return moveScratch; }
   let mx = dx / d;
   let my = dyWorld / d;
   if (Math.abs(mx) < FALLBACK_DEAD_ZONE) mx = 0;
   if (Math.abs(my) < FALLBACK_DEAD_ZONE) my = 0;
-  return { mx, my };
+  moveScratch.mx = mx;
+  moveScratch.my = my;
+  return moveScratch;
 }
 
 function magnitudeFor(self, perception) {
@@ -87,7 +105,7 @@ function kickPowerFor(state, self) {
 /**
  * Choose kick approach (ground / lob / angled) based on geometry +
  * urgency. Returns { dx, dy, dz } unit-ish direction with z elevated
- * for lob.
+ * for lob. Writes into the shared kickApproachScratch.
  */
 function kickApproach(state, self, perception, personality) {
   const f = state.field;
@@ -121,11 +139,15 @@ function kickApproach(state, self, perception, personality) {
     ? LOB_KICK_DZ
     : 0;
 
-  return { dx: dxN, dy: dyN, dz };
+  kickApproachScratch.dx = dxN;
+  kickApproachScratch.dy = dyN;
+  kickApproachScratch.dz = dz;
+  return kickApproachScratch;
 }
 
 /**
- * Encode intent into a 9-float action vector. Pure; allocates fresh Float64Array.
+ * Encode intent into a 9-float action vector. Pure; returns the reused
+ * per-side scratch Float64Array (see module header).
  *
  * personality: { kickAimYOffset, pushPowerScale } — kickAimYOffset is signed
  * within ±KICK_AIM_OFFSET_RANGE (±0.03 of goal width), pushPowerScale lives
@@ -133,9 +155,14 @@ function kickApproach(state, self, perception, personality) {
  */
 export function encode(state, which, perception, intent, personality) {
   const self = state[which];
-  const out = new Float64Array(ACTION_VEC_SIZE);
+  const out = actionScratch[which];
 
-  // -1 = gate closed (Float64Array initialises moves and powers to 0).
+  // Zero the reused buffer first: a fresh Float64Array gave moves/powers 0
+  // for free, but a reused one would leak the previous tick's MOVE values
+  // for a paused player (the NEUTRAL early-return sets only the gates).
+  out.fill(0);
+
+  // -1 = gate closed (moves and powers already 0 from fill).
   out[ACTION_KICK_GATE] = -1;
   out[ACTION_PUSH_GATE] = -1;
 

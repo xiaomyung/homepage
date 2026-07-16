@@ -222,6 +222,9 @@ test('Kick power scales with distance to opp goal', () => {
   const pNear = perceive(state, 'p1');
   const intentNear = { kind: INTENT_KINDS.CONTENDER_KICK, role: 'contender', push: false };
   const vNear = encode(state, 'p1', pNear, intentNear, personality);
+  // encode returns the reused p1 buffer, so the second encode below aliases
+  // vNear — snapshot the near power scalar before recomputing.
+  const nearPower = vNear[ACTION_KICK_POWER];
 
   state.p1.x = 80;
   state.ball.x = 100;
@@ -229,5 +232,32 @@ test('Kick power scales with distance to opp goal', () => {
   const intentFar = { kind: INTENT_KINDS.CONTENDER_KICK, role: 'contender', push: false };
   const vFar = encode(state, 'p1', pFar, intentFar, personality);
 
-  assert.ok(vFar[ACTION_KICK_POWER] > vNear[ACTION_KICK_POWER]);
+  assert.ok(vFar[ACTION_KICK_POWER] > nearPower);
+});
+
+test('Reused buffer does not leak stale MOVE into a later same-side NEUTRAL', () => {
+  const state = freshState();
+  state.p1.x = 100; state.p1.y = FIELD_HEIGHT / 2 - PLAYER_HEIGHT / 2;
+  state.ball.x = 400; state.ball.y = FIELD_HEIGHT / 2;
+  const perception = perceive(state, 'p1');
+
+  // A MOVE intent writes non-zero MOVE into p1's reused action buffer.
+  const runIntent = {
+    kind: INTENT_KINDS.CONTENDER_RUN,
+    role: 'contender',
+    target: perception.attackKickSpot,
+    push: false,
+  };
+  const vRun = encode(state, 'p1', perception, runIntent, personality);
+  const runMoveX = vRun[ACTION_MOVE_X];
+  assert.ok(runMoveX > 0, `sanity: MOVE intent should produce positive MOVE_X, got ${runMoveX}`);
+
+  // NEUTRAL for the SAME side reuses that buffer; encode must fill(0) so the
+  // previous tick's MOVE values don't survive the early return.
+  const neutralIntent = { kind: INTENT_KINDS.NEUTRAL, role: null, push: false };
+  const vNeutral = encode(state, 'p1', perception, neutralIntent, personality);
+  assert.equal(vNeutral[ACTION_MOVE_X], 0, 'stale MOVE_X leaked into NEUTRAL');
+  assert.equal(vNeutral[ACTION_MOVE_Y], 0, 'stale MOVE_Y leaked into NEUTRAL');
+  assert.equal(vNeutral[ACTION_KICK_GATE], -1);
+  assert.equal(vNeutral[ACTION_PUSH_GATE], -1);
 });

@@ -1,9 +1,17 @@
 /**
- * Public controller: pure `decide(state, which) -> Float64Array(9)`.
+ * Public controller: `decide(state, which) -> Float64Array(9)`.
  *
  * Pipeline: perceive -> decide intent -> encode action. The only mutated
  * state is `state.aiRoleState[side]` (role hysteresis) which is reset by
  * `resetStateInPlace` via the showcase loop.
+ *
+ * The returned Float64Array is a reused per-side scratch buffer (one for
+ * 'p1', one for 'p2'), not a fresh allocation — the whole pipeline is
+ * zero-allocation on the hot path. The caller must consume the result
+ * before the next *same-side* `decide` (main.js passes p1's and p2's
+ * buffers straight into physicsTick, which reads both synchronously). The
+ * two sides own independent buffers, so evaluating both as sibling
+ * arguments stays correct.
  */
 
 import { perceive } from './perception.js';

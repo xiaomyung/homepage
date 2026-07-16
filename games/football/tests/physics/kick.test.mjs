@@ -125,12 +125,10 @@ test('kick state machine fires impact at windup end and clears at duration end',
 });
 
 test('stall reset fires after 10 wall-clock seconds of no kicks (headless + visual)', () => {
-  // The stall timeout was unified at 10 s for both modes so showcase
-  // replays (which run with state.headless=true for scoreGoal
-  // determinism) reset on the same schedule as the worker that
-  // produced the recording. Before the visual never saw a reset
-  // before tick 625, the worker at tick 187 — the mismatch showed up
-  // as jarring mid-replay teleports every 3 s.
+  // Same STALL_TICKS threshold drives both branches of the tick() stall
+  // check: headless mode does a full kickoff reset, visual mode does a
+  // softer ball-only respawn (see core.js). Assert both fire on the
+  // same 10s schedule.
   const stallTicks = Math.ceil(10000 / TICK_MS);
 
   for (const headless of [true, false]) {
@@ -299,8 +297,9 @@ test('canKickReach matches tryStartKick commit exactly (no ghost outputs)', () =
   // Scan a grid of ball positions around a stationary player. For
   // each position, canKickReach(margin=0) must match whether
   // applyAction/tryStartKick actually commits a kick. If the two
-  // ever disagree the teacher emits kick actions the physics
-  // silently rejects (or vice versa) — kills imitation signal.
+  // ever disagree, the AI controller (which calls canKickReach in
+  // ai/perception.js to decide selfHasKickReach) thinks it can kick
+  // when physics silently rejects it, or vice versa.
   const disagreements = [];
   for (let dx = -25; dx <= 25; dx += 5) {
     for (let dy = -6; dy <= 6; dy += 2) {

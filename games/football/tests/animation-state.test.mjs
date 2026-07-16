@@ -60,7 +60,7 @@ describe('animation/state', () => {
       assert.equal(snap.state, 'WALK');
     });
 
-    it('resyncs lastTick when tick rewinds (showcase replay / new match)', () => {
+    it('resyncs lastTick when tick rewinds (new match in the showcase loop)', () => {
       // Regression: in the showcase loop, players are reused across
       // matches via `resetStateInPlace`. Each new match restarts at
       // tick=0 while `anim.lastTick` still holds the previous match's

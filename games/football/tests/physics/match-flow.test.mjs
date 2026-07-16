@@ -72,7 +72,7 @@ test('ball crossing left field edge triggers OOB', () => {
   state.ball.vy = 0;
   state.ball.frozen = false;
   for (let i = 0; i < 10 && state.pauseState === null; i++) tick(state, NOOP, NOOP);
-  // Out triggers reposition pause (ballOut() in physics.js)
+  // Out triggers reposition pause (ballOut() in physics/match-flow.js)
   assert.ok(
     state.pauseState !== null,
     'ball going off left edge should trigger OOB / ball reposition',

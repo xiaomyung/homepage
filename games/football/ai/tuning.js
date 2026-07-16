@@ -52,7 +52,7 @@ export const PUSH_RANGE_FRAC = 0.9;
 
 // Floating-point dead zone on the action MOVE vector — values below this
 // magnitude are treated as zero. Paired with `MOVE_INPUT_DEAD_ZONE` in
-// physics.js (same value, applied symmetrically on both sides of the seam).
+// physics/tuning.js (same value, applied symmetrically on both sides of the seam).
 export const FALLBACK_DEAD_ZONE = 0.02;
 export const FALLBACK_CAPTURE_RADIUS = PLAYER_WIDTH / 2;
 // canKickReach margin. Zero means the controller's reach gate matches

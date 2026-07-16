@@ -1,8 +1,8 @@
 // Animation tuning constants. Single source of truth for every
 // numeric coefficient consumed by animation/state.js, animation/curves.js
-// and animation/poses.js — and through them, by renderer.js. Pure
+// and animation/poses.js — and through them, by renderer/. Pure
 // module — no DOM, no three.js. World-model constants come from
-// physics.js as needed.
+// physics/index.js as needed.
 
 import {
   AIRKICK_PEAK_FRAC,

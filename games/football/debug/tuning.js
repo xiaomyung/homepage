@@ -2,7 +2,7 @@
  * Debug overlay tuning constants.
  *
  * Colours, opacities, and ground-lift offsets for the translucent
- * collider overlay rendered by debug-overlay.js. Adjust here, no edits
+ * collider overlay rendered by debug/overlay.js. Adjust here, no edits
  * elsewhere needed. Physics-collider dimensions live in physics/tuning.js.
  */
 

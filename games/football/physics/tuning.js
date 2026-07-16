@@ -23,7 +23,7 @@ export const MAX_TICKS_PER_FRAME    = 5;
 // resuming with an arbitrarily-old scene graph + state).
 export const TAB_HIDDEN_RELOAD_MS = 600000;
 
-// Stale-segment detection: 10s of no-kick activity in headless training
+// Stale-segment detection: 10s of no-kick activity in headless mode
 // triggers a kickoff reset (see core.js / match-flow.js). 1s before
 // reset, the user-visible game does a softer ball-only respawn.
 export const STALL_TICKS = Math.ceil(10000 / TICK_MS);
@@ -58,7 +58,7 @@ export const MOVE_INPUT_DEAD_ZONE = 0.02;
 
 // Vertical depth scaling: a player whose footprint advances 1 world unit
 // in y moves Z_STRETCH world units along the visible Z axis. Imported by
-// renderer.js — single source of truth.
+// renderer/ — single source of truth.
 export const Z_STRETCH = 4.7;
 
 export const PLAYER_TURN_TICKS = 20;            // ticks to complete a 180° turn

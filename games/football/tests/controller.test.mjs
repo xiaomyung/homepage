@@ -48,8 +48,8 @@ test('Pure determinism: two consecutive calls with same state -> same output', (
 test('Self next to ball -> KICK_GATE active', () => {
   const state = freshState();
   // Position ball directly at player centerline, on the ground — the same
-  // setup the canKickReach hip-sphere gate accepts (matches existing
-  // fallback kick-test fixture).
+  // setup the canKickReach hip-sphere gate accepts (matches the
+  // kickBenchState fixture in tests/helpers/state.mjs).
   state.p1.x = 400;
   state.p1.y = 20;
   state.p1.heading = 0;

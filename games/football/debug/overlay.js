@@ -7,8 +7,9 @@
  * face cone, goal box / posts / crossbar, field touchlines, and
  * ground / ceiling. Every position and dimension is read live from
  * state.field and the player records each frame; constants come
- * directly from physics.js's exports. Edit a constant in physics.js
- * and the overlay reflects it on next reload — no hardcoded values.
+ * directly from physics/index.js's exports. Edit a constant in
+ * physics/tuning.js and the overlay reflects it on next reload — no
+ * hardcoded values.
  *
  * Lifecycle:
  *   const overlay = new DebugOverlay(scene);   // pool not allocated yet

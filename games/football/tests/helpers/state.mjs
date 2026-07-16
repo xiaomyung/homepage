@@ -7,7 +7,7 @@
  * and controller tests use it, perception and action tests don't.
  *
  * `action({...})` builds a 9-slot action vector by name with the
- * neutral defaults that physics.js expects (gates at -1).
+ * neutral defaults that applyAction (physics/player.js) expects (gates at -1).
  */
 
 import {

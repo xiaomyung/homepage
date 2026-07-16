@@ -14,16 +14,6 @@ import {
   COLOR_STAM_LOW, COLOR_STAM_MID, COLOR_STAM_HIGH,
 } from './tuning.js';
 
-/** Convert '#rrggbb' to a normalized [r, g, b] triple. */
-export function rgb(hex) {
-  const h = hex.replace('#', '');
-  return [
-    parseInt(h.slice(0, 2), 16) / 255,
-    parseInt(h.slice(2, 4), 16) / 255,
-    parseInt(h.slice(4, 6), 16) / 255,
-  ];
-}
-
 /**
  * Blend LOW → MID → HIGH as `t` goes 0 → 0.5 → 1. Writes the result
  * into `out` (length-3 [r,g,b] array) to avoid per-frame allocation.

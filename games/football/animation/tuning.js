@@ -159,12 +159,6 @@ export const MATCH_LOSE_ARM_UPPER = -0.25;    // arms slightly behind vertical
 
 export const LPF_DEAD_ZONE = 0.001;
 
-/* ── Sampler (sampler.js) ────────────────────────────────────── */
-
-// Step-ease threshold: <1 lets `u===1` still hit the high branch
-// across float-rounding paths.
-export const STEP_EASE_THRESHOLD = 0.9999;
-
 /* ── REPOSITION heading LPF override (state.js) ──────────────── */
 
 // Multiplier on STICKMAN_SMOOTH for the animHeading LPF during

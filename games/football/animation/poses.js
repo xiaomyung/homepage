@@ -93,8 +93,8 @@ export function createPoseScratch() {
     // arms only, set by the punch IK).
     lArmUpper: 0, lArmLower: 0, lArmUpperYaw: 0, lArmLowerYaw: 0,
     rArmUpper: 0, rArmLower: 0, rArmUpperYaw: 0, rArmLowerYaw: 0,
-    lLegUpper: 0, lLegLower: 0,
-    rLegUpper: 0, rLegLower: 0,
+    lLegUpper: 0, lLegLower: 0, lLegHipYaw: 0,
+    rLegUpper: 0, rLegLower: 0, rLegHipYaw: 0,
     // Heading unit vector pass-through for the renderer's placeArm
     // / placeLeg (they orient capsules along forward/up).
     forwardX: 0, forwardZ: 0,
@@ -571,7 +571,7 @@ export function composeStickmanPose(animSnap, player, pose, scratchKickPose, scr
   // Push override: striking arm runs the variant-specific scripted
   // (keyframe-blended) trajectory via pushArmPose. Only overrides
   // the striking side; the other arm keeps its cosmetic swing.
-  const shoulderY = upperHipY + torsoH * tiltC * Math.cos(reactBodyRoll);
+  const shoulderY = neckY;
   if (pushing > 0 && celeb < LPF_DEAD_ZONE) {
     pushArmPose(player, scratchPushPose);
     if (player.pushArm === 'right') {

@@ -220,8 +220,8 @@ export function stepParticles(ctx) {
 
 /** Write live particles into the InstancedMesh. Position maps physics
  *  (x, y, z) → world (x, z, y*Z_STRETCH); per-instance color fades the
- *  rgb channels from full to black as the particle ages. Dead particles
- *  are packed to the front so `.count` skips the tail. */
+ *  rgb channels from full to black as the particle ages. Live particles
+ *  are packed to the front so `.count` can skip the dead tail. */
 export function drawParticles(ctx) {
   const q = ctx._scratchZeroQ;
   const pos = ctx._scratchPos;

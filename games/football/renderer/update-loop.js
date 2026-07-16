@@ -63,9 +63,9 @@ export function renderState(ctx, state) {
   ctx._restStarCursor         = 0;
 
   // Per-player dead-ball flags. The harness may stamp each player with
-  // `_scenePauseState` + `_sceneGoalScorer` + `_sceneWinner` so multiple
-  // independent scenarios inside one composite render frame don't
-  // cross-contaminate. Live-match path falls back to global state.
+  // `_scenePauseState` + `_sceneGoalScorer` + `_sceneWinner` + `_sceneSide`
+  // so multiple independent scenarios inside one composite render frame
+  // don't cross-contaminate. Live-match path falls back to global state.
   for (let i = 0; i < players.length; i++) {
     const p = players[i];
     const pPause      = p._scenePauseState !== undefined ? p._scenePauseState : state.pauseState;

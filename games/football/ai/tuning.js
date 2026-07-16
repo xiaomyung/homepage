@@ -37,9 +37,10 @@ export const APPROACH_MIN_MAGNITUDE = 0.15;
 export const SIDESTEP_TRIGGER_DIST = 10;
 export const SIDESTEP_OFFSET = 12;
 
-// Lead distance (physics units) — how much closer self has to be than
-// opp to commit to a disruptive push while opp is mid-windup. Lets self
-// reach opp before opp's kick fires.
+// Ball-distance race margin (physics units) — while opp is mid-windup,
+// self is allowed to be up to this much farther from the ball than opp
+// (selfDistToBall < oppDistToBall + margin) and still commit to a
+// disruptive push. Not a self-to-opp distance check.
 export const PUSH_WINDUP_LEAD_DIST = 30;
 
 export const KICK_AIM_OFFSET_RANGE = 0.03;

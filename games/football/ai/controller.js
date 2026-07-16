@@ -2,8 +2,9 @@
  * Public controller: `decide(state, which) -> Float64Array(9)`.
  *
  * Pipeline: perceive -> decide intent -> encode action. The only mutated
- * state is `state.aiRoleState[side]` (role hysteresis) which is reset by
- * `resetStateInPlace` via the showcase loop.
+ * state is `state.aiRoleState[side]` (role hysteresis), which main.js's
+ * `nextShowcase` reassigns to a fresh object at the start of every match
+ * (NOT reset by `resetStateInPlace`, which never touches aiRoleState).
  *
  * The returned Float64Array is a reused per-side scratch buffer (one for
  * 'p1', one for 'p2'), not a fresh allocation — the whole pipeline is
@@ -46,7 +47,10 @@ export function derivePersonality(rng) {
   };
 }
 
-/** Pure: per-side action for `which` side ('p1' | 'p2'). */
+/** Pure (with bounded mutation): per-side action for `which` side ('p1' |
+ *  'p2'). Lazily inits `state.aiPersonality` / `state.aiRoleState` on the
+ *  first call, and the decision stage writes `state.aiRoleState[side].role`
+ *  / `.since` for role hysteresis. */
 export function decide(state, which) {
   const self = state[which];
   // Defensive init for callers (mainly tests) that build a state without

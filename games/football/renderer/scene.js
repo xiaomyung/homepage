@@ -24,7 +24,7 @@ export function initScene(ctx, canvas) {
   ctx.camera = new THREE.PerspectiveCamera(CAMERA_FOV, 2, 0.1, 4000);
   placeCamera(ctx);
 
-  // Lighting for the ball sphere and cylindrical stickmen. The rest of
+  // Lighting for the ball sphere and capsule-geometry stickmen. The rest of
   // the scene is rendered with unlit line / basic materials, so these
   // lights only affect meshes that use a lit material. Low ambient +
   // strong directional gives pronounced terminator shading so the ball

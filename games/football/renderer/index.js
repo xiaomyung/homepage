@@ -38,8 +38,8 @@ import { renderState as renderStateImpl } from './update-loop.js';
 import { initScene, disposeScene } from './scene.js';
 import { initBallPool, initShadowFactory } from './ball.js';
 import {
-  STICKMAN_TORSO_SHELL_THICKNESS, STICKMAN_TORSO_FILL_RADIUS,
-  STICKMAN_SPH_POOL, STAMINA_OUTLINE_OPACITY, PARTICLE_POOL,
+  PARTICLE_POOL, STAMINA_OUTLINE_OPACITY,
+  STICKMAN_SPH_POOL, STICKMAN_TORSO_FILL_RADIUS, STICKMAN_TORSO_SHELL_THICKNESS,
 } from './tuning.js';
 
 /* ── Renderer ──────────────────────────────────────────────── */
@@ -76,9 +76,8 @@ export class Renderer {
     initShadowFactory(this);
 
     // Pool of player shadows, grown on demand via placePlayerShadow
-    // (renderer/player-rig.js).
-    // Two pre-created for the common case of two players (zero extra
-    // cost vs the original _p1Shadow / _p2Shadow).
+    // (renderer/player-rig.js). Two pre-created for the common case
+    // of two players.
     this._playerShadows = [this._makeShadow(), this._makeShadow()];
     this._playerShadowCursor = 0;
 
@@ -102,9 +101,10 @@ export class Renderer {
     // so `placeTorso` insets the clipping range accordingly.
     const torsoFillBodyLen = torsoBodyLen;
     // Arms split at the elbow — upper arm is 15% thicker than the
-    // forearm. Both halves have body_len = UPPER_ARM − 2·radius so
-    // the overlapping caps at the elbow meet at the same world point
-    // as the (slightly-undersized) elbow sphere drawn there.
+    // forearm. Each half has its own body_len = its own limb length
+    // minus 2·its own radius, so the overlapping caps at the elbow
+    // meet at the same world point as the (slightly-undersized)
+    // elbow sphere drawn there.
     const upperArmBodyLen = STICKMAN_UPPER_ARM - 2 * STICKMAN_UPPER_ARM_RADIUS;
     const lowerArmBodyLen = STICKMAN_LOWER_ARM - 2 * STICKMAN_LOWER_ARM_RADIUS;
     // Leg is drawn as TWO half-length capsules meeting at the knee,

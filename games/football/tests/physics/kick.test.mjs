@@ -13,6 +13,7 @@ import {
   KICK_DURATION_MS,
   STICKMAN_UPPER_LEG,
   STICKMAN_LOWER_LEG,
+  STICKMAN_HIP_OFX,
   solve2BoneIK,
   KICK_STRIKE_WINDOW_MS,
   kickLegExtension,
@@ -439,7 +440,7 @@ test('kick foot-contact is symmetric on both hip sides', () => {
   // non-dominant side.
   for (const sign of [-1, +1]) {
     const state = kickBenchState();
-    state.ball.y = state.p1.y + sign * (2.64 / Z_STRETCH);
+    state.ball.y = state.p1.y + sign * (STICKMAN_HIP_OFX / Z_STRETCH);
     tick(state, kickAction(1, 0, 0, 1), NOOP);
     assert.ok(state.p1.kick.active, `ball on sign=${sign} side still reachable`);
     const strikeOnsetTicks = Math.ceil(KICK_WINDUP_MS / TICK_MS) + 1;

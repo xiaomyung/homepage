@@ -3,8 +3,10 @@
  *
  * `freshState(seed, opts)` builds a fresh game state with a seeded
  * RNG. Pass `withAI: true` to also initialise `aiRoleState` and
- * `aiPersonality` (matches the live nextShowcase() contract); decision
- * and controller tests use it, perception and action tests don't.
+ * `aiPersonality` (matches the live nextShowcase() contract);
+ * controller tests use it. decision tests build their own fixture
+ * with a fixed neutral personality instead (see decision.test.mjs);
+ * perception and action tests don't need either.
  *
  * `action({...})` builds a 9-slot action vector by name with the
  * neutral defaults that applyAction (physics/player.js) expects (gates at -1).

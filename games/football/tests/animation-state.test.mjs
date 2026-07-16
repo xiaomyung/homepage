@@ -91,7 +91,7 @@ describe('animation/state', () => {
       assert.equal(snap.state, 'WALK');
     });
 
-    it('amplitude LPF converges toward speed*0.2', () => {
+    it('amplitude LPF converges toward speed*WALK_AMP_PER_SPEED', () => {
       const p = makePlayer({ x: 0 });
       const a = createAnimState(0, p);
       let snap;
@@ -100,7 +100,7 @@ describe('animation/state', () => {
         p.x = t * 5;
         snap = advanceAnimState(a, p, t, false, {});
       }
-      // target = min(speed*0.2, 1) = min(1.0, 1) = 1.0 (saturated)
+      // target = min(speed*WALK_AMP_PER_SPEED, 1) = min(5*0.35, 1) = min(1.75, 1) = 1.0 (saturated)
       assert.ok(snap.amplitude > 0.95, `amplitude=${snap.amplitude} should be near 1.0`);
     });
 

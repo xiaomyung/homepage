@@ -1,7 +1,7 @@
 // Polynomial curve functions + their tuning constants for the kick,
 // airkick, and push body-english animations. Pure module (no DOM,
 // no three.js) so it can be unit-tested under node AND imported
-// from both the renderer and animation/poses.js without cycles.
+// from animation/poses.js without cycles.
 //
 // The functions take normalized phase t ∈ [0, 1] covering the full
 // composite action (kick wind → strike → recover, or push raise →

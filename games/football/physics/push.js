@@ -176,8 +176,10 @@ function resolvePoseKeyframes(pushType) {
  * strike — interpolated by the progress scalar derived from pushTimer.
  *
  * Output is four angles: upperAngle, lowerAngle, upperYaw, lowerYaw.
- * Hook uses upperYaw to carry the arm laterally; jab and uppercut
- * stay in the sagittal plane. The pushArm sign flips hook polarity.
+ * Hook uses upperYaw/lowerYaw throughout to carry the arm laterally;
+ * jab stays in the sagittal plane at every keyframe. Uppercut is
+ * sagittal at rest/windup but picks up yaw at the strike keyframe.
+ * The pushArm sign flips hook/uppercut polarity.
  */
 export function pushArmPose(player, out) {
   if (!player || player.pushTimer <= 0) {

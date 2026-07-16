@@ -1,7 +1,7 @@
 /**
  * Football v2 — particle bursts.
  *
- * Five spawn paths share a single 120-slot pool: ball-bounce,
+ * Four spawn paths share a single 120-slot pool: ball-bounce,
  * footstep, push-contact, goal-burst (event-driven), plus the per-
  * frame `stepParticles` ageing and `drawParticles` write into the
  * instanced mesh. ctx-style: every function takes the Renderer

@@ -17,8 +17,9 @@
 //   4. Celebrate runs a jump cycle (crouch → push-off → apex →
 //      land) plus symmetric fist-pumps; arms and legs blend toward
 //      the celebrate pose by the smoothed `celeb` factor.
-//   5. Grieve / matchend overrides take precedence over celebrate
-//      where they apply (loser kneels, winner stands triumphant).
+//   5. Celebrate takes precedence over grieve / matchend overrides —
+//      those only apply once celeb has decayed below LPF_DEAD_ZONE
+//      (loser kneels, winner stands triumphant).
 //
 // Physics guarantees kick and push never overlap, so their
 // body-english contributions simply sum via upperTilt + pushBodyDip +

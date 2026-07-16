@@ -117,7 +117,7 @@ export const PLAYER_PAIR_STUCK_IMPULSE     = 1.5;
 // World-space anchors derived from the rig.
 export const HIP_BASE_Z      = STICKMAN_LIMB_FULL_H;                                // 20
 export const SHOULDER_Z      = HIP_BASE_Z + STICKMAN_SHOULDER_OFY;                   // 40.24
-export const HEAD_CENTER_Z   = SHOULDER_Z + STICKMAN_HEAD_GAP_Y + STICKMAN_HEAD_RADIUS; // 47.11
+export const HEAD_CENTER_Z   = SHOULDER_Z + STICKMAN_HEAD_GAP_Y + STICKMAN_HEAD_RADIUS; // 45.29
 export const KICK_REACH_MAX  = STICKMAN_UPPER_LEG + STICKMAN_LOWER_LEG;              // 20
 
 /* ── Goal frame ───────────────────────────────────────────────── */

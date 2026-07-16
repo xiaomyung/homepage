@@ -3,8 +3,8 @@
  *
  * Colour conversion + interpolation, and the procedural soccer-ball
  * texture builder. Everything here is allocation-light and side-
- * effect-free aside from the texture canvas. Imported by renderer/
- * scene.js + renderer/player-rig.js + renderer/ball.js.
+ * effect-free aside from the texture canvas. Imported by
+ * renderer/player-rig.js + renderer/ball.js.
  *
  * Visual constants (COLOR_*, shaders) live in renderer/tuning.js.
  */

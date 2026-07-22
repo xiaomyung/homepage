@@ -128,6 +128,8 @@ options panel via the **[ test renderer ]** button.
 3. Add an `<a class="card">` in the appropriate `<section>` in `index.html` — `href` to the shortcut, `data-check` to the direct URL
 4. Reload Caddy
 
+For on-demand services (backend boots on first request), point `data-check` at a side-effect-free status endpoint instead of the service root — e.g. Colibri's `https://coli.home.arpa/mgmt/status` (200 = engine loaded, 503 = sleeping → red dot). Probing the root would wake the backend on every dashboard view.
+
 Not every service deserves a card — the dashboard is a launcher, not a status board. If a service has no UI worth visiting, skip the card.
 
 ## Deploying to a homelab
